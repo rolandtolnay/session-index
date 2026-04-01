@@ -162,6 +162,65 @@ def search(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[dict[s
     return [dict(row) for row in cursor.fetchall()]
 
 
+def search_flexible(
+    conn: sqlite3.Connection,
+    query: str | None = None,
+    project: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Flexible search: FTS5 text + optional project prefix, date range filters.
+
+    - query provided: FTS5 search with optional structured filters, ordered by rank
+    - query empty: structured filters only, ordered by started_at DESC
+    - nothing provided: returns most recent sessions
+    """
+    params: dict[str, Any] = {"limit": limit}
+    clauses: list[str] = []
+
+    if project:
+        clauses.append("s.project LIKE :project_pattern")
+        params["project_pattern"] = f"{project}%"
+    if since:
+        clauses.append("s.started_at >= :since")
+        params["since"] = since
+    if until:
+        # Bare date (YYYY-MM-DD) should include the full day
+        if len(until) == 10:
+            until = f"{until}T23:59:59.999999"
+        clauses.append("s.started_at <= :until")
+        params["until"] = until
+
+    if query and query.strip():
+        terms = query.split()
+        safe_query = " ".join(f'"{t}"' for t in terms)
+        params["query"] = safe_query
+
+        where = "WHERE sessions_fts MATCH :query"
+        if clauses:
+            where += " AND " + " AND ".join(clauses)
+
+        cursor = conn.execute(f"""
+            SELECT s.*, rank
+            FROM sessions_fts fts
+            JOIN sessions s ON s.rowid = fts.rowid
+            {where}
+            ORDER BY rank
+            LIMIT :limit
+        """, params)
+    else:
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cursor = conn.execute(f"""
+            SELECT s.* FROM sessions s
+            {where}
+            ORDER BY s.started_at DESC
+            LIMIT :limit
+        """, params)
+
+    return [dict(row) for row in cursor.fetchall()]
+
+
 def get_recent_by_project(
     conn: sqlite3.Connection, project: str, limit: int = 5,
 ) -> list[dict[str, Any]]:

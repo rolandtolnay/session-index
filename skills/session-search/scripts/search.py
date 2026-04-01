@@ -11,10 +11,19 @@ sys.path.insert(0, repo_root)
 
 from cli import cmd_search
 
-query = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else ""
-if not query:
-    print("Usage: search.py <query>")
+parser = argparse.ArgumentParser(description="Search past Claude Code conversations")
+parser.add_argument("query", nargs="*", help="Search terms")
+parser.add_argument("--project", "-p", help="Filter by project name (prefix match)")
+parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
+parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
+parser.add_argument("--limit", type=int, default=20)
+args = parser.parse_args()
+
+# Join positional args into query string, or None if empty
+args.query = " ".join(args.query) if args.query else None
+
+if not args.query and not args.project and not args.since and not args.until:
+    print("Usage: search.py [query] [--project NAME] [--since DATE] [--until DATE]")
     sys.exit(1)
 
-ns = argparse.Namespace(query=query, limit=20)
-cmd_search(ns)
+cmd_search(args)

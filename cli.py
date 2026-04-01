@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-from db import get_connection, init_db, upsert_session, search, get_stats, rebuild_fts, DB_PATH
+from db import get_connection, init_db, upsert_session, search_flexible, get_stats, rebuild_fts, DB_PATH
 from parser import parse_jsonl, clean_user_messages
 from summarizer import summarize
 from transcript import write_transcript, TRANSCRIPT_DIR
@@ -23,12 +23,21 @@ def cmd_search(args: argparse.Namespace) -> None:
     """Search the session index."""
     conn = get_connection()
     init_db(conn)
-    results = search(conn, args.query, limit=args.limit)
+    results = search_flexible(
+        conn,
+        query=args.query,
+        project=getattr(args, "project", None),
+        since=getattr(args, "since", None),
+        until=getattr(args, "until", None),
+        limit=args.limit,
+    )
     conn.close()
 
     if not results:
         print("No results found.")
         return
+
+    is_browse = not args.query
 
     for r in results:
         print(f"\n{'─' * 60}")
@@ -40,6 +49,8 @@ def cmd_search(args: argparse.Namespace) -> None:
 
         print(f"  {slug}  |  {project}  |  {date}  |  {duration_str}")
 
+        if is_browse:
+            print(f"  session_id: {r['session_id']}")
         if r.get("branch"):
             print(f"  branch: {r['branch']}")
         if r.get("summary"):
@@ -377,7 +388,10 @@ def main() -> None:
 
     # search
     sp_search = subparsers.add_parser("search", help="Full-text search")
-    sp_search.add_argument("query", help="Search query")
+    sp_search.add_argument("query", nargs="?", default=None, help="Search query (optional if filters provided)")
+    sp_search.add_argument("--project", "-p", help="Filter by project name (prefix match)")
+    sp_search.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
+    sp_search.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
     sp_search.add_argument("--limit", type=int, default=20)
     sp_search.set_defaults(func=cmd_search)
 

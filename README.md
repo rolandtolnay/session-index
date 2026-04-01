@@ -42,13 +42,29 @@ From any Claude Code conversation:
 
 ```
 /session-search token refresh
+/session-search --project synapto --since 2026-03-01
+/session-search auth flow --project dashboard
 ```
 
 Or from the terminal:
 
 ```bash
 uv run cli.py search "token refresh"
+uv run cli.py search --project synapto --since 2026-03-01
 uv run cli.py status
+```
+
+### Add to your global CLAUDE.md
+
+Add this to `~/.claude/CLAUDE.md` so Claude knows to use the index:
+
+```markdown
+## Past Conversation Reference
+
+Use `/session-search` to find past conversations across all projects — supports text search,
+project prefix filter (`--project`), and date ranges (`--since`, `--until`).
+For resumable sessions, results include session IDs for `claude --resume <id>`.
+Do NOT read raw JSONL files.
 ```
 
 ## Important: cleanupPeriodDays
@@ -59,7 +75,7 @@ Claude Code deletes JSONL logs after `cleanupPeriodDays` (default: 30 days). The
 
 | Command | Description |
 |---------|-------------|
-| `search "query"` | Full-text search across messages, summaries, files, projects |
+| `search [query] [--project NAME] [--since DATE] [--until DATE]` | Full-text search with optional project prefix and date range filters |
 | `backfill [--force] [--prune] [--project NAME] [--session ID] [--transcripts-only]` | Process JSONL files; `--project` / `--session` to scope, `--transcripts-only` skips LLM summaries |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 

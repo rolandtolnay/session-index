@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import init_db, upsert_session, search, get_recent_by_project, get_stats, rebuild_fts
+from db import init_db, upsert_session, search, search_flexible, get_recent_by_project, get_stats, rebuild_fts
 
 
 def _make_conn():
@@ -108,4 +108,98 @@ def test_rebuild_fts():
     rebuild_fts(conn)
     results = search(conn, "rebuild")
     assert len(results) >= 1
+    conn.close()
+
+
+# ── search_flexible tests ──────────────────────────────────────────────────
+
+
+def test_search_flexible_fts_only():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sf1", project="proj",
+                   user_messages="auth token refresh", summary="Fixed auth tokens")
+    upsert_session(conn, session_id="sf2", project="proj",
+                   user_messages="add pagination", summary="Added pagination")
+    results = search_flexible(conn, query="auth token")
+    assert len(results) >= 1
+    assert any(r["session_id"] == "sf1" for r in results)
+    assert not any(r["session_id"] == "sf2" for r in results)
+    conn.close()
+
+
+def test_search_flexible_project_prefix():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sp1", project="synapto-backend",
+                   started_at="2026-03-15T00:00:00Z")
+    upsert_session(conn, session_id="sp2", project="synapto-web",
+                   started_at="2026-03-16T00:00:00Z")
+    upsert_session(conn, session_id="sp3", project="dashboard-web",
+                   started_at="2026-03-17T00:00:00Z")
+    results = search_flexible(conn, project="synapto")
+    assert len(results) == 2
+    ids = {r["session_id"] for r in results}
+    assert ids == {"sp1", "sp2"}
+    conn.close()
+
+
+def test_search_flexible_date_range():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sd1", project="p",
+                   started_at="2026-02-15T10:00:00Z")
+    upsert_session(conn, session_id="sd2", project="p",
+                   started_at="2026-03-15T10:00:00Z")
+    upsert_session(conn, session_id="sd3", project="p",
+                   started_at="2026-04-15T10:00:00Z")
+    results = search_flexible(conn, since="2026-03-01", until="2026-03-31")
+    assert len(results) == 1
+    assert results[0]["session_id"] == "sd2"
+    conn.close()
+
+
+def test_search_flexible_combined():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sc1", project="dashboard-web",
+                   started_at="2026-03-10T00:00:00Z",
+                   user_messages="debug auth flow", summary="Debugged auth")
+    upsert_session(conn, session_id="sc2", project="dashboard-web",
+                   started_at="2026-02-10T00:00:00Z",
+                   user_messages="debug auth flow", summary="Debugged auth old")
+    upsert_session(conn, session_id="sc3", project="backend",
+                   started_at="2026-03-10T00:00:00Z",
+                   user_messages="debug auth flow", summary="Backend auth debug")
+    # Only sc1 matches: query + project + date
+    results = search_flexible(conn, query="debug auth",
+                              project="dashboard", since="2026-03-01")
+    assert len(results) == 1
+    assert results[0]["session_id"] == "sc1"
+    conn.close()
+
+
+def test_search_flexible_no_filters():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sn1", project="a",
+                   started_at="2026-03-01T00:00:00Z")
+    upsert_session(conn, session_id="sn2", project="b",
+                   started_at="2026-03-10T00:00:00Z")
+    upsert_session(conn, session_id="sn3", project="c",
+                   started_at="2026-03-05T00:00:00Z")
+    results = search_flexible(conn, limit=3)
+    assert len(results) == 3
+    # Most recent first
+    assert results[0]["session_id"] == "sn2"
+    assert results[1]["session_id"] == "sn3"
+    assert results[2]["session_id"] == "sn1"
+    conn.close()
+
+
+def test_search_flexible_until_inclusive():
+    conn = _make_conn()
+    upsert_session(conn, session_id="su1", project="p",
+                   started_at="2026-03-31T23:30:00Z")
+    upsert_session(conn, session_id="su2", project="p",
+                   started_at="2026-04-01T00:30:00Z")
+    # Bare date until should include full day
+    results = search_flexible(conn, until="2026-03-31")
+    assert len(results) == 1
+    assert results[0]["session_id"] == "su1"
     conn.close()
