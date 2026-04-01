@@ -251,6 +251,9 @@ def parse_jsonl(path: str) -> ParsedSession:
         content = msg.get("content", "")
 
         if entry_type == "user":
+            # Skip system-injected meta messages (skill expansions, commit context, etc.)
+            if entry.get("isMeta", False):
+                continue
             # Skip entries that are only tool results
             if _is_only_tool_results(content):
                 # Append error bash results to last assistant message
@@ -268,7 +271,8 @@ def parse_jsonl(path: str) -> ParsedSession:
                 continue
 
             raw_text = _extract_user_text(content)
-            cleaned = _clean_text(raw_text)
+            cmd = _extract_command(raw_text)
+            cleaned = cmd if cmd else _clean_text(raw_text)
             if cleaned:
                 session.user_messages.append(cleaned)
                 session.messages.append({"role": "user", "content": cleaned})
@@ -318,7 +322,6 @@ def parse_jsonl(path: str) -> ParsedSession:
 _NOISE_TAG_NAMES = (
     "local-command-caveat|local-command-stdout|"
     "command-name|command-message|command-args|"
-    "objective|process|output_format|success_criteria|"
     "task-notification|system-reminder"
 )
 _NOISE_TAGS = re.compile(
@@ -335,6 +338,26 @@ def _clean_text(text: str) -> str:
     text = _NOISE_TAGS.sub("", text)
     text = _ANSI_ESCAPE.sub("", text)
     return text.strip()
+
+
+# Command invocation extraction
+_CMD_NAME_RE = re.compile(r"<command-name>\s*/?([\w:_-]+)\s*</command-name>")
+_CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+
+
+def _extract_command(text: str) -> str | None:
+    """Extract command invocation as '[/name] args' or None if not a command."""
+    m = _CMD_NAME_RE.search(text)
+    if not m:
+        return None
+    cmd = m.group(1)
+    if f"/{cmd}" in _NOISE_COMMANDS:
+        return None
+    args_m = _CMD_ARGS_RE.search(text)
+    args = args_m.group(1).strip() if args_m else ""
+    if args:
+        return f"[/{cmd}] {args}"
+    return f"[/{cmd}]"
 
 
 # Narration-only assistant messages (short single-sentence preambles before tool calls)

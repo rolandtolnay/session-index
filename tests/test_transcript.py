@@ -36,11 +36,13 @@ def test_write_transcript(tmp_path, monkeypatch):
     assert "main" in content
     assert "2026-04-01" in content
     assert "---" in content
-    # Messages
-    assert "User: Fix the bug" in content
-    assert "Assistant: I found the issue" in content
-    assert "User: Looks good" in content
-    assert "Assistant: Done!" in content
+    # Messages with fenced delimiters
+    assert "[user]" in content
+    assert "Fix the bug" in content
+    assert "[assistant]" in content
+    assert "I found the issue" in content
+    assert "Looks good" in content
+    assert "Done!" in content
 
 
 def test_write_transcript_empty(tmp_path, monkeypatch):

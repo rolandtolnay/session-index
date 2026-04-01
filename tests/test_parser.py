@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import patch, MagicMock
-from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _git_root, _clean_text, _strip_narration
+from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _git_root, _clean_text, _strip_narration, _extract_command
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
 
@@ -23,8 +23,8 @@ def test_parse_session_metadata():
 
 def test_parse_user_messages():
     session = parse_jsonl(FIXTURE)
-    # Should have 3 actual user messages (not tool_result-only entries)
-    assert session.user_message_count == 3
+    # 3 real messages + 2 command invocations (isMeta expansions skipped)
+    assert session.user_message_count == 5
     assert "Fix the login bug in auth.py" in session.user_messages[0]
     assert "empty strings" in session.user_messages[1]
     assert "Perfect" in session.user_messages[2]
@@ -224,11 +224,13 @@ def test_clean_text_strips_system_reminder():
     assert result == "Fix the bug"
 
 
-def test_clean_text_strips_objective_tags():
+def test_clean_text_passes_through_skill_tags():
+    """Skill-specific tags (objective, process) are no longer stripped by _clean_text.
+    They are filtered at the isMeta level instead."""
     result = _clean_text("<objective>Build a feature</objective>\n<process>Step 1</process>\nPlease do X")
     assert "Please do X" in result
-    assert "objective" not in result.lower()
-    assert "process" not in result.lower()
+    # These tags are preserved — isMeta filtering handles them before _clean_text runs
+    assert "objective" in result.lower()
 
 
 def test_clean_text_strips_ansi_codes():
@@ -259,3 +261,51 @@ def test_strip_narration_keeps_multi_sentence():
 def test_strip_narration_keeps_long_messages():
     text = "Let me " + "x" * 200
     assert _strip_narration(text) == text
+
+
+# ── isMeta filtering tests ───────────────────────────────────────────────────
+
+def test_is_meta_messages_skipped():
+    """isMeta:true user entries should not appear in messages or user_messages."""
+    session = parse_jsonl(FIXTURE)
+    for msg in session.user_messages:
+        assert "<objective>" not in msg
+        assert "<process>" not in msg
+        assert "<available_frameworks>" not in msg
+
+
+def test_command_invocation_reconstructed():
+    """command-name + command-args should become [/skill] args."""
+    session = parse_jsonl(FIXTURE)
+    verify_msgs = [m for m in session.user_messages if "[/verify]" in m]
+    assert len(verify_msgs) == 1
+    assert "check all tests" in verify_msgs[0]
+
+
+def test_command_without_args():
+    """command-name only should become [/skill] with no trailing text."""
+    session = parse_jsonl(FIXTURE)
+    analyze_msgs = [m for m in session.user_messages if "[/analyze-problem]" in m]
+    assert len(analyze_msgs) == 1
+    assert analyze_msgs[0] == "[/analyze-problem]"
+
+
+# ── _extract_command tests ───────────────────────────────────────────────────
+
+def test_extract_command_with_args():
+    text = '<command-message>verify</command-message>\n<command-name>/verify</command-name>\n<command-args>check all tests</command-args>'
+    assert _extract_command(text) == "[/verify] check all tests"
+
+
+def test_extract_command_without_args():
+    text = '<command-message>analyze-problem</command-message>\n<command-name>/analyze-problem</command-name>'
+    assert _extract_command(text) == "[/analyze-problem]"
+
+
+def test_extract_command_noise_command():
+    text = '<command-message>clear</command-message>\n<command-name>/clear</command-name>'
+    assert _extract_command(text) is None
+
+
+def test_extract_command_not_a_command():
+    assert _extract_command("Fix the login bug in auth.py") is None

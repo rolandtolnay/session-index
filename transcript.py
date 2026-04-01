@@ -41,9 +41,11 @@ def write_transcript(
         role = msg["role"]
         content = msg["content"]
         if role == "user":
-            lines.append(f"User: {content}")
+            lines.append(f"[user] {'─' * 40}")
+            lines.append(content)
         elif role == "assistant":
-            lines.append(f"Assistant: {content}")
+            lines.append(f"[assistant] {'─' * 34}")
+            lines.append(content)
         lines.append("")  # blank line between messages
 
     with open(path, "w") as f:

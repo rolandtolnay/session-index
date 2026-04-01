@@ -12,6 +12,12 @@ arguments:
 
 Search the indexed history of past Claude Code conversations.
 
+## Transcript Format
+Transcripts use fenced delimiters:
+- `[user] ───...` marks the start of a user message (content on next line)
+- `[assistant] ───...` marks the start of an assistant message (content on next line)
+- Skill/command invocations appear as `[/skill-name] user's arguments`
+
 ## Instructions
 
 1. Run the search query against the session index:
