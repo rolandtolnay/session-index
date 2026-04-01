@@ -7,7 +7,7 @@ Automatic indexing, summarization, and search for Claude Code conversations.
 - **Stop hook** — indexes session metadata (files, tools, messages) on every conversation pause
 - **SessionEnd hook** — generates an LLM summary and cleaned transcript when a session ends
 - **SessionStart hook** — injects recent session context into new conversations
-- **CLI** — search, backfill, and stats from the terminal
+- **CLI** — search, backfill, and status from the terminal
 - **Skill** — `/session-search` slash command for searching from any conversation
 
 ## Prerequisites
@@ -48,7 +48,7 @@ Or from the terminal:
 
 ```bash
 uv run cli.py search "token refresh"
-uv run cli.py stats
+uv run cli.py status
 ```
 
 ## Important: cleanupPeriodDays
@@ -60,9 +60,19 @@ Claude Code deletes JSONL logs after `cleanupPeriodDays` (default: 30 days). The
 | Command | Description |
 |---------|-------------|
 | `search "query"` | Full-text search across messages, summaries, files, projects |
-| `backfill [--force]` | Process all JSONL files (skip existing unless `--force`) |
-| `stats` | Total sessions, by project, date range, missing summaries |
-| `rebuild-fts` | Rebuild FTS index from scratch (safety valve) |
+| `backfill [--force] [--prune]` | Process all JSONL files; `--prune` removes noise sessions first |
+| `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
+
+## Reset data
+
+To wipe the database and transcripts and start fresh:
+
+```bash
+rm ~/.session-index/sessions.db
+rm -rf ~/.session-index/transcripts/
+```
+
+Then run `uv run cli.py backfill` to rebuild from your JSONL logs.
 
 ## Uninstall
 

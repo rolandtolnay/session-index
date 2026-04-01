@@ -59,8 +59,8 @@ def main() -> None:
 
     session = parse_jsonl(jsonl_path)
 
-    if session.user_message_count < 3:
-        log(session_id, "stop", f"skipped ({session.user_message_count} user msgs)")
+    if session.user_message_count < 3 or session.assistant_message_count < 1:
+        log(session_id, "stop", f"skipped ({session.user_message_count} user, {session.assistant_message_count} assistant msgs)")
         return
 
     conn = get_connection()

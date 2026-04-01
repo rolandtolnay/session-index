@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""CLI for session-index: search, backfill, stats.
+"""CLI for session-index: search, backfill, status.
 
 Usage:
     uv run cli.py search "query"
-    uv run cli.py backfill [--force]
-    uv run cli.py stats
-    uv run cli.py rebuild-fts
+    uv run cli.py backfill [--force] [--prune]
+    uv run cli.py status [--fix]
 """
 
 import argparse
@@ -14,10 +13,10 @@ import os
 import sys
 import time
 
-from db import get_connection, init_db, upsert_session, search, get_stats, rebuild_fts
-from parser import parse_jsonl
+from db import get_connection, init_db, upsert_session, search, get_stats, rebuild_fts, DB_PATH
+from parser import parse_jsonl, clean_user_messages
 from summarizer import summarize
-from transcript import write_transcript
+from transcript import write_transcript, TRANSCRIPT_DIR
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -63,16 +62,33 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         print(f"Projects dir not found: {projects_dir}")
         return
 
+    conn = get_connection()
+    init_db(conn)
+
+    # Prune noise sessions before processing
+    if args.prune:
+        pruned = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL "
+            "AND (summary LIKE '%no coding%' OR summary LIKE '%no changes%' "
+            "OR summary LIKE '%no active%')"
+        ).fetchone()[0]
+        if pruned:
+            conn.execute(
+                "DELETE FROM sessions WHERE summary IS NOT NULL "
+                "AND (summary LIKE '%no coding%' OR summary LIKE '%no changes%' "
+                "OR summary LIKE '%no active%')"
+            )
+            conn.commit()
+            print(f"Pruned {pruned} noise session(s)")
+
     # Find all JSONL files
     pattern = os.path.join(projects_dir, "*", "*.jsonl")
     jsonl_files = sorted(glob.glob(pattern))
 
     if not jsonl_files:
         print("No JSONL files found.")
+        conn.close()
         return
-
-    conn = get_connection()
-    init_db(conn)
 
     # Check which sessions already have summaries (skip unless --force)
     existing = set()
@@ -98,7 +114,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             start = time.monotonic()
             session = parse_jsonl(path)
 
-            if session.user_message_count < 3:
+            if session.user_message_count < 3 or session.assistant_message_count < 1:
                 skipped += 1
                 continue
 
@@ -106,7 +122,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             summary = summarize(
                 project=session.project,
                 branch=session.branch,
-                user_messages=session.user_messages,
+                user_messages=clean_user_messages(session.user_messages),
                 files_touched=session.files_touched,
             )
 
@@ -155,32 +171,144 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     print(f"\nDone: {processed} processed, {skipped} skipped, {errors} errors (of {total} total)")
 
 
-def cmd_stats(args: argparse.Namespace) -> None:
-    """Show index statistics."""
+# ── Status / Doctor ──────────────────────────────────────────────────────────
+
+def _check_integrity(conn) -> dict:
+    """Run all integrity checks. Returns a dict of issues found."""
+    issues = {
+        "missing_summary": [],       # session_ids with NULL summary
+        "recoverable": [],           # subset of missing_summary where JSONL still exists
+        "dangling_transcript": [],   # session_ids where transcript_path points to missing file
+        "orphaned_transcripts": [],  # transcript files on disk with no DB row
+    }
+
+    projects_dir = os.path.expanduser("~/.claude/projects")
+
+    # Missing summaries
+    cursor = conn.execute(
+        "SELECT session_id FROM sessions WHERE summary IS NULL"
+    )
+    for row in cursor:
+        sid = row[0]
+        issues["missing_summary"].append(sid)
+        # Check if JSONL still exists (recoverable)
+        pattern = os.path.join(projects_dir, "*", f"{sid}.jsonl")
+        if glob.glob(pattern):
+            issues["recoverable"].append(sid)
+
+    # Dangling transcript paths
+    cursor = conn.execute(
+        "SELECT session_id, transcript_path FROM sessions WHERE transcript_path IS NOT NULL"
+    )
+    for row in cursor:
+        if not os.path.exists(row[1]):
+            issues["dangling_transcript"].append(row[0])
+
+    # Orphaned transcript files
+    if os.path.isdir(TRANSCRIPT_DIR):
+        db_paths = set()
+        cursor = conn.execute(
+            "SELECT transcript_path FROM sessions WHERE transcript_path IS NOT NULL"
+        )
+        for row in cursor:
+            db_paths.add(row[0])
+
+        for fname in os.listdir(TRANSCRIPT_DIR):
+            fpath = os.path.join(TRANSCRIPT_DIR, fname)
+            if fpath not in db_paths:
+                issues["orphaned_transcripts"].append(fpath)
+
+    return issues
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    """Show index statistics and integrity check."""
+    if not os.path.exists(DB_PATH):
+        print("No database found. Run `backfill` to create one.")
+        return
+
     conn = get_connection()
     init_db(conn)
     stats = get_stats(conn)
-    conn.close()
 
-    print(f"Total sessions: {stats['total_sessions']}")
-    print(f"With summary:   {stats['with_summary']}")
+    # Stats
+    print(f"Sessions:        {stats['total_sessions']}")
+    print(f"With summary:    {stats['with_summary']}")
     print(f"Missing summary: {stats['missing_summary']}")
 
     if stats["earliest"]:
-        print(f"\nDate range: {stats['earliest'][:10]} → {stats['latest'][:10]}")
+        print(f"Date range:      {stats['earliest'][:10]} to {stats['latest'][:10]}")
 
     if stats["projects"]:
         print(f"\nBy project:")
         for project, count in stats["projects"]:
             print(f"  {project}: {count}")
 
+    # Integrity checks
+    issues = _check_integrity(conn)
+    total_issues = (
+        len(issues["dangling_transcript"])
+        + len(issues["orphaned_transcripts"])
+    )
 
-def cmd_rebuild_fts(args: argparse.Namespace) -> None:
-    """Rebuild the FTS index."""
-    conn = get_connection()
-    rebuild_fts(conn)
+    print(f"\nIntegrity:")
+    if not issues["missing_summary"] and total_issues == 0:
+        print("  All clear")
+    else:
+        if issues["missing_summary"]:
+            recoverable = len(issues["recoverable"])
+            unrecoverable = len(issues["missing_summary"]) - recoverable
+            parts = []
+            if recoverable:
+                parts.append(f"{recoverable} recoverable via backfill")
+            if unrecoverable:
+                parts.append(f"{unrecoverable} unrecoverable (JSONL deleted)")
+            print(f"  Missing summary: {len(issues['missing_summary'])} ({', '.join(parts)})")
+        if issues["dangling_transcript"]:
+            print(f"  Dangling transcript paths: {len(issues['dangling_transcript'])}")
+        if issues["orphaned_transcripts"]:
+            print(f"  Orphaned transcript files: {len(issues['orphaned_transcripts'])}")
+
+        if total_issues > 0:
+            if args.fix:
+                fixed = _fix_issues(conn, issues)
+                print(f"\n  Fixed {fixed} issue(s)")
+            else:
+                print(f"\n  Run `status --fix` to repair {total_issues} issue(s)")
+
+        if issues["recoverable"]:
+            print(f"  Run `backfill` to regenerate {len(issues['recoverable'])} missing summary/summaries")
+
     conn.close()
-    print("FTS index rebuilt.")
+
+
+def _fix_issues(conn, issues: dict) -> int:
+    """Apply instant (non-LLM) fixes. Returns count of fixes applied."""
+    fixed = 0
+
+    # Null out dangling transcript paths
+    for sid in issues["dangling_transcript"]:
+        conn.execute(
+            "UPDATE sessions SET transcript_path = NULL WHERE session_id = ?",
+            (sid,),
+        )
+        fixed += 1
+
+    # Remove orphaned transcript files
+    for fpath in issues["orphaned_transcripts"]:
+        try:
+            os.remove(fpath)
+            fixed += 1
+        except OSError:
+            pass
+
+    if fixed:
+        conn.commit()
+
+    # Rebuild FTS as a final step
+    rebuild_fts(conn)
+
+    return fixed
 
 
 def main() -> None:
@@ -196,15 +324,13 @@ def main() -> None:
     # backfill
     sp_backfill = subparsers.add_parser("backfill", help="Process all JSONL files")
     sp_backfill.add_argument("--force", action="store_true", help="Re-process sessions with existing summaries")
+    sp_backfill.add_argument("--prune", action="store_true", help="Delete noise sessions before processing")
     sp_backfill.set_defaults(func=cmd_backfill)
 
-    # stats
-    sp_stats = subparsers.add_parser("stats", help="Show index statistics")
-    sp_stats.set_defaults(func=cmd_stats)
-
-    # rebuild-fts
-    sp_rebuild = subparsers.add_parser("rebuild-fts", help="Rebuild FTS index")
-    sp_rebuild.set_defaults(func=cmd_rebuild_fts)
+    # status
+    sp_status = subparsers.add_parser("status", help="Index statistics and integrity check")
+    sp_status.add_argument("--fix", action="store_true", help="Repair dangling paths and orphaned files")
+    sp_status.set_defaults(func=cmd_status)
 
     args = parser.parse_args()
     args.func(args)

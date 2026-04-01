@@ -25,5 +25,5 @@ HH:MM:SS.mmm [sid_6] hook_name          | message
 ## Testing
 ```bash
 cd /path/to/session-index
-uv run -m pytest tests/
+uv run --with pytest -m pytest tests/
 ```

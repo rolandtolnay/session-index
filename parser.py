@@ -8,6 +8,7 @@ and extracts metadata (session_id, slug, project, branch, model, etc.).
 
 import json
 import os
+import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ class ParsedSession:
     files_touched: list[str] = field(default_factory=list)
     tools_used: str = ""
     user_message_count: int = 0
+    assistant_message_count: int = 0
 
 
 def _git_root(cwd: str) -> str:
@@ -41,7 +43,13 @@ def _git_root(cwd: str) -> str:
             cwd=cwd, capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            root = result.stdout.strip()
+            # Group worktree sessions under the parent project
+            wt = "/.claude-worktrees/"
+            idx = root.find(wt)
+            if idx != -1:
+                root = root[:idx]
+            return root
     except Exception:
         pass
     return cwd
@@ -291,4 +299,41 @@ def parse_jsonl(path: str) -> ParsedSession:
                 session.messages.append({"role": "assistant", "content": combined})
 
     session.user_message_count = len(session.user_messages)
+    session.assistant_message_count = len(session.assistant_messages)
     return session
+
+
+# ── User message cleaning for summarizer ─────────────────────────────────────
+
+# XML tags that wrap system-injected noise in user messages
+_NOISE_TAGS = re.compile(
+    r"<(?:local-command-caveat|local-command-stdout|command-name|command-message|command-args)"
+    r"[^>]*>.*?</(?:local-command-caveat|local-command-stdout|command-name|command-message|command-args)>",
+    re.DOTALL,
+)
+
+# Commands that are pure navigation/lifecycle — never contain useful content
+_NOISE_COMMANDS = {"/clear", "/exit", "/compact", "/resume", "/init", "/login",
+                   "/logout", "/status", "/config", "/help", "/model", "/cost",
+                   "/memory", "/doctor", "/bug", "/terminal-setup", "/listen",
+                   "/mcp", "/permissions", "/approved-tools"}
+
+
+def clean_user_messages(messages: list[str]) -> list[str]:
+    """Strip system-injected noise from user messages for the summarizer.
+
+    Removes XML wrapper tags (command-name, local-command-stdout, etc.)
+    and drops messages that consist entirely of noise commands.
+    Preserves messages that contain real user text alongside commands.
+    """
+    cleaned = []
+    for msg in messages:
+        # Strip all noise XML tags
+        text = _NOISE_TAGS.sub("", msg).strip()
+        if not text:
+            continue
+        # Drop if what remains is just a noise command name
+        if text.strip().rstrip("</> \n\t") in _NOISE_COMMANDS:
+            continue
+        cleaned.append(text)
+    return cleaned

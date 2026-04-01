@@ -46,22 +46,22 @@ def main() -> None:
         log(session_id, "worker", f"jsonl not found: {jsonl_path}")
         return
 
-    from parser import parse_jsonl
+    from parser import parse_jsonl, clean_user_messages
     from db import init_db, get_connection, upsert_session
     from summarizer import summarize
     from transcript import write_transcript
 
     session = parse_jsonl(jsonl_path)
 
-    if session.user_message_count < 3:
-        log(session_id, "worker", f"skipped ({session.user_message_count} user msgs)")
+    if session.user_message_count < 3 or session.assistant_message_count < 1:
+        log(session_id, "worker", f"skipped ({session.user_message_count} user, {session.assistant_message_count} assistant msgs)")
         return
 
     # Generate summary (may return None if Ollama is down)
     summary = summarize(
         project=session.project,
         branch=session.branch,
-        user_messages=session.user_messages,
+        user_messages=clean_user_messages(session.user_messages),
         files_touched=session.files_touched,
     )
 
