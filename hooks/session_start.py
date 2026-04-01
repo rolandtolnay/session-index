@@ -28,8 +28,6 @@ def _format_session(s: dict) -> str:
         parts.append(s["project"])
     if s.get("branch"):
         parts.append(f"({s['branch']})")
-    if s.get("slug"):
-        parts.append(f"[{s['slug']}]")
     if s.get("summary"):
         parts.append(f"— {s['summary']}")
     elif s.get("user_messages"):
@@ -101,7 +99,12 @@ def main() -> None:
     context = "\n".join(lines)
 
     # Output as JSON with additionalContext
-    output = {"additionalContext": context}
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": context,
+        }
+    }
     print(json.dumps(output))
 
     log(session_id, "session_start", f"injected {len(same_project)} same + {len(cross_project)} cross")
