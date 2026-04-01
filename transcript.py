@@ -4,6 +4,7 @@ Writes conversation transcripts to ~/.session-index/transcripts/{session_id}.md
 Uses inline role tags with bracket tool calls.
 """
 
+import logging
 import os
 import re
 
@@ -57,28 +58,19 @@ def write_transcript(
 
 # ── Excerpt extraction ──────────────────────────────────────────────────────
 
-_ROLE_RE = re.compile(r"^\[(user|assistant)\] ─|^(User|Assistant):")
+_ROLE_RE = re.compile(r"^\[(user|assistant)\] ─")
+
+_excerpt_log = logging.getLogger("session-index.excerpt")
+
+# Strategy names
+STRATEGY_FIRST_N = "first_n"
+STRATEGY_DENSITY = "density"
+STRATEGY_RECENCY = "recency"
+STRATEGY_HYBRID = "hybrid"
 
 
-def extract_excerpts(
-    transcript_path: str,
-    keywords: list[str],
-    max_blocks: int = 3,
-    max_lines: int = 60,
-) -> str | None:
-    """Extract message blocks from a transcript that match any keyword.
-
-    Parses the transcript into message blocks (delimited by [user]/[assistant]
-    markers), returns the first max_blocks blocks containing any keyword.
-    Total output is capped at max_lines.
-    """
-    if not os.path.exists(transcript_path):
-        return None
-
-    with open(transcript_path) as f:
-        content = f.read()
-
-    # Split into message blocks at role delimiters
+def _parse_blocks(content: str) -> list[str]:
+    """Split transcript content into message blocks at role delimiters."""
     blocks: list[str] = []
     current: list[str] = []
     for line in content.splitlines():
@@ -95,28 +87,186 @@ def extract_excerpts(
     if blocks and not _ROLE_RE.match(blocks[0]):
         blocks = blocks[1:]
 
-    # Find blocks matching any keyword (case-insensitive)
+    return blocks
+
+
+def _keyword_density(block: str, keywords: list[str]) -> float:
+    """Count keyword occurrences per line in block."""
+    block_lower = block.lower()
+    count = sum(block_lower.count(kw) for kw in keywords)
+    lines = block.count("\n") + 1
+    return count / max(lines, 1)
+
+
+def _block_role(block: str) -> str | None:
+    """Extract role from block's first line."""
+    first_line = block.split("\n", 1)[0]
+    if "[user]" in first_line:
+        return "user"
+    if "[assistant]" in first_line:
+        return "assistant"
+    return None
+
+
+def _score_blocks(
+    blocks: list[str],
+    keywords: list[str],
+    strategy: str,
+) -> list[tuple[int, float]]:
+    """Score matching blocks. Returns [(block_index, score)] sorted by score desc."""
+    total = len(blocks)
+    scored: list[tuple[int, float]] = []
+
+    for i, block in enumerate(blocks):
+        block_lower = block.lower()
+        if not any(kw in block_lower for kw in keywords):
+            continue
+
+        if strategy == STRATEGY_FIRST_N:
+            # Score by position: earlier = higher score (preserves original behavior)
+            score = total - i
+        elif strategy == STRATEGY_DENSITY:
+            score = _keyword_density(block, keywords)
+        elif strategy == STRATEGY_RECENCY:
+            # Position weight: 0.0 (start) to 1.0 (end)
+            score = i / max(total - 1, 1)
+        elif strategy == STRATEGY_HYBRID:
+            density = _keyword_density(block, keywords)
+            position_weight = i / max(total - 1, 1)
+            # Density matters most, recency provides a tiebreaker boost
+            score = density * (0.5 + 0.5 * position_weight)
+        else:
+            score = total - i  # fallback to first_n
+
+        scored.append((i, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
+
+
+def _apply_qa_pairing(
+    selected_indices: set[int],
+    blocks: list[str],
+    keywords: list[str],
+) -> set[int]:
+    """For each selected block, pull in its Q/A partner if adjacent."""
+    paired = set(selected_indices)
+    for idx in selected_indices:
+        role = _block_role(blocks[idx])
+        if role == "assistant" and idx > 0:
+            partner = idx - 1
+            if _block_role(blocks[partner]) == "user" and partner not in paired:
+                paired.add(partner)
+        elif role == "user" and idx + 1 < len(blocks):
+            partner = idx + 1
+            if _block_role(blocks[partner]) == "assistant" and partner not in paired:
+                paired.add(partner)
+    return paired
+
+
+def extract_excerpts(
+    transcript_path: str,
+    keywords: list[str],
+    max_blocks: int = 5,
+    max_lines: int = 200,
+    strategy: str = STRATEGY_HYBRID,
+    qa_pair: bool = True,
+) -> str | None:
+    """Extract the most relevant message blocks from a transcript.
+
+    Strategies:
+      - first_n: first matching blocks chronologically (original behavior)
+      - density: rank by keyword frequency per line
+      - recency: prefer later blocks (where decisions/outcomes live)
+      - hybrid: density × recency weight (default)
+
+    When qa_pair=True, selected blocks pull in their adjacent Q/A partner.
+    Oversized blocks are skipped with a note for the caller.
+    """
+    if not os.path.exists(transcript_path):
+        return None
+
+    with open(transcript_path) as f:
+        content = f.read()
+
+    blocks = _parse_blocks(content)
+
     kw_lower = [k.lower() for k in keywords if len(k) > 2]
     if not kw_lower:
         return None
 
-    matching: list[str] = []
+    sid = os.path.basename(transcript_path).replace(".md", "")[:12]
+
+    # Score and rank all matching blocks
+    scored = _score_blocks(blocks, kw_lower, strategy)
+    total_matching = len(scored)
+
+    if total_matching == 0:
+        return None
+
+    # Select top blocks within budget
+    selected_indices: set[int] = set()
     total_lines = 0
-    for block in blocks:
-        block_lower = block.lower()
-        if any(kw in block_lower for kw in kw_lower):
-            block_lines = block.count("\n") + 1
+    skipped_large = 0
+    skipped_budget = 0
+
+    for idx, _score in scored:
+        block_lines = blocks[idx].count("\n") + 1
+
+        if block_lines > max_lines:
+            skipped_large += 1
+            _excerpt_log.debug(
+                "%s: skipped block #%d (%d lines > %d max_lines), strategy=%s",
+                sid, idx, block_lines, max_lines, strategy,
+            )
+            continue
+        if total_lines + block_lines > max_lines:
+            skipped_budget += 1
+            continue
+        if len(selected_indices) >= max_blocks:
+            skipped_budget += 1
+            continue
+
+        selected_indices.add(idx)
+        total_lines += block_lines
+
+    # Q/A pairing: pull in adjacent partners (within remaining budget)
+    if qa_pair and selected_indices:
+        candidates = _apply_qa_pairing(selected_indices, blocks, kw_lower)
+        for idx in sorted(candidates - selected_indices):
+            block_lines = blocks[idx].count("\n") + 1
             if block_lines > max_lines:
-                # Block too large — skip it rather than stopping
                 continue
             if total_lines + block_lines > max_lines:
                 break
-            matching.append(block)
+            selected_indices.add(idx)
             total_lines += block_lines
-            if len(matching) >= max_blocks:
-                break
 
-    if not matching:
+    skipped_total = skipped_large + skipped_budget
+    if skipped_total > 0:
+        _excerpt_log.info(
+            "%s: %d/%d matching blocks selected, %d skipped "
+            "(%d oversized, %d budget), strategy=%s, keywords=%s",
+            sid, len(selected_indices), total_matching, skipped_total,
+            skipped_large, skipped_budget, strategy, keywords,
+        )
+
+    if not selected_indices:
+        if total_matching > 0:
+            return (
+                f"[{total_matching} matching block(s) too large for excerpts "
+                f"— grep transcript for detail]"
+            )
         return None
 
-    return "\n\n".join(matching)
+    # Output blocks in chronological order regardless of selection order
+    result_blocks = [blocks[i] for i in sorted(selected_indices)]
+    result = "\n\n".join(result_blocks)
+
+    if skipped_total > 0:
+        result += (
+            f"\n\n[{skipped_total} more matching block(s) not shown "
+            f"— grep transcript for detail]"
+        )
+
+    return result

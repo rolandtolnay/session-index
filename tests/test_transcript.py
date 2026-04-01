@@ -109,9 +109,62 @@ def test_excerpt_caps_at_max_blocks(tmp_path):
     path = _write_test_transcript(tmp_path, messages)
     result = extract_excerpts(path, ["auth"], max_blocks=3)
     assert result is not None
-    # Should only have 3 blocks, not all 20
-    blocks = [b for b in result.split("\n\n") if b.strip()]
-    assert len(blocks) <= 3
+    # Hybrid strategy prefers later blocks; Q/A pairing pulls in partners
+    # Should have later content (not all 20 blocks) + truncation note
+    assert "auth question 9" in result or "auth answer 9" in result
+    assert "not shown" in result
+
+
+def test_excerpt_first_n_strategy(tmp_path):
+    """First-N strategy returns earliest matching blocks."""
+    from transcript import STRATEGY_FIRST_N
+    messages = [
+        {"role": "user", "content": "auth setup early"},
+        {"role": "assistant", "content": "auth early answer"},
+        {"role": "user", "content": "unrelated middle topic"},
+        {"role": "assistant", "content": "middle answer"},
+        {"role": "user", "content": "auth decision final"},
+        {"role": "assistant", "content": "auth final implementation"},
+    ]
+    path = _write_test_transcript(tmp_path, messages)
+    result = extract_excerpts(path, ["auth"], max_blocks=2, strategy=STRATEGY_FIRST_N, qa_pair=False)
+    assert "auth setup early" in result
+    assert "auth decision final" not in result
+
+
+def test_excerpt_hybrid_prefers_later(tmp_path):
+    """Hybrid strategy prefers later blocks with same keyword density."""
+    from transcript import STRATEGY_HYBRID
+    messages = [
+        {"role": "user", "content": "auth setup early"},
+        {"role": "assistant", "content": "exploring auth options"},
+        {"role": "user", "content": "auth decision final"},
+        {"role": "assistant", "content": "auth final implementation done"},
+    ]
+    path = _write_test_transcript(tmp_path, messages)
+    result = extract_excerpts(path, ["auth"], max_blocks=2, strategy=STRATEGY_HYBRID, qa_pair=False)
+    # Hybrid should pick the later blocks (higher recency weight)
+    assert "auth decision final" in result or "auth final implementation" in result
+
+
+def test_excerpt_qa_pairing(tmp_path):
+    """Q/A pairing pulls in adjacent partner blocks."""
+    messages = [
+        {"role": "user", "content": "unrelated question"},
+        {"role": "assistant", "content": "unrelated answer"},
+        {"role": "user", "content": "what about the auth flow?"},
+        {"role": "assistant", "content": "the auth flow uses JWT tokens with refresh"},
+    ]
+    path = _write_test_transcript(tmp_path, messages)
+    # Without pairing: only the assistant block (higher density) matches
+    from transcript import STRATEGY_DENSITY
+    result_no_qa = extract_excerpts(path, ["auth"], max_blocks=1, strategy=STRATEGY_DENSITY, qa_pair=False)
+    assert "JWT tokens" in result_no_qa
+    assert "what about" not in result_no_qa
+    # With pairing: user question gets pulled in
+    result_qa = extract_excerpts(path, ["auth"], max_blocks=1, strategy=STRATEGY_DENSITY, qa_pair=True)
+    assert "JWT tokens" in result_qa
+    assert "what about the auth flow" in result_qa
 
 
 def test_excerpt_no_match_returns_none(tmp_path):
