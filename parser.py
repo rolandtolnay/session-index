@@ -253,25 +253,25 @@ def parse_jsonl(path: str) -> ParsedSession:
         if entry_type == "user":
             # Skip entries that are only tool results
             if _is_only_tool_results(content):
-                # But resolve any pending Bash results
+                # Append error bash results to last assistant message
                 for tu in pending_tool_uses:
                     if tu.get("name") == "Bash":
                         tuid = tu.get("id", "")
                         tr = tool_results.get(tuid, {})
-                        result_text = _format_bash_result(
-                            tr.get("content", ""), tr.get("is_error", False)
-                        )
-                        if result_text:
-                            # Append result to last assistant message
-                            if session.messages and session.messages[-1]["role"] == "assistant":
+                        if tr.get("is_error", False):
+                            result_text = _format_bash_result(
+                                tr.get("content", ""), is_error=True
+                            )
+                            if result_text and session.messages and session.messages[-1]["role"] == "assistant":
                                 session.messages[-1]["content"] += f"\n{result_text}"
                 pending_tool_uses = []
                 continue
 
-            text = _extract_user_text(content)
-            if text.strip():
-                session.user_messages.append(text.strip())
-                session.messages.append({"role": "user", "content": text.strip()})
+            raw_text = _extract_user_text(content)
+            cleaned = _clean_text(raw_text)
+            if cleaned:
+                session.user_messages.append(cleaned)
+                session.messages.append({"role": "user", "content": cleaned})
 
         elif entry_type == "assistant":
             parts = []
@@ -283,20 +283,29 @@ def parse_jsonl(path: str) -> ParsedSession:
                         continue
                     item_type = item.get("type", "")
                     if item_type == "text":
-                        text = item.get("text", "").strip()
+                        text = _clean_text(item.get("text", ""))
+                        text = _strip_narration(text)
                         if text:
                             parts.append(text)
                     elif item_type == "tool_use":
-                        parts.append(_format_tool_use(item))
                         pending_tool_uses.append(item)
                     # Skip thinking blocks
             elif isinstance(content, str) and content.strip():
-                parts.append(content.strip())
+                text = _clean_text(content)
+                text = _strip_narration(text)
+                if text:
+                    parts.append(text)
 
             if parts:
-                combined = "\n".join(parts)
+                combined = "\n\n".join(parts)
+                if not combined.strip():
+                    continue
                 session.assistant_messages.append(combined)
-                session.messages.append({"role": "assistant", "content": combined})
+                # Merge with previous assistant message if consecutive
+                if session.messages and session.messages[-1]["role"] == "assistant":
+                    session.messages[-1]["content"] += "\n\n" + combined
+                else:
+                    session.messages.append({"role": "assistant", "content": combined})
 
     session.user_message_count = len(session.user_messages)
     session.assistant_message_count = len(session.assistant_messages)
@@ -306,11 +315,44 @@ def parse_jsonl(path: str) -> ParsedSession:
 # ── User message cleaning for summarizer ─────────────────────────────────────
 
 # XML tags that wrap system-injected noise in user messages
+_NOISE_TAG_NAMES = (
+    "local-command-caveat|local-command-stdout|"
+    "command-name|command-message|command-args|"
+    "objective|process|output_format|success_criteria|"
+    "task-notification|system-reminder"
+)
 _NOISE_TAGS = re.compile(
-    r"<(?:local-command-caveat|local-command-stdout|command-name|command-message|command-args)"
-    r"[^>]*>.*?</(?:local-command-caveat|local-command-stdout|command-name|command-message|command-args)>",
+    rf"<(?:{_NOISE_TAG_NAMES})[^>]*>.*?</(?:{_NOISE_TAG_NAMES})>",
     re.DOTALL,
 )
+
+# ANSI terminal escape codes
+_ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*m')
+
+
+def _clean_text(text: str) -> str:
+    """Strip system-injected XML noise and ANSI codes from text."""
+    text = _NOISE_TAGS.sub("", text)
+    text = _ANSI_ESCAPE.sub("", text)
+    return text.strip()
+
+
+# Narration-only assistant messages (short single-sentence preambles before tool calls)
+_NARRATION_RE = re.compile(
+    r"^(?:Let me |Let's |Now I'll |Now let me |Now I need to |I need to |I'll |I will )",
+    re.IGNORECASE,
+)
+
+
+def _strip_narration(text: str) -> str:
+    """Drop short single-sentence narration-only messages. Return text unchanged otherwise."""
+    if len(text) > 150:
+        return text
+    if re.search(r'\.\s+\S', text):
+        return text  # multi-sentence — likely has substance after the narration
+    if _NARRATION_RE.match(text):
+        return ""
+    return text
 
 # Commands that are pure navigation/lifecycle — never contain useful content
 _NOISE_COMMANDS = {"/clear", "/exit", "/compact", "/resume", "/init", "/login",

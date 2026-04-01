@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import patch, MagicMock
-from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _git_root
+from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _git_root, _clean_text, _strip_narration
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
 
@@ -169,3 +169,93 @@ def test_git_root_worktree_resolves_to_parent():
 def test_git_root_regular_project_unchanged():
     root = _mock_git_root("/Users/dev/dashboard-web")
     assert root == "/Users/dev/dashboard-web"
+
+
+# ── Transcript cleaning tests ──────────────────────────────────────────────────
+
+def test_tool_use_stripped_from_transcript():
+    """Tool call brackets should not appear in transcript messages."""
+    session = parse_jsonl(FIXTURE)
+    for msg in session.messages:
+        if msg["role"] == "assistant":
+            assert "[Read " not in msg["content"]
+            assert "[Edit " not in msg["content"]
+            assert "[Bash:" not in msg["content"]
+
+
+def test_consecutive_assistant_merged():
+    """Consecutive assistant entries should be merged in session.messages."""
+    session = parse_jsonl(FIXTURE)
+    for i in range(1, len(session.messages)):
+        assert not (
+            session.messages[i - 1]["role"] == "assistant"
+            and session.messages[i]["role"] == "assistant"
+        ), f"Consecutive assistant messages at index {i-1} and {i}"
+
+
+def test_narration_stripped():
+    """Pure narration assistant messages should not appear in transcript."""
+    session = parse_jsonl(FIXTURE)
+    all_content = " ".join(m["content"] for m in session.messages)
+    assert "I'll look at the auth.py file" not in all_content
+
+
+def test_substantive_text_preserved():
+    """Assistant messages with real insights should be kept."""
+    session = parse_jsonl(FIXTURE)
+    all_assistant = " ".join(
+        m["content"] for m in session.messages if m["role"] == "assistant"
+    )
+    assert "doesn't handle None passwords" in all_assistant
+    assert "all tests pass" in all_assistant
+
+
+def test_successful_bash_not_in_transcript():
+    """Successful bash output should not appear in transcript."""
+    session = parse_jsonl(FIXTURE)
+    all_content = " ".join(m["content"] for m in session.messages)
+    assert "PASSED test_login" not in all_content
+
+
+# ── _clean_text tests ──────────────────────────────────────────────────────────
+
+def test_clean_text_strips_system_reminder():
+    result = _clean_text("<system-reminder>You have access to tools</system-reminder>Fix the bug")
+    assert result == "Fix the bug"
+
+
+def test_clean_text_strips_objective_tags():
+    result = _clean_text("<objective>Build a feature</objective>\n<process>Step 1</process>\nPlease do X")
+    assert "Please do X" in result
+    assert "objective" not in result.lower()
+    assert "process" not in result.lower()
+
+
+def test_clean_text_strips_ansi_codes():
+    result = _clean_text("\x1b[32m✓\x1b[0m Done")
+    assert result == "✓ Done"
+    assert "\x1b" not in result
+
+
+# ── _strip_narration tests ────────────────────────────────────────────────────
+
+def test_strip_narration_removes_simple():
+    assert _strip_narration("Let me read the file.") == ""
+    assert _strip_narration("I'll check the tests.") == ""
+    assert _strip_narration("Now I'll update the callers.") == ""
+    assert _strip_narration("I need to verify this works.") == ""
+
+
+def test_strip_narration_keeps_substance():
+    text = "The form doesn't handle CoP results at all."
+    assert _strip_narration(text) == text
+
+
+def test_strip_narration_keeps_multi_sentence():
+    text = "Let me explain. The issue is in auth.py and affects login."
+    assert _strip_narration(text) == text
+
+
+def test_strip_narration_keeps_long_messages():
+    text = "Let me " + "x" * 200
+    assert _strip_narration(text) == text

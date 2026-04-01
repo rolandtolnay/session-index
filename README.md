@@ -60,7 +60,7 @@ Claude Code deletes JSONL logs after `cleanupPeriodDays` (default: 30 days). The
 | Command | Description |
 |---------|-------------|
 | `search "query"` | Full-text search across messages, summaries, files, projects |
-| `backfill [--force] [--prune]` | Process all JSONL files; `--prune` removes noise sessions first |
+| `backfill [--force] [--prune] [--project NAME] [--session ID] [--transcripts-only]` | Process JSONL files; `--project` / `--session` to scope, `--transcripts-only` skips LLM summaries |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
 ## Reset data

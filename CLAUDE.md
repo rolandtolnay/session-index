@@ -9,7 +9,7 @@
 - **Hooks never block:** All hooks exit 0, wrap everything in try/except, self-imposed timeouts
 - **3-message threshold:** Sessions with < 3 user messages are skipped (too short to index)
 - **WAL mode:** SQLite uses WAL journal mode for concurrent read/write safety from hooks
-- **Detached worker:** SessionEnd forks a detached subprocess because its timeout is ~1.5s but LLM summary takes ~2.4s
+- **Detached worker:** SessionEnd forks a detached subprocess so the LLM summary can complete after the hook's ~1.5s timeout. Response time is implicitly bounded by the 8192-token context window in `client.py`
 
 ## Data locations
 - **Database:** `~/.session-index/sessions.db`

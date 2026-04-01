@@ -14,7 +14,7 @@ def test_write_transcript(tmp_path, monkeypatch):
 
     messages = [
         {"role": "user", "content": "Fix the bug"},
-        {"role": "assistant", "content": "I'll look at the code.\n[Read /foo/bar.py]"},
+        {"role": "assistant", "content": "I found the issue in the login handler."},
         {"role": "user", "content": "Looks good"},
         {"role": "assistant", "content": "Done!"},
     ]
@@ -38,8 +38,7 @@ def test_write_transcript(tmp_path, monkeypatch):
     assert "---" in content
     # Messages
     assert "User: Fix the bug" in content
-    assert "Assistant: I'll look at the code." in content
-    assert "[Read /foo/bar.py]" in content
+    assert "Assistant: I found the issue" in content
     assert "User: Looks good" in content
     assert "Assistant: Done!" in content
 

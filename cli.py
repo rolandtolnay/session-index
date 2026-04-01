@@ -81,18 +81,26 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             conn.commit()
             print(f"Pruned {pruned} noise session(s)")
 
-    # Find all JSONL files
-    pattern = os.path.join(projects_dir, "*", "*.jsonl")
-    jsonl_files = sorted(glob.glob(pattern))
+    # Find JSONL files (optionally filtered)
+    if args.session:
+        # Single session: search all project dirs for this session ID
+        pattern = os.path.join(projects_dir, "*", f"{args.session}.jsonl")
+        jsonl_files = sorted(glob.glob(pattern))
+    else:
+        pattern = os.path.join(projects_dir, "*", "*.jsonl")
+        jsonl_files = sorted(glob.glob(pattern))
 
     if not jsonl_files:
         print("No JSONL files found.")
         conn.close()
         return
 
+    # Filter by project if requested (requires parsing to check project name)
+    # We do this lazily during iteration to avoid parsing everything upfront
+
     # Check which sessions already have summaries (skip unless --force)
     existing = set()
-    if not args.force:
+    if not args.force and not args.transcripts_only:
         cursor = conn.execute(
             "SELECT session_id FROM sessions WHERE summary IS NOT NULL"
         )
@@ -114,54 +122,83 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             start = time.monotonic()
             session = parse_jsonl(path)
 
-            if session.user_message_count < 3 or session.assistant_message_count < 1:
+            # Filter by project name if --project given
+            if args.project and session.project.lower() != args.project.lower():
                 skipped += 1
                 continue
 
-            # Generate summary
-            summary = summarize(
-                project=session.project,
-                branch=session.branch,
-                user_messages=clean_user_messages(session.user_messages),
-                files_touched=session.files_touched,
-            )
-
-            # Write transcript
-            transcript_path = None
-            if session.messages:
+            if args.transcripts_only:
+                # Transcript-only: regenerate for any session that has messages,
+                # regardless of threshold (every DB entry deserves a transcript)
+                if not session.messages:
+                    skipped += 1
+                    continue
+                # Only regenerate transcript, skip summary
                 transcript_path = write_transcript(
-                    session.session_id,
-                    session.messages,
-                    slug=session.slug,
+                        session.session_id,
+                        session.messages,
+                        slug=session.slug,
+                        project=session.project,
+                        branch=session.branch,
+                        timestamp=session.started_at,
+                    )
+                if transcript_path:
+                    conn.execute(
+                        "UPDATE sessions SET transcript_path = ? WHERE session_id = ?",
+                        (transcript_path, session.session_id),
+                    )
+                    conn.commit()
+
+                elapsed = time.monotonic() - start
+                print(f"[{i}/{total}] {session_id[:12]}... transcript ({elapsed:.1f}s)")
+                processed += 1
+            else:
+                # Full processing: apply message threshold for new entries
+                if session.user_message_count < 3 or session.assistant_message_count < 1:
+                    skipped += 1
+                    continue
+                # Generate summary + transcript
+                summary = summarize(
                     project=session.project,
                     branch=session.branch,
-                    timestamp=session.started_at,
+                    user_messages=clean_user_messages(session.user_messages),
+                    files_touched=session.files_touched,
                 )
 
-            # Upsert
-            upsert_session(
-                conn,
-                session_id=session.session_id,
-                slug=session.slug or None,
-                project_path=session.project_path or None,
-                project=session.project or None,
-                branch=session.branch or None,
-                model=session.model or None,
-                started_at=session.started_at or None,
-                ended_at=session.ended_at or None,
-                duration_seconds=session.duration_seconds or None,
-                user_message_count=session.user_message_count,
-                user_messages="\n---\n".join(session.user_messages) if session.user_messages else None,
-                files_touched=", ".join(session.files_touched) if session.files_touched else None,
-                tools_used=session.tools_used or None,
-                summary=summary,
-                transcript_path=transcript_path,
-            )
+                transcript_path = None
+                if session.messages:
+                    transcript_path = write_transcript(
+                        session.session_id,
+                        session.messages,
+                        slug=session.slug,
+                        project=session.project,
+                        branch=session.branch,
+                        timestamp=session.started_at,
+                    )
 
-            elapsed = time.monotonic() - start
-            summary_status = f"summary ({elapsed:.1f}s)" if summary else "no summary"
-            print(f"[{i}/{total}] {session_id[:12]}... {summary_status}")
-            processed += 1
+                upsert_session(
+                    conn,
+                    session_id=session.session_id,
+                    slug=session.slug or None,
+                    project_path=session.project_path or None,
+                    project=session.project or None,
+                    branch=session.branch or None,
+                    model=session.model or None,
+                    started_at=session.started_at or None,
+                    ended_at=session.ended_at or None,
+                    duration_seconds=session.duration_seconds or None,
+                    user_message_count=session.user_message_count,
+                    user_messages="\n---\n".join(session.user_messages) if session.user_messages else None,
+                    files_touched=", ".join(session.files_touched) if session.files_touched else None,
+                    tools_used=session.tools_used or None,
+                    summary=summary,
+                    transcript_path=transcript_path,
+                )
+
+                elapsed = time.monotonic() - start
+                summary_status = f"summary ({elapsed:.1f}s)" if summary else "no summary"
+                print(f"[{i}/{total}] {session_id[:12]}... {summary_status}")
+                processed += 1
 
         except Exception as e:
             print(f"[{i}/{total}] {session_id[:12]}... ERROR: {e}")
@@ -178,6 +215,8 @@ def _check_integrity(conn) -> dict:
     issues = {
         "missing_summary": [],       # session_ids with NULL summary
         "recoverable": [],           # subset of missing_summary where JSONL still exists
+        "missing_transcript": [],    # session_ids with NULL transcript_path
+        "transcript_recoverable": [],  # subset where JSONL still exists
         "dangling_transcript": [],   # session_ids where transcript_path points to missing file
         "orphaned_transcripts": [],  # transcript files on disk with no DB row
     }
@@ -195,6 +234,17 @@ def _check_integrity(conn) -> dict:
         pattern = os.path.join(projects_dir, "*", f"{sid}.jsonl")
         if glob.glob(pattern):
             issues["recoverable"].append(sid)
+
+    # Missing transcripts
+    cursor = conn.execute(
+        "SELECT session_id FROM sessions WHERE transcript_path IS NULL"
+    )
+    for row in cursor:
+        sid = row[0]
+        issues["missing_transcript"].append(sid)
+        pattern = os.path.join(projects_dir, "*", f"{sid}.jsonl")
+        if glob.glob(pattern):
+            issues["transcript_recoverable"].append(sid)
 
     # Dangling transcript paths
     cursor = conn.execute(
@@ -247,7 +297,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     # Integrity checks
     issues = _check_integrity(conn)
     total_issues = (
-        len(issues["dangling_transcript"])
+        len(issues["missing_transcript"])
+        + len(issues["dangling_transcript"])
         + len(issues["orphaned_transcripts"])
     )
 
@@ -264,6 +315,15 @@ def cmd_status(args: argparse.Namespace) -> None:
             if unrecoverable:
                 parts.append(f"{unrecoverable} unrecoverable (JSONL deleted)")
             print(f"  Missing summary: {len(issues['missing_summary'])} ({', '.join(parts)})")
+        if issues["missing_transcript"]:
+            recoverable = len(issues["transcript_recoverable"])
+            unrecoverable = len(issues["missing_transcript"]) - recoverable
+            parts = []
+            if recoverable:
+                parts.append(f"{recoverable} recoverable via `backfill --transcripts-only --force`")
+            if unrecoverable:
+                parts.append(f"{unrecoverable} unrecoverable (JSONL deleted)")
+            print(f"  Missing transcript: {len(issues['missing_transcript'])} ({', '.join(parts)})")
         if issues["dangling_transcript"]:
             print(f"  Dangling transcript paths: {len(issues['dangling_transcript'])}")
         if issues["orphaned_transcripts"]:
@@ -325,6 +385,10 @@ def main() -> None:
     sp_backfill = subparsers.add_parser("backfill", help="Process all JSONL files")
     sp_backfill.add_argument("--force", action="store_true", help="Re-process sessions with existing summaries")
     sp_backfill.add_argument("--prune", action="store_true", help="Delete noise sessions before processing")
+    sp_backfill.add_argument("--project", help="Only process sessions for this project name")
+    sp_backfill.add_argument("--session", help="Only process this specific session ID")
+    sp_backfill.add_argument("--transcripts-only", action="store_true",
+                             help="Only regenerate transcripts (skip summary generation)")
     sp_backfill.set_defaults(func=cmd_backfill)
 
     # status
