@@ -53,7 +53,7 @@ uv run cli.py stats
 
 ## Important: cleanupPeriodDays
 
-Claude Code deletes JSONL logs after `cleanupPeriodDays` (default: 90 days). The session-index DB and transcripts persist independently, so data survives cleanup. But new backfills can only process what's still on disk.
+Claude Code deletes JSONL logs after `cleanupPeriodDays` (default: 30 days). The session-index DB and transcripts persist independently, so data survives cleanup. But new backfills can only process what's still on disk.
 
 ## CLI Commands
 
