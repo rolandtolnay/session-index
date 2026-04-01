@@ -5,6 +5,7 @@ __pycache__/
 
 # Testing
 .pytest_cache/
+tests/eval_results/
 
 # IDE
 .vscode/
