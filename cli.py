@@ -16,7 +16,7 @@ import time
 from db import get_connection, init_db, upsert_session, search_flexible, get_stats, rebuild_fts, DB_PATH
 from parser import parse_jsonl, clean_user_messages
 from summarizer import summarize
-from transcript import write_transcript, TRANSCRIPT_DIR
+from transcript import write_transcript, extract_excerpts, TRANSCRIPT_DIR
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -38,6 +38,7 @@ def cmd_search(args: argparse.Namespace) -> None:
         return
 
     is_browse = not args.query
+    show_excerpts = getattr(args, "excerpt", False) and args.query
 
     for r in results:
         print(f"\n{'─' * 60}")
@@ -61,6 +62,14 @@ def cmd_search(args: argparse.Namespace) -> None:
         if r.get("files_touched"):
             files = r["files_touched"][:200]
             print(f"  files: {files}")
+
+        if show_excerpts and r.get("transcript_path"):
+            keywords = args.query.split()
+            excerpt = extract_excerpts(r["transcript_path"], keywords)
+            if excerpt:
+                print(f"\n  ┄┄┄ excerpts ┄┄┄")
+                for line in excerpt.splitlines():
+                    print(f"  {line}")
 
     print(f"\n{'─' * 60}")
     print(f"  {len(results)} result(s)")
@@ -392,6 +401,7 @@ def main() -> None:
     sp_search.add_argument("--project", "-p", help="Filter by project name (prefix match)")
     sp_search.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
     sp_search.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
+    sp_search.add_argument("--excerpt", "-e", action="store_true", help="Include transcript excerpts matching the query")
     sp_search.add_argument("--limit", type=int, default=20)
     sp_search.set_defaults(func=cmd_search)
 

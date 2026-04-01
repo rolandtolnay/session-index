@@ -16,6 +16,7 @@ parser.add_argument("query", nargs="*", help="Search terms")
 parser.add_argument("--project", "-p", help="Filter by project name (prefix match)")
 parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
 parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
+parser.add_argument("--excerpt", "-e", action="store_true", help="Include transcript excerpts")
 parser.add_argument("--limit", type=int, default=20)
 args = parser.parse_args()
 
