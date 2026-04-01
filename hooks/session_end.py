@@ -21,11 +21,11 @@ def main() -> None:
     if os.environ.get("_CLAUDE_HOOK_NESTED"):
         return
 
-    hook_input = json.loads(sys.stdin.read())
+    hook_input = json.load(sys.stdin)
     session_id = hook_input.get("session_id", "")
-    cwd = hook_input.get("cwd", "")
+    transcript_path = hook_input.get("transcript_path", "")
 
-    if not session_id or not cwd:
+    if not session_id or not transcript_path:
         return
 
     log(session_id, "session_end", "launching worker")
@@ -34,7 +34,7 @@ def main() -> None:
 
     # Fork detached subprocess — parent exits immediately
     subprocess.Popen(
-        [sys.executable, worker, session_id, cwd],
+        [sys.executable, worker, session_id, transcript_path],
         start_new_session=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

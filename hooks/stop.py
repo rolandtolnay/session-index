@@ -3,7 +3,7 @@
 
 Parses the JSONL, checks >= 3 user messages, upserts deterministic
 fields only (no summary, no transcript). Loop-prevention via
-stop_hook_active env var.
+stop_hook_active field from stdin.
 """
 
 import json
@@ -21,34 +21,19 @@ def main() -> None:
     if os.environ.get("_CLAUDE_HOOK_NESTED"):
         return
 
-    # Loop prevention
-    if os.environ.get("stop_hook_active"):
+    hook_input = json.load(sys.stdin)
+
+    # Loop prevention: Claude Code sets this when a prior Stop hook triggered a continuation
+    if hook_input.get("stop_hook_active"):
         return
 
-    hook_input = json.loads(sys.stdin.read())
     session_id = hook_input.get("session_id", "")
-    cwd = hook_input.get("cwd", "")
+    jsonl_path = hook_input.get("transcript_path", "")
 
-    if not session_id or not cwd:
+    if not session_id or not jsonl_path:
         return
 
     log(session_id, "stop", "started")
-
-    # Derive JSONL path
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        )
-        project_root = result.stdout.strip() if result.returncode == 0 else cwd
-    except Exception:
-        project_root = cwd
-
-    # Encode path: full path with / → -,  prefixed with -
-    encoded = "-" + project_root.replace("/", "-")
-    projects_dir = os.path.expanduser("~/.claude/projects")
-    jsonl_path = os.path.join(projects_dir, encoded, f"{session_id}.jsonl")
 
     if not os.path.exists(jsonl_path):
         log(session_id, "stop", f"jsonl not found: {jsonl_path}")
@@ -90,7 +75,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        os.environ["stop_hook_active"] = "1"
         main()
     except Exception as e:
         try:

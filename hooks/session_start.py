@@ -44,7 +44,7 @@ def main() -> None:
     if os.environ.get("_CLAUDE_HOOK_NESTED"):
         return
 
-    hook_input = json.loads(sys.stdin.read())
+    hook_input = json.load(sys.stdin)
     session_id = hook_input.get("session_id", "")
     cwd = hook_input.get("cwd", "")
 

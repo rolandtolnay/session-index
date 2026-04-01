@@ -4,11 +4,10 @@
 Launched by session_end.py as a detached subprocess.
 If LLM fails: row keeps NULL summary, backfill can repair later.
 
-Usage: python3 _session_end_worker.py <session_id> <cwd>
+Usage: python3 _session_end_worker.py <session_id> <jsonl_path>
 """
 
 import os
-import subprocess
 import sys
 import time
 
@@ -23,24 +22,10 @@ def main() -> None:
         return
 
     session_id = sys.argv[1]
-    cwd = sys.argv[2]
+    jsonl_path = sys.argv[2]
     start = time.monotonic()
 
     log(session_id, "worker", "started")
-
-    # Derive JSONL path
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        )
-        project_root = result.stdout.strip() if result.returncode == 0 else cwd
-    except Exception:
-        project_root = cwd
-
-    encoded = "-" + project_root.replace("/", "-")
-    projects_dir = os.path.expanduser("~/.claude/projects")
-    jsonl_path = os.path.join(projects_dir, encoded, f"{session_id}.jsonl")
 
     if not os.path.exists(jsonl_path):
         log(session_id, "worker", f"jsonl not found: {jsonl_path}")
