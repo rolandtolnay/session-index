@@ -18,6 +18,18 @@ Example output: Implemented dark mode with a ThemeProvider context, CSS variable
 """
 
 
+def _select_messages(msgs: list[str], budget: int = 30) -> list[str]:
+    """Select representative messages: first 5 + last 5 + evenly sampled middle."""
+    if len(msgs) <= budget:
+        return msgs
+    first = msgs[:5]
+    last = msgs[-5:]
+    middle = msgs[5:-5]
+    step = max(1, len(middle) // (budget - 10))
+    sampled = [middle[i] for i in range(0, len(middle), step)][:budget - 10]
+    return first + sampled + last
+
+
 def summarize(
     *,
     project: str,
@@ -34,7 +46,7 @@ def summarize(
             parts.append(f"Files: {', '.join(files_touched[:20])}")
         parts.append("")
         parts.append("User messages:")
-        for msg in user_messages[:30]:
+        for msg in _select_messages(user_messages):
             # Truncate very long messages
             if len(msg) > 500:
                 msg = msg[:500] + "..."
