@@ -315,7 +315,7 @@ def test_extract_command_not_a_command():
 
 
 def test_agent_tool_use_creates_inline_marker(tmp_path):
-    """Agent tool_use should inject an inline '── subagent: type ── desc' marker."""
+    """Agent tool_use should inject a __SUBAGENT:type:desc__ marker."""
     import json
     jsonl = tmp_path / "agent-marker.jsonl"
     entries = [
@@ -338,7 +338,7 @@ def test_agent_tool_use_creates_inline_marker(tmp_path):
 
     session = parse_jsonl(str(jsonl))
     all_assistant = " ".join(m["content"] for m in session.messages if m["role"] == "assistant")
-    assert "── subagent: Explore ── find config files" in all_assistant
+    assert "__SUBAGENT:Explore:find config files__" in all_assistant
 
 
 def test_agent_tool_use_default_type(tmp_path):
@@ -361,4 +361,4 @@ def test_agent_tool_use_default_type(tmp_path):
 
     session = parse_jsonl(str(jsonl))
     all_assistant = " ".join(m["content"] for m in session.messages if m["role"] == "assistant")
-    assert "── subagent: agent ── general task" in all_assistant
+    assert "__SUBAGENT:agent:general task__" in all_assistant

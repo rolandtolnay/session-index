@@ -19,7 +19,7 @@ from logger import log
 from parser import parse_jsonl, clean_user_messages
 from subagent_parser import discover_subagents, parse_subagent_jsonl
 from summarizer import summarize
-from transcript import write_transcript, write_subagent_transcript, extract_excerpts, TRANSCRIPT_DIR
+from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, TRANSCRIPT_DIR
 
 
 def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
@@ -207,9 +207,16 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 # Subagent processing mode
                 already_processed = session_id in existing_subagents
 
-                # --transcripts-only: regenerate parent transcripts (with inline markers)
+                # --transcripts-only: regenerate parent transcripts (with subagent links)
                 # even for sessions whose subagents were already processed
                 if args.transcripts_only and session.messages:
+                    # Discover subagents to build reference links
+                    sub_infos = discover_subagents(path)
+                    sub_refs = []
+                    for info in sub_infos:
+                        parsed = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                        if parsed.messages:
+                            sub_refs.append(SubagentRef(agent_type=parsed.agent_type, agent_id=parsed.agent_id))
                     write_transcript(
                         session.session_id,
                         session.messages,
@@ -217,6 +224,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                         project=session.project,
                         branch=session.branch,
                         timestamp=session.started_at,
+                        subagents=sub_refs or None,
                     )
                     if already_processed:
                         elapsed = time.monotonic() - start
@@ -273,6 +281,13 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 if not session.messages:
                     skipped += 1
                     continue
+                # Discover subagents for reference links
+                sub_infos = discover_subagents(path)
+                sub_refs = []
+                for info in sub_infos:
+                    parsed_sub = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                    if parsed_sub.messages:
+                        sub_refs.append(SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id))
                 # Only regenerate transcript, skip summary
                 transcript_path = write_transcript(
                         session.session_id,
@@ -281,6 +296,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                         project=session.project,
                         branch=session.branch,
                         timestamp=session.started_at,
+                        subagents=sub_refs or None,
                     )
                 if transcript_path:
                     conn.execute(
@@ -315,6 +331,13 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 
                 transcript_path = None
                 if session.messages:
+                    # Discover subagents for reference links in transcript
+                    sub_infos = discover_subagents(path)
+                    sub_refs = []
+                    for info in sub_infos:
+                        parsed_sub = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                        if parsed_sub.messages:
+                            sub_refs.append(SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id))
                     transcript_path = write_transcript(
                         session.session_id,
                         session.messages,
@@ -322,6 +345,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                         project=session.project,
                         branch=session.branch,
                         timestamp=session.started_at,
+                        subagents=sub_refs or None,
                     )
 
                 upsert_session(

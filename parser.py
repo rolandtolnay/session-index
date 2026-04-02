@@ -298,7 +298,7 @@ def parse_jsonl(path: str) -> ParsedSession:
                             inp = item.get("input", {})
                             agent_type = inp.get("subagent_type", "agent")
                             desc = inp.get("description", "")
-                            parts.append(f"── subagent: {agent_type} ── {desc}")
+                            parts.append(f"__SUBAGENT:{agent_type}:{desc}__")
                     # Skip thinking blocks
             elif isinstance(content, str) and content.strip():
                 text = _clean_text(content)

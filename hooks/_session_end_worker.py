@@ -34,7 +34,7 @@ def main() -> None:
     from parser import parse_jsonl, clean_user_messages
     from db import init_db, get_connection, upsert_session
     from summarizer import summarize
-    from transcript import write_transcript, write_subagent_transcript
+    from transcript import write_transcript, write_subagent_transcript, SubagentRef
     from subagent_parser import discover_subagents, parse_subagent_jsonl
 
     session = parse_jsonl(jsonl_path)
@@ -81,9 +81,13 @@ def main() -> None:
     else:
         log(session_id, "worker", "summary failed (LLM unavailable)")
 
-    # Write parent transcript (now includes inline subagent markers from parse_jsonl)
+    # Write parent transcript with subagent reference links
     transcript_path = None
     if session.messages:
+        subagent_refs = [
+            SubagentRef(agent_type=sub.agent_type, agent_id=sub.agent_id)
+            for sub in parsed_subagents
+        ]
         transcript_path = write_transcript(
             session.session_id,
             session.messages,
@@ -91,6 +95,7 @@ def main() -> None:
             project=session.project,
             branch=session.branch,
             timestamp=session.started_at,
+            subagents=subagent_refs or None,
         )
         log(session_id, "worker", f"transcript written")
 

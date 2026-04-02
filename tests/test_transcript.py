@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import write_transcript, write_subagent_transcript, extract_excerpts
+from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -52,6 +52,133 @@ def test_write_transcript_empty(tmp_path, monkeypatch):
     content = open(path).read()
     # Header still present even with no messages
     assert "---" in content
+
+
+# ── Subagent marker expansion in parent transcript ─────────────────────────
+
+
+def test_subagent_markers_expanded_with_refs(tmp_path, monkeypatch):
+    """Subagent markers should expand to 3-line blocks with → see: links."""
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "user", "content": "Do something", "timestamp": "2026-01-15T10:00:00.000Z"},
+        {"role": "assistant", "content": "I'll delegate.\n__SUBAGENT:Explore:find config files__\nDone.",
+         "timestamp": "2026-01-15T10:00:01.000Z"},
+    ]
+    refs = [SubagentRef(agent_type="Explore", agent_id="abc123")]
+    path = write_transcript("test-session", messages, subagents=refs)
+    content = open(path).read()
+    assert "[subagent] Explore ─" in content
+    assert "find config files" in content
+    assert "→ see: agent-abc123.md" in content
+    # Raw marker should not appear
+    assert "__SUBAGENT:" not in content
+
+
+def test_subagent_markers_without_refs(tmp_path, monkeypatch):
+    """Without subagent refs, markers expand but have no → see: link."""
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "assistant", "content": "__SUBAGENT:Explore:find stuff__",
+         "timestamp": "2026-01-15T10:00:01.000Z"},
+    ]
+    path = write_transcript("test-session", messages)
+    content = open(path).read()
+    # Without refs, the raw marker stays (no expansion)
+    assert "__SUBAGENT:" in content
+
+
+def test_subagent_multiple_markers_matched_in_order(tmp_path, monkeypatch):
+    """Multiple markers should match to subagent refs in order."""
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "assistant",
+         "content": "__SUBAGENT:Explore:first task__\nSome text\n__SUBAGENT:Plan:second task__",
+         "timestamp": "2026-01-15T10:00:01.000Z"},
+    ]
+    refs = [
+        SubagentRef(agent_type="Explore", agent_id="aaa111"),
+        SubagentRef(agent_type="Plan", agent_id="bbb222"),
+    ]
+    path = write_transcript("test-session", messages, subagents=refs)
+    content = open(path).read()
+    assert "→ see: agent-aaa111.md" in content
+    assert "→ see: agent-bbb222.md" in content
+    # Verify order: first ref appears before second
+    assert content.index("agent-aaa111") < content.index("agent-bbb222")
+
+
+def test_subagent_markers_more_markers_than_refs(tmp_path, monkeypatch):
+    """Extra markers beyond available refs should expand without → see: link."""
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "assistant",
+         "content": "__SUBAGENT:Explore:first__\n__SUBAGENT:agent:second__",
+         "timestamp": ""},
+    ]
+    refs = [SubagentRef(agent_type="Explore", agent_id="only1")]
+    path = write_transcript("test-session", messages, subagents=refs)
+    content = open(path).read()
+    assert "→ see: agent-only1.md" in content
+    # Second marker expands visually but has no link
+    assert "[subagent] agent ─" in content
+    assert content.count("→ see:") == 1
+
+
+def test_subagent_consecutive_no_extra_blank_lines(tmp_path, monkeypatch):
+    """Consecutive subagent blocks should not have blank lines between them."""
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "assistant",
+         "content": "Let me explore.\n__SUBAGENT:Explore:first__\n__SUBAGENT:Explore:second__\n__SUBAGENT:Explore:third__\nDone.",
+         "timestamp": "2026-01-15T10:00:01.000Z"},
+    ]
+    refs = [
+        SubagentRef(agent_type="Explore", agent_id="a1"),
+        SubagentRef(agent_type="Explore", agent_id="a2"),
+        SubagentRef(agent_type="Explore", agent_id="a3"),
+    ]
+    path = write_transcript("test-session", messages, subagents=refs)
+    content = open(path).read()
+    # All three should be present
+    assert "→ see: agent-a1.md" in content
+    assert "→ see: agent-a2.md" in content
+    assert "→ see: agent-a3.md" in content
+    # Between consecutive subagents, no blank lines (only the first gets one)
+    subagent_section = content.split("→ see: agent-a1.md")[1].split("Done.")[0]
+    assert "\n\n[subagent]" not in subagent_section
+
+
+def test_subagent_blank_line_before_first_in_run(tmp_path, monkeypatch):
+    """A blank line should separate assistant text from the first subagent block."""
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "assistant",
+         "content": "Some text.\n__SUBAGENT:Explore:task__",
+         "timestamp": "2026-01-15T10:00:01.000Z"},
+    ]
+    refs = [SubagentRef(agent_type="Explore", agent_id="x1")]
+    path = write_transcript("test-session", messages, subagents=refs)
+    content = open(path).read()
+    assert "Some text.\n\n[subagent]" in content
+
+
+def test_subagent_new_run_after_text_gets_blank_line(tmp_path, monkeypatch):
+    """Text between subagent runs should have blank lines around each run."""
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "assistant",
+         "content": "__SUBAGENT:Explore:first__\nMiddle text.\n__SUBAGENT:Plan:second__",
+         "timestamp": ""},
+    ]
+    refs = [
+        SubagentRef(agent_type="Explore", agent_id="r1"),
+        SubagentRef(agent_type="Plan", agent_id="r2"),
+    ]
+    path = write_transcript("test-session", messages, subagents=refs)
+    content = open(path).read()
+    # Blank line before second run (after "Middle text.")
+    assert "Middle text.\n\n[subagent] Plan" in content
 
 
 # ── Subagent transcript tests ──────────────────────────────────────────────

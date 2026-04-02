@@ -7,8 +7,18 @@ Uses inline role tags with bracket tool calls.
 import logging
 import os
 import re
+from dataclasses import dataclass
 
 TRANSCRIPT_DIR = os.path.join(os.path.expanduser("~/.session-index"), "transcripts")
+
+_SUBAGENT_MARKER_RE = re.compile(r"^__SUBAGENT:(.+?):(.*)__$")
+
+
+@dataclass
+class SubagentRef:
+    """Lightweight reference for enriching parent transcripts with subagent links."""
+    agent_type: str
+    agent_id: str
 
 
 def _format_message_time(timestamp: str) -> str:
@@ -22,6 +32,41 @@ def _format_message_time(timestamp: str) -> str:
         return ""
 
 
+def _expand_subagent_markers(
+    content: str,
+    subagent_refs: list[SubagentRef],
+    ref_index: list[int],
+) -> str:
+    """Replace __SUBAGENT:type:desc__ markers with formatted blocks.
+
+    Mutates ref_index[0] to track which subagent we're up to (order-based matching).
+    """
+    out_lines: list[str] = []
+    prev_was_subagent = False
+    for line in content.split("\n"):
+        m = _SUBAGENT_MARKER_RE.match(line.strip())
+        if m:
+            agent_type = m.group(1)
+            desc = m.group(2)
+            # Blank line before first subagent in a run (separates from assistant text)
+            if not prev_was_subagent:
+                out_lines.append("")
+            # Build the formatted block
+            out_lines.append(f"[subagent] {agent_type} {'─' * 25}")
+            out_lines.append(desc)
+            # Match to a subagent ref by order
+            idx = ref_index[0]
+            if idx < len(subagent_refs):
+                ref = subagent_refs[idx]
+                out_lines.append(f"→ see: agent-{ref.agent_id}.md")
+                ref_index[0] = idx + 1
+            prev_was_subagent = True
+        else:
+            prev_was_subagent = False
+            out_lines.append(line)
+    return "\n".join(out_lines)
+
+
 def write_transcript(
     session_id: str,
     messages: list[dict[str, str]],
@@ -30,12 +75,14 @@ def write_transcript(
     project: str | None = None,
     branch: str | None = None,
     timestamp: str | None = None,
+    subagents: list[SubagentRef] | None = None,
 ) -> str:
     """Write a cleaned transcript to disk. Returns the file path."""
     os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
     path = os.path.join(TRANSCRIPT_DIR, f"{session_id}.md")
 
     lines: list[str] = []
+    ref_index = [0]  # mutable counter for order-based matching
 
     # Header
     header_parts = []
@@ -54,6 +101,11 @@ def write_transcript(
         role = msg["role"]
         content = msg["content"]
         ts = _format_message_time(msg.get("timestamp", ""))
+
+        # Expand subagent markers in assistant messages
+        if role == "assistant" and subagents:
+            content = _expand_subagent_markers(content, subagents, ref_index)
+
         if role == "user":
             if ts:
                 lines.append(f"[user] {ts} {'─' * 32}")
@@ -141,7 +193,7 @@ def write_subagent_transcript(session_id: str, parsed: "ParsedSubagent") -> str:
 
 # ── Excerpt extraction ──────────────────────────────────────────────────────
 
-_ROLE_RE = re.compile(r"^\[(user|assistant)\] (?:\d{2}:\d{2}:\d{2} )?─")
+_ROLE_RE = re.compile(r"^\[(user|assistant|subagent)\] (?:\d{2}:\d{2}:\d{2} |\S+ )?─")
 
 _excerpt_log = logging.getLogger("session-index.excerpt")
 
