@@ -62,7 +62,8 @@ def _expand_subagent_markers(
                 ref_index[0] = idx + 1
             prev_was_subagent = True
         else:
-            prev_was_subagent = False
+            if line.strip():
+                prev_was_subagent = False
             out_lines.append(line)
     return "\n".join(out_lines)
 
