@@ -106,7 +106,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 ## Diagnosing Common Issues
 
 **Session not indexed:**
-- `stop | skipped (N user, M assistant msgs)` — below 3-message threshold
+- `stop | skipped (N user, M assistant msgs)` — needs at least 1 user + 1 assistant message
 - No `session_end` or `worker` lines — session still active, or SessionEnd hook didn't fire
 - `worker | jsonl not found` — JSONL path encoding mismatch
 
@@ -227,7 +227,7 @@ Each search call exists in up to three places with different detail levels:
 
 1. Parses the session's JSONL for deterministic fields (message counts, files touched)
 2. Upserts to DB — no LLM call, fast enough to run synchronously
-3. Skips sessions below 3-message threshold
+3. Skips sessions without at least 1 user + 1 assistant message
 
 ### `session_end.py` + `_session_end_worker.py` (SessionEnd)
 

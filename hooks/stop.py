@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stop hook — upsert deterministic fields on every Stop event.
 
-Parses the JSONL, checks >= 3 user messages, upserts deterministic
+Parses the JSONL, checks >= 1 user + 1 assistant message, upserts deterministic
 fields only (no summary, no transcript). Loop-prevention via
 stop_hook_active field from stdin.
 """
@@ -44,7 +44,7 @@ def main() -> None:
 
     session = parse_jsonl(jsonl_path)
 
-    if session.user_message_count < 3 or session.assistant_message_count < 1:
+    if session.user_message_count < 1 or session.assistant_message_count < 1:
         log(session_id, "stop", f"skipped ({session.user_message_count} user, {session.assistant_message_count} assistant msgs)")
         return
 

@@ -220,7 +220,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 processed += 1
             else:
                 # Full processing: apply message threshold for new entries
-                if session.user_message_count < 3 or session.assistant_message_count < 1:
+                if session.user_message_count < 1 or session.assistant_message_count < 1:
                     skipped += 1
                     continue
                 # Generate summary + transcript
