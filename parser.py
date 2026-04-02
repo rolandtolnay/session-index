@@ -293,6 +293,12 @@ def parse_jsonl(path: str) -> ParsedSession:
                             parts.append(text)
                     elif item_type == "tool_use":
                         pending_tool_uses.append(item)
+                        # Inject subagent reference marker
+                        if item.get("name") == "Agent":
+                            inp = item.get("input", {})
+                            agent_type = inp.get("subagent_type", "agent")
+                            desc = inp.get("description", "")
+                            parts.append(f"── subagent: {agent_type} ── {desc}")
                     # Skip thinking blocks
             elif isinstance(content, str) and content.strip():
                 text = _clean_text(content)

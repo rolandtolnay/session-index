@@ -309,3 +309,56 @@ def test_extract_command_noise_command():
 
 def test_extract_command_not_a_command():
     assert _extract_command("Fix the login bug in auth.py") is None
+
+
+# ── Subagent inline marker tests ────────────────────────────────────────────
+
+
+def test_agent_tool_use_creates_inline_marker(tmp_path):
+    """Agent tool_use should inject an inline '── subagent: type ── desc' marker."""
+    import json
+    jsonl = tmp_path / "agent-marker.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "Do something"},
+         "sessionId": "marker-test", "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/tmp"},
+        {"type": "assistant", "message": {"role": "assistant", "model": "test",
+         "content": [
+             {"type": "text", "text": "I'll delegate this to an agent."},
+             {"type": "tool_use", "id": "t1", "name": "Agent",
+              "input": {"subagent_type": "Explore", "description": "find config files"}},
+         ]}, "timestamp": "2026-01-15T10:00:01.000Z"},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "done"}
+        ]}, "timestamp": "2026-01-15T10:00:05.000Z"},
+        {"type": "assistant", "message": {"role": "assistant", "model": "test",
+         "content": [{"type": "text", "text": "The agent found the files."}]},
+         "timestamp": "2026-01-15T10:00:06.000Z"},
+    ]
+    jsonl.write_text("\n".join(json.dumps(e) for e in entries))
+
+    session = parse_jsonl(str(jsonl))
+    all_assistant = " ".join(m["content"] for m in session.messages if m["role"] == "assistant")
+    assert "── subagent: Explore ── find config files" in all_assistant
+
+
+def test_agent_tool_use_default_type(tmp_path):
+    """Agent tool_use without subagent_type defaults to 'agent'."""
+    import json
+    jsonl = tmp_path / "agent-default.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "Do it"},
+         "sessionId": "default-test", "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/tmp"},
+        {"type": "assistant", "message": {"role": "assistant", "model": "test",
+         "content": [
+             {"type": "tool_use", "id": "t1", "name": "Agent",
+              "input": {"description": "general task"}},
+         ]}, "timestamp": "2026-01-15T10:00:01.000Z"},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+        ]}, "timestamp": "2026-01-15T10:00:02.000Z"},
+    ]
+    jsonl.write_text("\n".join(json.dumps(e) for e in entries))
+
+    session = parse_jsonl(str(jsonl))
+    all_assistant = " ".join(m["content"] for m in session.messages if m["role"] == "assistant")
+    assert "── subagent: agent ── general task" in all_assistant
