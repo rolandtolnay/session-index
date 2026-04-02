@@ -18,23 +18,54 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from logger import log
 
 
-def _format_session(s: dict) -> str:
-    """Format a session row into a compact context line."""
+def _format_session(s: dict, *, include_project: bool = True) -> str:
+    """Format a session row with full summary."""
     parts = []
     if s.get("started_at"):
-        # Just the date
         parts.append(s["started_at"][:10])
-    if s.get("project"):
+    if include_project and s.get("project"):
         parts.append(s["project"])
     if s.get("branch"):
         parts.append(f"({s['branch']})")
     if s.get("summary"):
         parts.append(f"— {s['summary']}")
     elif s.get("user_messages"):
-        # First user message as fallback, truncated
         first = s["user_messages"].split("\n---\n")[0][:120]
         parts.append(f"— {first}")
     return " ".join(parts)
+
+
+def _format_session_short(s: dict) -> str:
+    """Format a session row as date + branch only (index entry)."""
+    parts = []
+    if s.get("started_at"):
+        parts.append(s["started_at"][:10])
+    if s.get("branch"):
+        parts.append(f"({s['branch']})")
+    return " ".join(parts)
+
+
+def _format_cross_project(sessions: list[dict]) -> list[str]:
+    """Group cross-project sessions into compact index lines."""
+    groups: dict[str, list[dict]] = {}
+    for s in sessions:
+        proj = s.get("project", "unknown")
+        groups.setdefault(proj, []).append(s)
+
+    lines = []
+    MAX_BRANCHES = 2
+    for project, sess_list in groups.items():
+        count = len(sess_list)
+        branches = sorted(set(s.get("branch", "") for s in sess_list if s.get("branch")))
+        if not branches:
+            branch_str = "unknown"
+        elif len(branches) <= MAX_BRANCHES:
+            branch_str = ", ".join(branches)
+        else:
+            branch_str = ", ".join(branches[:MAX_BRANCHES]) + f" +{len(branches) - MAX_BRANCHES} more"
+        count_str = f"{count} session{'s' if count > 1 else ''}"
+        lines.append(f"- {project} — {count_str} ({branch_str})")
+    return lines
 
 
 def main() -> None:
@@ -74,9 +105,15 @@ def main() -> None:
     # Last 5 same-project sessions
     same_project = get_recent_by_project(conn, project, limit=5)
 
-    # Last 24h cross-project
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-    cross_project = get_recent_cross_project(conn, since, exclude_project=project, limit=10)
+    # Cross-project: try 24h, fall back to 7d if empty
+    now = datetime.now(timezone.utc)
+    since_24h = (now - timedelta(hours=24)).isoformat()
+    cross_project = get_recent_cross_project(conn, since_24h, exclude_project=project, limit=30)
+    cross_label = "last 24h"
+    if not cross_project:
+        since_7d = (now - timedelta(days=7)).isoformat()
+        cross_project = get_recent_cross_project(conn, since_7d, exclude_project=project, limit=30)
+        cross_label = "last 7d"
 
     conn.close()
 
@@ -86,15 +123,20 @@ def main() -> None:
 
     lines = ["# Recent Sessions"]
 
+    # Tiered same-project: first 3 with full summary, rest as index
+    FULL_SUMMARY_COUNT = 3
     if same_project:
         lines.append(f"\n## {project} (last {len(same_project)})")
-        for s in same_project:
-            lines.append(f"- {_format_session(s)}")
+        for i, s in enumerate(same_project):
+            if i < FULL_SUMMARY_COUNT:
+                lines.append(f"- {_format_session(s, include_project=False)}")
+            else:
+                lines.append(f"- {_format_session_short(s)}")
 
+    # Cross-project: compact index grouped by project (count + branches)
     if cross_project:
-        lines.append("\n## Other projects (last 24h)")
-        for s in cross_project:
-            lines.append(f"- {_format_session(s)}")
+        lines.append(f"\n## Also active ({cross_label})")
+        lines.extend(_format_cross_project(cross_project))
 
     context = "\n".join(lines)
 
