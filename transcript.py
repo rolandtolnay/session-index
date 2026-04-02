@@ -48,9 +48,6 @@ def _expand_subagent_markers(
         if m:
             agent_type = m.group(1)
             desc = m.group(2)
-            # Blank line before first subagent in a run (separates from assistant text)
-            if not prev_was_subagent:
-                out_lines.append("")
             # Build the formatted block
             out_lines.append(f"[subagent] {agent_type} {'─' * 25}")
             out_lines.append(desc)

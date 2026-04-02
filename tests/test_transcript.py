@@ -160,7 +160,7 @@ def test_subagent_blank_line_before_first_in_run(tmp_path, monkeypatch):
     refs = [SubagentRef(agent_type="Explore", agent_id="x1")]
     path = write_transcript("test-session", messages, subagents=refs)
     content = open(path).read()
-    assert "Some text.\n\n[subagent]" in content
+    assert "Some text.\n[subagent]" in content
 
 
 def test_subagent_new_run_after_text_gets_blank_line(tmp_path, monkeypatch):
@@ -178,7 +178,7 @@ def test_subagent_new_run_after_text_gets_blank_line(tmp_path, monkeypatch):
     path = write_transcript("test-session", messages, subagents=refs)
     content = open(path).read()
     # Blank line before second run (after "Middle text.")
-    assert "Middle text.\n\n[subagent] Plan" in content
+    assert "Middle text.\n[subagent] Plan" in content
 
 
 # ── Subagent transcript tests ──────────────────────────────────────────────
