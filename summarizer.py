@@ -18,7 +18,8 @@ will search these summaries to find relevant past work. Write 1-3 sentences \
 capturing what was done and why, so the right session surfaces when someone \
 searches for the topic. Include the specific topics, technologies, and \
 questions the user raised so searches for those terms find this session. \
-If the session spans multiple topics, mention all of them.
+If the session spans multiple topics, mention all of them. \
+Summarize the topics discussed — never answer the user's questions directly.
 
 Example input: User asked to fix login timeout. Modified auth/session.ts \
 and tests. Branch: fix/login-timeout.
@@ -73,6 +74,7 @@ def _build_prompt(
     branch: str,
     user_messages: list[str],
     files_touched: list[str],
+    last_assistant_message: str | None = None,
 ) -> str:
     """Build the summarizer input prompt."""
     parts = [f"Project: {project}"]
@@ -88,6 +90,11 @@ def _build_prompt(
         if len(msg) > budget:
             msg = msg[:budget] + "..."
         parts.append(f"- {msg}")
+    if last_assistant_message:
+        truncated = last_assistant_message[:500]
+        if len(last_assistant_message) > 500:
+            truncated += "..."
+        parts.append(f"\nLast assistant response:\n{truncated}")
     parts.append("\nSummary:")
     return "\n".join(parts)
 
@@ -126,10 +133,14 @@ def summarize(
     branch: str,
     user_messages: list[str],
     files_touched: list[str],
+    last_assistant_message: str | None = None,
 ) -> str | None:
     """Generate a summary for a session. Returns None on failure."""
     try:
-        prompt = _build_prompt(project, branch, user_messages, files_touched)
+        prompt = _build_prompt(
+            project, branch, user_messages, files_touched,
+            last_assistant_message=last_assistant_message,
+        )
 
         msg_count = len(user_messages)
         if msg_count <= 15:
