@@ -74,6 +74,71 @@ def write_transcript(
     return path
 
 
+def _format_message_time_short(timestamp: str) -> str:
+    """Extract HH:MM from an ISO 8601 timestamp. Returns '' if unavailable."""
+    if not timestamp or len(timestamp) < 16:
+        return ""
+    try:
+        return timestamp[11:16]
+    except (IndexError, ValueError):
+        return ""
+
+
+def write_subagent_transcript(session_id: str, parsed: "ParsedSubagent") -> str:
+    """Write a subagent transcript to disk. Returns the file path.
+
+    Creates the file at: transcripts/{session_id}/agent-{agent_id}.md
+    """
+    from subagent_parser import ParsedSubagent  # noqa: F811 (type hint above)
+
+    subdir = os.path.join(TRANSCRIPT_DIR, session_id)
+    os.makedirs(subdir, exist_ok=True)
+    path = os.path.join(subdir, f"agent-{parsed.agent_id}.md")
+
+    lines: list[str] = []
+
+    # Header
+    date_str = ""
+    time_str = ""
+    if parsed.started_at:
+        date_str = parsed.started_at[:10]
+        time_str = _format_message_time_short(parsed.started_at)
+
+    title_parts = [parsed.agent_type or "unknown"]
+    if date_str:
+        title_parts.append(date_str)
+    if time_str:
+        title_parts[-1] += f" {time_str}"
+    lines.append(f"# {' — '.join(title_parts)}")
+
+    lines.append(f"Parent: {session_id}")
+
+    duration_min = parsed.duration_seconds // 60 if parsed.duration_seconds else 0
+    files_count = len(parsed.files_touched)
+    lines.append(f"Duration: {duration_min} min | {parsed.tool_call_count} tool calls | {files_count} files")
+    lines.append("---")
+    lines.append("")
+
+    # Messages
+    for msg in parsed.messages:
+        role = msg["role"]
+        content = msg["content"]
+        ts = _format_message_time_short(msg.get("timestamp", ""))
+
+        if ts:
+            lines.append(f"[{role}] {ts} {'─' * 30}")
+        else:
+            lines.append(f"[{role}] {'─' * 38}")
+
+        lines.append(content)
+        lines.append("")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+
+    return path
+
+
 # ── Excerpt extraction ──────────────────────────────────────────────────────
 
 _ROLE_RE = re.compile(r"^\[(user|assistant)\] (?:\d{2}:\d{2}:\d{2} )?─")

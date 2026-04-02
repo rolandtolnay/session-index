@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import write_transcript, extract_excerpts
+from transcript import write_transcript, write_subagent_transcript, extract_excerpts
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -52,6 +52,73 @@ def test_write_transcript_empty(tmp_path, monkeypatch):
     content = open(path).read()
     # Header still present even with no messages
     assert "---" in content
+
+
+# ── Subagent transcript tests ──────────────────────────────────────────────
+
+
+def test_write_subagent_transcript(tmp_path, monkeypatch):
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    from subagent_parser import ParsedSubagent
+
+    parsed = ParsedSubagent(
+        agent_id="abc123",
+        agent_type="Explore",
+        parent_session_id="parent-session",
+        started_at="2026-04-01T14:00:00.000Z",
+        ended_at="2026-04-01T14:05:00.000Z",
+        duration_seconds=300,
+        files_touched=["/src/main.py"],
+        tools_used="Read:2, Bash:1",
+        tool_call_count=3,
+        messages=[
+            {"role": "prompt", "content": "Find the entry point", "timestamp": "2026-04-01T14:00:00.000Z"},
+            {"role": "agent", "content": "Let me look at the project.\n\u2192 Bash: ls -la", "timestamp": "2026-04-01T14:00:02.000Z"},
+            {"role": "error", "content": "command not found: foobar", "timestamp": "2026-04-01T14:00:03.000Z"},
+            {"role": "agent", "content": "The entry point is main.py.", "timestamp": "2026-04-01T14:00:05.000Z"},
+        ],
+        initial_prompt="Find the entry point",
+    )
+
+    path = write_subagent_transcript("parent-session", parsed)
+    assert os.path.exists(path)
+    assert "parent-session" in path
+    assert "agent-abc123.md" in path
+
+    content = open(path).read()
+    # Header
+    assert "Explore" in content
+    assert "Parent: parent-session" in content
+    assert "5 min" in content
+    assert "3 tool calls" in content
+    assert "1 files" in content
+    # Role labels
+    assert "[prompt]" in content
+    assert "[agent]" in content
+    assert "[error]" in content
+    # Content
+    assert "Find the entry point" in content
+    assert "\u2192 Bash: ls -la" in content
+    assert "command not found" in content
+    assert "main.py" in content
+
+
+def test_subagent_transcript_creates_subdir(tmp_path, monkeypatch):
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    from subagent_parser import ParsedSubagent
+
+    parsed = ParsedSubagent(
+        agent_id="xyz789",
+        agent_type="Explore",
+        messages=[
+            {"role": "prompt", "content": "hello", "timestamp": ""},
+        ],
+    )
+
+    path = write_subagent_transcript("my-session-id", parsed)
+    subdir = os.path.join(str(tmp_path), "my-session-id")
+    assert os.path.isdir(subdir)
+    assert os.path.exists(path)
 
 
 # ── Excerpt extraction tests ────────────────────────────────────────────────
