@@ -275,7 +275,7 @@ def parse_jsonl(path: str) -> ParsedSession:
             cleaned = cmd if cmd else _clean_text(raw_text)
             if cleaned:
                 session.user_messages.append(cleaned)
-                session.messages.append({"role": "user", "content": cleaned})
+                session.messages.append({"role": "user", "content": cleaned, "timestamp": entry.get("timestamp", "")})
 
         elif entry_type == "assistant":
             parts = []
@@ -309,7 +309,7 @@ def parse_jsonl(path: str) -> ParsedSession:
                 if session.messages and session.messages[-1]["role"] == "assistant":
                     session.messages[-1]["content"] += "\n\n" + combined
                 else:
-                    session.messages.append({"role": "assistant", "content": combined})
+                    session.messages.append({"role": "assistant", "content": combined, "timestamp": entry.get("timestamp", "")})
 
     session.user_message_count = len(session.user_messages)
     session.assistant_message_count = len(session.assistant_messages)

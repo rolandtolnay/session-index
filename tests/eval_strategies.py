@@ -231,7 +231,7 @@ END;
 
 def fts_search(conn, query, limit=20):
     """Search eval_fts, returning session_ids ranked by relevance."""
-    # Match individual terms (same as production search())
+    # Match individual terms with OR (lenient, like production search_flexible with use_or=True)
     terms = query.split()
     # Use OR to be more lenient — a query like "multi-currency IBAN" should
     # match if either term appears

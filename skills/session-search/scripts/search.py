@@ -17,6 +17,8 @@ parser.add_argument("--project", "-p", help="Filter by project name (prefix matc
 parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
 parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
 parser.add_argument("--excerpt", "-e", action="store_true", help="Include transcript excerpts")
+parser.add_argument("--any", action="store_true", default=True, help="Match ANY term (OR) — default for skill")
+parser.add_argument("--no-any", dest="any", action="store_false", help="Match ALL terms (AND)")
 parser.add_argument("--limit", type=int, default=20)
 args = parser.parse_args()
 

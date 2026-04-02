@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from parser import parse_jsonl
-from db import init_db, upsert_session, search, get_stats
+from db import init_db, upsert_session, search_flexible, get_stats
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
 
@@ -41,12 +41,12 @@ def test_parse_to_db_to_search():
     )
 
     # Search should find it
-    results = search(conn, "login bug")
+    results = search_flexible(conn, query="login bug")
     assert len(results) >= 1
     assert results[0]["session_id"] == "test-session-abc123"
 
     # Search by file
-    results = search(conn, "auth.py")
+    results = search_flexible(conn, query="auth.py")
     assert len(results) >= 1
 
     # Stats

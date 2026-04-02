@@ -146,20 +146,29 @@ def upsert_session(
     conn.commit()
 
 
-def search(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Full-text search across user_messages, summary, files_touched, project."""
-    # Quote each term to handle special chars (dots, hyphens)
-    terms = query.split()
-    safe_query = " ".join(f'"{t}"' for t in terms)
-    cursor = conn.execute("""
-        SELECT s.*, rank
-        FROM sessions_fts fts
-        JOIN sessions s ON s.rowid = fts.rowid
-        WHERE sessions_fts MATCH :query
-        ORDER BY rank
-        LIMIT :limit
-    """, {"query": safe_query, "limit": limit})
-    return [dict(row) for row in cursor.fetchall()]
+_FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
+
+
+def _build_fts_query(query: str, use_or: bool = False) -> str:
+    """Build an FTS5 query string, quoting terms but preserving operators.
+
+    - Quotes each non-operator term with "term" for special char safety
+    - Preserves FTS5 operators (AND, OR, NOT, NEAR) unquoted
+    - When use_or=True and no explicit operators present, joins terms with OR
+    """
+    tokens = query.split()
+    has_operators = any(t in _FTS5_OPERATORS for t in tokens)
+
+    parts = []
+    for token in tokens:
+        if token in _FTS5_OPERATORS:
+            parts.append(token)
+        else:
+            parts.append(f'"{token}"')
+
+    if use_or and not has_operators:
+        return " OR ".join(parts)
+    return " ".join(parts)
 
 
 def search_flexible(
@@ -169,12 +178,14 @@ def search_flexible(
     since: str | None = None,
     until: str | None = None,
     limit: int = 20,
+    use_or: bool = False,
 ) -> list[dict[str, Any]]:
     """Flexible search: FTS5 text + optional project prefix, date range filters.
 
     - query provided: FTS5 search with optional structured filters, ordered by rank
     - query empty: structured filters only, ordered by started_at DESC
     - nothing provided: returns most recent sessions
+    - use_or: join terms with OR instead of implicit AND (ignored if query has explicit operators)
     """
     params: dict[str, Any] = {"limit": limit}
     clauses: list[str] = []
@@ -193,9 +204,7 @@ def search_flexible(
         params["until"] = until
 
     if query and query.strip():
-        terms = query.split()
-        safe_query = " ".join(f'"{t}"' for t in terms)
-        params["query"] = safe_query
+        params["query"] = _build_fts_query(query, use_or=use_or)
 
         where = "WHERE sessions_fts MATCH :query"
         if clauses:

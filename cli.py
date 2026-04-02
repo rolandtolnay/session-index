@@ -14,15 +14,37 @@ import sys
 import time
 
 from db import get_connection, init_db, upsert_session, search_flexible, get_stats, rebuild_fts, DB_PATH
+from logger import log
 from parser import parse_jsonl, clean_user_messages
 from summarizer import summarize
 from transcript import write_transcript, extract_excerpts, TRANSCRIPT_DIR
 
 
+def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
+    """Log search call for auditing."""
+    session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+    params = []
+    if args.query:
+        params.append(f'query="{args.query}"')
+    if getattr(args, "project", None):
+        params.append(f"project={args.project}")
+    if getattr(args, "since", None):
+        params.append(f"since={args.since}")
+    if getattr(args, "until", None):
+        params.append(f"until={args.until}")
+    if getattr(args, "excerpt", False):
+        params.append("excerpt=true")
+    if args.limit != 20:
+        params.append(f"limit={args.limit}")
+    log(session_id, "search", f"{' '.join(params)} -> {count} results ({elapsed_ms}ms)")
+
+
 def cmd_search(args: argparse.Namespace) -> None:
     """Search the session index."""
+    start = time.monotonic()
     conn = get_connection()
     init_db(conn)
+    use_or = getattr(args, "any", False)
     results = search_flexible(
         conn,
         query=args.query,
@@ -30,12 +52,35 @@ def cmd_search(args: argparse.Namespace) -> None:
         since=getattr(args, "since", None),
         until=getattr(args, "until", None),
         limit=args.limit,
+        use_or=use_or,
     )
+
+    # Zero-results fallback: retry with OR if AND returned nothing
+    or_fallback = False
+    if not results and args.query and not use_or and len(args.query.split()) > 1:
+        results = search_flexible(
+            conn,
+            query=args.query,
+            project=getattr(args, "project", None),
+            since=getattr(args, "since", None),
+            until=getattr(args, "until", None),
+            limit=args.limit,
+            use_or=True,
+        )
+        or_fallback = bool(results)
+
     conn.close()
 
     if not results:
-        print("No results found.")
+        _log_search(args, 0, int((time.monotonic() - start) * 1000))
+        if args.query and len(args.query.split()) > 1:
+            print("No results found. Try fewer keywords or use OR between terms.")
+        else:
+            print("No results found.")
         return
+
+    if or_fallback:
+        print("No exact matches. Showing partial matches:")
 
     is_browse = not args.query
     show_excerpts = getattr(args, "excerpt", False) and args.query
@@ -73,6 +118,7 @@ def cmd_search(args: argparse.Namespace) -> None:
 
     print(f"\n{'─' * 60}")
     print(f"  {len(results)} result(s)")
+    _log_search(args, len(results), int((time.monotonic() - start) * 1000))
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
@@ -402,6 +448,7 @@ def main() -> None:
     sp_search.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
     sp_search.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
     sp_search.add_argument("--excerpt", "-e", action="store_true", help="Include transcript excerpts matching the query")
+    sp_search.add_argument("--any", action="store_true", help="Match ANY term (OR) instead of ALL terms (AND)")
     sp_search.add_argument("--limit", type=int, default=20)
     sp_search.set_defaults(func=cmd_search)
 

@@ -11,6 +11,17 @@ import re
 TRANSCRIPT_DIR = os.path.join(os.path.expanduser("~/.session-index"), "transcripts")
 
 
+def _format_message_time(timestamp: str) -> str:
+    """Extract HH:MM:SS from an ISO 8601 timestamp. Returns '' if unavailable."""
+    if not timestamp or len(timestamp) < 19:
+        return ""
+    try:
+        # "2026-03-17T15:30:01.234Z" -> "15:30:01"
+        return timestamp[11:19]
+    except (IndexError, ValueError):
+        return ""
+
+
 def write_transcript(
     session_id: str,
     messages: list[dict[str, str]],
@@ -42,11 +53,18 @@ def write_transcript(
     for msg in messages:
         role = msg["role"]
         content = msg["content"]
+        ts = _format_message_time(msg.get("timestamp", ""))
         if role == "user":
-            lines.append(f"[user] {'─' * 40}")
+            if ts:
+                lines.append(f"[user] {ts} {'─' * 32}")
+            else:
+                lines.append(f"[user] {'─' * 40}")
             lines.append(content)
         elif role == "assistant":
-            lines.append(f"[assistant] {'─' * 34}")
+            if ts:
+                lines.append(f"[assistant] {ts} {'─' * 25}")
+            else:
+                lines.append(f"[assistant] {'─' * 34}")
             lines.append(content)
         lines.append("")  # blank line between messages
 
@@ -58,7 +76,7 @@ def write_transcript(
 
 # ── Excerpt extraction ──────────────────────────────────────────────────────
 
-_ROLE_RE = re.compile(r"^\[(user|assistant)\] ─")
+_ROLE_RE = re.compile(r"^\[(user|assistant)\] (?:\d{2}:\d{2}:\d{2} )?─")
 
 _excerpt_log = logging.getLogger("session-index.excerpt")
 

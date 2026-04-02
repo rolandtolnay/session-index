@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import init_db, upsert_session, search, search_flexible, get_recent_by_project, get_stats, rebuild_fts
+from db import init_db, upsert_session, search_flexible, get_recent_by_project, get_stats, rebuild_fts, _build_fts_query
 
 
 def _make_conn():
@@ -70,7 +70,7 @@ def test_search_fts():
         user_messages="Add pagination to API",
         summary="Implemented cursor-based pagination",
     )
-    results = search(conn, "token refresh")
+    results = search_flexible(conn, query="token refresh")
     assert len(results) >= 1
     assert any(r["session_id"] == "s1" for r in results)
     conn.close()
@@ -106,12 +106,57 @@ def test_rebuild_fts():
     conn = _make_conn()
     upsert_session(conn, session_id="rb1", user_messages="test rebuild", summary="rebuilding")
     rebuild_fts(conn)
-    results = search(conn, "rebuild")
+    results = search_flexible(conn, query="rebuild")
     assert len(results) >= 1
     conn.close()
 
 
+# ── _build_fts_query tests ────────────────────────────────────────────────
+
+
+def test_build_fts_query_and_default():
+    assert _build_fts_query("auth token") == '"auth" "token"'
+
+
+def test_build_fts_query_or_mode():
+    assert _build_fts_query("auth token", use_or=True) == '"auth" OR "token"'
+
+
+def test_build_fts_query_preserves_or_operator():
+    assert _build_fts_query("auth OR token") == '"auth" OR "token"'
+
+
+def test_build_fts_query_preserves_not_operator():
+    assert _build_fts_query("auth NOT token") == '"auth" NOT "token"'
+
+
+def test_build_fts_query_single_term():
+    assert _build_fts_query("auth") == '"auth"'
+    assert _build_fts_query("auth", use_or=True) == '"auth"'
+
+
+def test_build_fts_query_explicit_ops_ignore_use_or():
+    # When query already has explicit operators, use_or should not add more
+    result = _build_fts_query("auth OR token", use_or=True)
+    assert result == '"auth" OR "token"'
+
+
 # ── search_flexible tests ──────────────────────────────────────────────────
+
+
+def test_search_flexible_or_mode():
+    conn = _make_conn()
+    upsert_session(conn, session_id="or1", project="proj",
+                   user_messages="auth token refresh", summary="Fixed auth tokens")
+    upsert_session(conn, session_id="or2", project="proj",
+                   user_messages="add pagination", summary="Added pagination")
+    # AND: only or1 matches (has both "auth" and "token")
+    results_and = search_flexible(conn, query="auth pagination", use_or=False)
+    assert len(results_and) == 0  # no session has both
+    # OR: both match (or1 has "auth", or2 has "pagination")
+    results_or = search_flexible(conn, query="auth pagination", use_or=True)
+    assert len(results_or) == 2
+    conn.close()
 
 
 def test_search_flexible_fts_only():

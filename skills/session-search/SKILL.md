@@ -15,14 +15,24 @@ Search the indexed history of past Claude Code conversations.
 ## Usage
 
 ```bash
-uv run ~/.claude/skills/session-search/scripts/search.py [query] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--excerpt] [--limit N]
+uv run ~/.claude/skills/session-search/scripts/search.py [query] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--excerpt] [--no-any] [--limit N]
 ```
 
-- **query** -- FTS keywords (optional if filters given)
+- **query** -- FTS keywords (optional if filters given). Default: OR matching (any term matches)
 - **--project** -- prefix match (e.g., `--project synapto` matches synapto-backend, synapto-infra)
 - **--since / --until** -- date range filter (ISO dates)
 - **--excerpt** -- include matching transcript passages inline (use for context injection)
+- **--no-any** -- require ALL terms to match (AND). Default is OR (any term matches)
 - Flags combine freely: `search.py "auth token" --project dashboard --since 2026-03-01 --excerpt`
+
+## Query Strategy
+
+- Use 1-3 specific terms, not full sentences
+- Default: OR matching (any term matches). Use `--no-any` for AND (all terms must match)
+- FTS5 operators (`OR`, `AND`, `NOT`) are preserved if you write them explicitly
+- Browse first (no query, just `--project`) to orient, then query to narrow
+- When searching for decisions, use the *topic* not the *action*: `"transcript format"` not `"implemented transcript writer"`
+- Use `--excerpt --limit 5` for bounded context injection
 
 ## How to Access Past Conversation Content
 
