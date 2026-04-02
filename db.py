@@ -77,6 +77,14 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         conn = get_connection()
     conn.executescript(SCHEMA)
     conn.commit()
+
+    # Migrations — add columns that don't exist in the original schema
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN subagent_transcripts TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # already exists
+
     if close:
         conn.close()
 
@@ -99,17 +107,20 @@ def upsert_session(
     tools_used: str | None = None,
     summary: str | None = None,
     transcript_path: str | None = None,
+    subagent_transcripts: str | None = None,
 ) -> None:
     """Insert or update a session, preserving existing values with COALESCE."""
     conn.execute("""
         INSERT INTO sessions (
             session_id, slug, project_path, project, branch, model,
             started_at, ended_at, duration_seconds, user_message_count,
-            user_messages, files_touched, tools_used, summary, transcript_path
+            user_messages, files_touched, tools_used, summary, transcript_path,
+            subagent_transcripts
         ) VALUES (
             :session_id, :slug, :project_path, :project, :branch, :model,
             :started_at, :ended_at, :duration_seconds, :user_message_count,
-            :user_messages, :files_touched, :tools_used, :summary, :transcript_path
+            :user_messages, :files_touched, :tools_used, :summary, :transcript_path,
+            :subagent_transcripts
         )
         ON CONFLICT(session_id) DO UPDATE SET
             slug = COALESCE(:slug, slug),
@@ -125,7 +136,8 @@ def upsert_session(
             files_touched = COALESCE(:files_touched, files_touched),
             tools_used = COALESCE(:tools_used, tools_used),
             summary = COALESCE(:summary, summary),
-            transcript_path = COALESCE(:transcript_path, transcript_path)
+            transcript_path = COALESCE(:transcript_path, transcript_path),
+            subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts)
     """, {
         "session_id": session_id,
         "slug": slug,
@@ -142,6 +154,7 @@ def upsert_session(
         "tools_used": tools_used,
         "summary": summary,
         "transcript_path": transcript_path,
+        "subagent_transcripts": subagent_transcripts,
     })
     conn.commit()
 

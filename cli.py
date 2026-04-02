@@ -10,14 +10,16 @@ Usage:
 import argparse
 import glob
 import os
+import shutil
 import sys
 import time
 
 from db import get_connection, init_db, upsert_session, search_flexible, get_stats, rebuild_fts, DB_PATH
 from logger import log
 from parser import parse_jsonl, clean_user_messages
+from subagent_parser import discover_subagents, parse_subagent_jsonl
 from summarizer import summarize
-from transcript import write_transcript, extract_excerpts, TRANSCRIPT_DIR
+from transcript import write_transcript, write_subagent_transcript, extract_excerpts, TRANSCRIPT_DIR
 
 
 def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
@@ -166,11 +168,19 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 
     # Check which sessions already have summaries (skip unless --force)
     existing = set()
-    if not args.force and not args.transcripts_only:
+    if not args.force and not args.transcripts_only and not args.subagents:
         cursor = conn.execute(
             "SELECT session_id FROM sessions WHERE summary IS NOT NULL"
         )
         existing = {row[0] for row in cursor.fetchall()}
+
+    # For --subagents without --force, skip sessions that already have subagent_transcripts
+    existing_subagents = set()
+    if args.subagents and not args.force:
+        cursor = conn.execute(
+            "SELECT session_id FROM sessions WHERE subagent_transcripts IS NOT NULL"
+        )
+        existing_subagents = {row[0] for row in cursor.fetchall()}
 
     total = len(jsonl_files)
     processed = 0
@@ -180,7 +190,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     for i, path in enumerate(jsonl_files, 1):
         session_id = os.path.splitext(os.path.basename(path))[0]
 
-        if session_id in existing:
+        if not args.subagents and session_id in existing:
             skipped += 1
             continue
 
@@ -193,7 +203,71 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 skipped += 1
                 continue
 
-            if args.transcripts_only:
+            if args.subagents:
+                # Subagent processing mode
+                already_processed = session_id in existing_subagents
+
+                # --transcripts-only: regenerate parent transcripts (with inline markers)
+                # even for sessions whose subagents were already processed
+                if args.transcripts_only and session.messages:
+                    write_transcript(
+                        session.session_id,
+                        session.messages,
+                        slug=session.slug,
+                        project=session.project,
+                        branch=session.branch,
+                        timestamp=session.started_at,
+                    )
+                    if already_processed:
+                        elapsed = time.monotonic() - start
+                        print(f"[{i}/{total}] {session_id[:12]}... transcript ({elapsed:.1f}s)")
+                        processed += 1
+                        continue
+
+                if already_processed:
+                    skipped += 1
+                    continue
+
+                subagent_infos = discover_subagents(path)
+                if not subagent_infos:
+                    skipped += 1
+                    continue
+
+                parsed_subagents = []
+                for info in subagent_infos:
+                    parsed = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                    if parsed.messages:
+                        parsed_subagents.append(parsed)
+
+                if not parsed_subagents:
+                    skipped += 1
+                    continue
+
+                # Aggregate subagent files_touched into parent
+                all_files = set(session.files_touched)
+                for sub in parsed_subagents:
+                    all_files.update(sub.files_touched)
+                enriched_files = sorted(all_files)
+
+                # Write subagent transcripts
+                subagent_paths = []
+                for sub in parsed_subagents:
+                    sub_path = write_subagent_transcript(session.session_id or session_id, sub)
+                    subagent_paths.append(sub_path)
+
+                # Update DB with enriched files and subagent paths
+                upsert_session(
+                    conn,
+                    session_id=session.session_id or session_id,
+                    files_touched=", ".join(enriched_files) if enriched_files else None,
+                    subagent_transcripts=", ".join(subagent_paths) if subagent_paths else None,
+                )
+
+                elapsed = time.monotonic() - start
+                print(f"[{i}/{total}] {session_id[:12]}... {len(parsed_subagents)} subagent(s) ({elapsed:.1f}s)")
+                processed += 1
+
+            elif args.transcripts_only:
                 # Transcript-only: regenerate for any session that has messages,
                 # regardless of threshold (every DB entry deserves a transcript)
                 if not session.messages:
@@ -223,12 +297,20 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 if session.user_message_count < 1 or session.assistant_message_count < 1:
                     skipped += 1
                     continue
+
+                # For short sessions, include last assistant message for context
+                SHORT_SESSION_THRESHOLD = 5
+                last_assistant = None
+                if session.user_message_count <= SHORT_SESSION_THRESHOLD and session.assistant_messages:
+                    last_assistant = session.assistant_messages[-1]
+
                 # Generate summary + transcript
                 summary = summarize(
                     project=session.project,
                     branch=session.branch,
                     user_messages=clean_user_messages(session.user_messages),
                     files_touched=session.files_touched,
+                    last_assistant_message=last_assistant,
                 )
 
                 transcript_path = None
@@ -285,6 +367,8 @@ def _check_integrity(conn) -> dict:
         "transcript_recoverable": [],  # subset where JSONL still exists
         "dangling_transcript": [],   # session_ids where transcript_path points to missing file
         "orphaned_transcripts": [],  # transcript files on disk with no DB row
+        "dangling_subagent": [],     # session_ids where subagent_transcripts paths are missing
+        "orphaned_subagent_dirs": [],  # subagent dirs on disk with no DB reference
     }
 
     projects_dir = os.path.expanduser("~/.claude/projects")
@@ -331,8 +415,37 @@ def _check_integrity(conn) -> dict:
 
         for fname in os.listdir(TRANSCRIPT_DIR):
             fpath = os.path.join(TRANSCRIPT_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue  # skip subagent directories
             if fpath not in db_paths:
                 issues["orphaned_transcripts"].append(fpath)
+
+    # Dangling subagent transcript paths
+    cursor = conn.execute(
+        "SELECT session_id, subagent_transcripts FROM sessions "
+        "WHERE subagent_transcripts IS NOT NULL"
+    )
+    for row in cursor:
+        sid = row[0]
+        paths = [p.strip() for p in row[1].split(",") if p.strip()]
+        if any(not os.path.exists(p) for p in paths):
+            issues["dangling_subagent"].append(sid)
+
+    # Orphaned subagent directories (dirs in transcripts/ with no DB reference)
+    if os.path.isdir(TRANSCRIPT_DIR):
+        # Collect all session_ids that have subagent_transcripts
+        db_subagent_sids = set()
+        cursor = conn.execute(
+            "SELECT session_id FROM sessions "
+            "WHERE subagent_transcripts IS NOT NULL"
+        )
+        for row in cursor:
+            db_subagent_sids.add(row[0])
+
+        for fname in os.listdir(TRANSCRIPT_DIR):
+            fpath = os.path.join(TRANSCRIPT_DIR, fname)
+            if os.path.isdir(fpath) and fname not in db_subagent_sids:
+                issues["orphaned_subagent_dirs"].append(fpath)
 
     return issues
 
@@ -366,6 +479,8 @@ def cmd_status(args: argparse.Namespace) -> None:
         len(issues["missing_transcript"])
         + len(issues["dangling_transcript"])
         + len(issues["orphaned_transcripts"])
+        + len(issues["dangling_subagent"])
+        + len(issues["orphaned_subagent_dirs"])
     )
 
     print(f"\nIntegrity:")
@@ -394,6 +509,10 @@ def cmd_status(args: argparse.Namespace) -> None:
             print(f"  Dangling transcript paths: {len(issues['dangling_transcript'])}")
         if issues["orphaned_transcripts"]:
             print(f"  Orphaned transcript files: {len(issues['orphaned_transcripts'])}")
+        if issues["dangling_subagent"]:
+            print(f"  Dangling subagent paths: {len(issues['dangling_subagent'])}")
+        if issues["orphaned_subagent_dirs"]:
+            print(f"  Orphaned subagent dirs: {len(issues['orphaned_subagent_dirs'])}")
 
         if total_issues > 0:
             if args.fix:
@@ -424,6 +543,22 @@ def _fix_issues(conn, issues: dict) -> int:
     for fpath in issues["orphaned_transcripts"]:
         try:
             os.remove(fpath)
+            fixed += 1
+        except OSError:
+            pass
+
+    # Null out dangling subagent transcript paths
+    for sid in issues["dangling_subagent"]:
+        conn.execute(
+            "UPDATE sessions SET subagent_transcripts = NULL WHERE session_id = ?",
+            (sid,),
+        )
+        fixed += 1
+
+    # Remove orphaned subagent directories
+    for dpath in issues["orphaned_subagent_dirs"]:
+        try:
+            shutil.rmtree(dpath)
             fixed += 1
         except OSError:
             pass
@@ -460,6 +595,8 @@ def main() -> None:
     sp_backfill.add_argument("--session", help="Only process this specific session ID")
     sp_backfill.add_argument("--transcripts-only", action="store_true",
                              help="Only regenerate transcripts (skip summary generation)")
+    sp_backfill.add_argument("--subagents", action="store_true",
+                             help="Process subagent transcripts for sessions")
     sp_backfill.set_defaults(func=cmd_backfill)
 
     # status

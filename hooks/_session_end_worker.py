@@ -34,7 +34,8 @@ def main() -> None:
     from parser import parse_jsonl, clean_user_messages
     from db import init_db, get_connection, upsert_session
     from summarizer import summarize
-    from transcript import write_transcript
+    from transcript import write_transcript, write_subagent_transcript
+    from subagent_parser import discover_subagents, parse_subagent_jsonl
 
     session = parse_jsonl(jsonl_path)
 
@@ -42,12 +43,37 @@ def main() -> None:
         log(session_id, "worker", f"skipped ({session.user_message_count} user, {session.assistant_message_count} assistant msgs)")
         return
 
+    # Discover and parse subagents
+    subagent_infos = discover_subagents(jsonl_path)
+    parsed_subagents = []
+    for info in subagent_infos:
+        parsed = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+        if parsed.messages:
+            parsed_subagents.append(parsed)
+
+    # Aggregate subagent files_touched into parent
+    all_files = set(session.files_touched)
+    for sub in parsed_subagents:
+        all_files.update(sub.files_touched)
+    enriched_files = sorted(all_files)
+
+    if parsed_subagents:
+        log(session_id, "worker", f"found {len(parsed_subagents)} subagent(s)")
+
+    # For short sessions, include last assistant message to capture outcomes
+    # that aren't visible from user messages alone (e.g. Q&A sessions)
+    SHORT_SESSION_THRESHOLD = 5
+    last_assistant = None
+    if session.user_message_count <= SHORT_SESSION_THRESHOLD and session.assistant_messages:
+        last_assistant = session.assistant_messages[-1]
+
     # Generate summary (may return None if Ollama is down)
     summary = summarize(
         project=session.project,
         branch=session.branch,
         user_messages=clean_user_messages(session.user_messages),
         files_touched=session.files_touched,
+        last_assistant_message=last_assistant,
     )
 
     if summary:
@@ -55,7 +81,7 @@ def main() -> None:
     else:
         log(session_id, "worker", "summary failed (LLM unavailable)")
 
-    # Write transcript
+    # Write parent transcript (now includes inline subagent markers from parse_jsonl)
     transcript_path = None
     if session.messages:
         transcript_path = write_transcript(
@@ -68,7 +94,13 @@ def main() -> None:
         )
         log(session_id, "worker", f"transcript written")
 
-    # Update DB with summary and transcript
+    # Write subagent transcripts
+    subagent_paths = []
+    for sub in parsed_subagents:
+        sub_path = write_subagent_transcript(session.session_id, sub)
+        subagent_paths.append(sub_path)
+
+    # Update DB with summary, transcript, and subagent info
     conn = get_connection()
     init_db(conn)
 
@@ -85,10 +117,11 @@ def main() -> None:
         duration_seconds=session.duration_seconds or None,
         user_message_count=session.user_message_count,
         user_messages="\n---\n".join(session.user_messages) if session.user_messages else None,
-        files_touched=", ".join(session.files_touched) if session.files_touched else None,
+        files_touched=", ".join(enriched_files) if enriched_files else None,
         tools_used=session.tools_used or None,
         summary=summary,
         transcript_path=transcript_path,
+        subagent_transcripts=", ".join(subagent_paths) if subagent_paths else None,
     )
     conn.close()
 
