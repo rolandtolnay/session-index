@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import init_db, upsert_session, search_flexible, get_recent_by_project, get_stats, rebuild_fts, _build_fts_query
+from db import init_db, upsert_session, search_flexible, get_session, get_recent_by_project, get_stats, rebuild_fts, _build_fts_query
 
 
 def _make_conn():
@@ -247,4 +247,71 @@ def test_search_flexible_until_inclusive():
     results = search_flexible(conn, until="2026-03-31")
     assert len(results) == 1
     assert results[0]["session_id"] == "su1"
+    conn.close()
+
+
+# ── get_session tests ────────────────────────────────────────────────────────
+
+
+def test_get_session_by_slug():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sess-abc-123-full", slug="fixing-login-bug",
+                   project="proj", summary="Fixed login")
+    result = get_session(conn, "fixing-login-bug")
+    assert result is not None
+    assert result["session_id"] == "sess-abc-123-full"
+    conn.close()
+
+
+def test_get_session_by_full_id():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sess-abc-123-full", project="proj")
+    result = get_session(conn, "sess-abc-123-full")
+    assert result is not None
+    assert result["session_id"] == "sess-abc-123-full"
+    conn.close()
+
+
+def test_get_session_by_prefix():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sess-abc-123-full-uuid", project="proj")
+    result = get_session(conn, "sess-abc-123-full")
+    assert result is not None
+    assert result["session_id"] == "sess-abc-123-full-uuid"
+    conn.close()
+
+
+def test_get_session_ambiguous_prefix():
+    conn = _make_conn()
+    upsert_session(conn, session_id="sess-abc-111-aaa", project="proj")
+    upsert_session(conn, session_id="sess-abc-222-bbb", project="proj")
+    result = get_session(conn, "sess-abc-")
+    assert result is None
+    conn.close()
+
+
+def test_get_session_not_found():
+    conn = _make_conn()
+    result = get_session(conn, "nonexistent")
+    assert result is None
+    conn.close()
+
+
+def test_get_session_slug_priority():
+    """Slug match takes priority over session_id prefix match."""
+    conn = _make_conn()
+    upsert_session(conn, session_id="id-aaa-111-full", slug="id-bbb-222", project="proj")
+    upsert_session(conn, session_id="id-bbb-222-full", project="proj")
+    # "id-bbb-222" matches as slug for session 1, not as prefix for session 2
+    result = get_session(conn, "id-bbb-222")
+    assert result["session_id"] == "id-aaa-111-full"
+    conn.close()
+
+
+def test_get_session_short_prefix_rejected():
+    """Prefix shorter than 8 chars should not match."""
+    conn = _make_conn()
+    upsert_session(conn, session_id="abcdefghij", project="proj")
+    assert get_session(conn, "abcdefg") is None   # 7 chars
+    assert get_session(conn, "abcdefgh") is not None  # 8 chars
     conn.close()

@@ -14,7 +14,7 @@ import shutil
 import sys
 import time
 
-from db import get_connection, init_db, upsert_session, search_flexible, get_stats, rebuild_fts, DB_PATH
+from db import get_connection, init_db, upsert_session, search_flexible, get_session, get_stats, rebuild_fts, DB_PATH
 from logger import log
 from parser import parse_jsonl, clean_user_messages
 from subagent_parser import discover_subagents, parse_subagent_jsonl
@@ -34,8 +34,6 @@ def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
         params.append(f"since={args.since}")
     if getattr(args, "until", None):
         params.append(f"until={args.until}")
-    if getattr(args, "excerpt", False):
-        params.append("excerpt=true")
     if args.limit != 20:
         params.append(f"limit={args.limit}")
     log(session_id, "search", f"{' '.join(params)} -> {count} results ({elapsed_ms}ms)")
@@ -85,7 +83,6 @@ def cmd_search(args: argparse.Namespace) -> None:
         print("No exact matches. Showing partial matches:")
 
     is_browse = not args.query
-    show_excerpts = getattr(args, "excerpt", False) and args.query
 
     for r in results:
         print(f"\n{'─' * 60}")
@@ -110,17 +107,77 @@ def cmd_search(args: argparse.Namespace) -> None:
             files = r["files_touched"][:200]
             print(f"  files: {files}")
 
-        if show_excerpts and r.get("transcript_path"):
-            keywords = args.query.split()
-            excerpt = extract_excerpts(r["transcript_path"], keywords)
-            if excerpt:
-                print(f"\n  ┄┄┄ excerpts ┄┄┄")
-                for line in excerpt.splitlines():
-                    print(f"  {line}")
-
     print(f"\n{'─' * 60}")
     print(f"  {len(results)} result(s)")
     _log_search(args, len(results), int((time.monotonic() - start) * 1000))
+
+
+def _log_excerpt(session_ids: list[str], query: str, elapsed_ms: int) -> None:
+    """Log excerpt call for auditing."""
+    caller_sid = os.environ.get("CLAUDE_SESSION_ID", "")
+    ids_str = ",".join(s[:12] for s in session_ids)
+    log(caller_sid, "excerpt", f'sessions=[{ids_str}] query="{query}" ({elapsed_ms}ms)')
+
+
+def cmd_excerpt(args: argparse.Namespace) -> None:
+    """Extract transcript excerpts from specific sessions."""
+    start = time.monotonic()
+    conn = get_connection()
+    init_db(conn)
+
+    MAX_SESSIONS = 3
+    identifiers = args.sessions[:MAX_SESSIONS]
+    keywords = args.query.split()
+
+    if len(args.sessions) > MAX_SESSIONS:
+        print(f"Note: limited to {MAX_SESSIONS} sessions (requested {len(args.sessions)})")
+
+    resolved = []
+    for ident in identifiers:
+        session = get_session(conn, ident)
+        if session is None:
+            print(f"Session not found: {ident}")
+            continue
+        if not session.get("transcript_path"):
+            slug = session.get("slug") or session["session_id"][:12]
+            print(f"No transcript available for: {slug}")
+            continue
+        resolved.append(session)
+
+    conn.close()
+
+    if not resolved:
+        _log_excerpt([i for i in identifiers], args.query, int((time.monotonic() - start) * 1000))
+        print("No valid sessions to excerpt.")
+        return
+
+    for session in resolved:
+        slug = session.get("slug") or session["session_id"][:12]
+        project = session.get("project") or "unknown"
+        date = (session.get("started_at") or "")[:10]
+
+        print(f"\n{'─' * 60}")
+        print(f"  {slug}  |  {project}  |  {date}")
+
+        excerpt = extract_excerpts(
+            session["transcript_path"],
+            keywords,
+            max_blocks=4,
+            max_lines=100,
+        )
+        if excerpt:
+            print(f"  ┄┄┄ excerpts ┄┄┄")
+            for line in excerpt.splitlines():
+                print(f"  {line}")
+        else:
+            print(f"  No matching excerpts for: {' '.join(keywords)}")
+
+    print(f"\n{'─' * 60}")
+    _log_excerpt(
+        [s["session_id"] for s in resolved],
+        args.query,
+        int((time.monotonic() - start) * 1000),
+    )
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
@@ -606,10 +663,15 @@ def main() -> None:
     sp_search.add_argument("--project", "-p", help="Filter by project name (prefix match)")
     sp_search.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
     sp_search.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
-    sp_search.add_argument("--excerpt", "-e", action="store_true", help="Include transcript excerpts matching the query")
     sp_search.add_argument("--any", action="store_true", help="Match ANY term (OR) instead of ALL terms (AND)")
     sp_search.add_argument("--limit", type=int, default=20)
     sp_search.set_defaults(func=cmd_search)
+
+    # excerpt
+    sp_excerpt = subparsers.add_parser("excerpt", help="Extract transcript passages from specific sessions")
+    sp_excerpt.add_argument("sessions", nargs="+", help="Session slug(s) or ID(s) (max 3)")
+    sp_excerpt.add_argument("--query", "-q", required=True, help="Keywords to focus extraction")
+    sp_excerpt.set_defaults(func=cmd_excerpt)
 
     # backfill
     sp_backfill = subparsers.add_parser("backfill", help="Process all JSONL files")
