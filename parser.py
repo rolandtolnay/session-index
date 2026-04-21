@@ -14,6 +14,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
+
 
 @dataclass
 class ParsedSession:
@@ -150,6 +152,20 @@ def parse_jsonl(path: str) -> ParsedSession:
     files_set: set[str] = set()
     tool_counter: Counter = Counter()
     timestamps: list[str] = []
+
+    # Prefer descriptive slug emitted after plan acceptance (custom-title / agent-name
+    # entries) over the generic three-word slug on user/assistant entries. Guard against
+    # Claude Code occasionally capturing raw slash-command text as the custom title.
+    for entry in entries:
+        etype = entry.get("type", "")
+        candidate = ""
+        if etype == "custom-title":
+            candidate = entry.get("customTitle", "")
+        elif etype == "agent-name":
+            candidate = entry.get("agentName", "")
+        if candidate and _SLUG_RE.match(candidate):
+            session.slug = candidate
+            break
 
     # First pass: collect tool results and metadata
     for entry in entries:
