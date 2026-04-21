@@ -82,20 +82,16 @@ def cmd_search(args: argparse.Namespace) -> None:
     if or_fallback:
         print("No exact matches. Showing partial matches:")
 
-    is_browse = not args.query
-
     for r in results:
         print(f"\n{'─' * 60}")
-        slug = r.get("slug") or r["session_id"][:12]
+        sid = r["session_id"]
         project = r.get("project") or "unknown"
         date = (r.get("started_at") or "")[:10]
         duration = r.get("duration_seconds", 0)
         duration_str = f"{duration // 60}m{duration % 60}s" if duration else "?"
 
-        print(f"  {slug}  |  {project}  |  {date}  |  {duration_str}")
+        print(f"  {sid}  |  {project}  |  {date}  |  {duration_str}")
 
-        if is_browse:
-            print(f"  session_id: {r['session_id']}")
         if r.get("branch"):
             print(f"  branch: {r['branch']}")
         if r.get("summary"):
@@ -119,6 +115,49 @@ def _log_excerpt(session_ids: list[str], query: str, elapsed_ms: int) -> None:
     log(caller_sid, "excerpt", f'sessions=[{ids_str}] query="{query}" ({elapsed_ms}ms)')
 
 
+def _print_agent_excerpts(main_transcript_path: str, keywords: list[str]) -> None:
+    """Scan subagent transcripts for keyword matches, print top hit + count of rest.
+
+    Subagent prompts and tool calls live in <main_transcript_path minus .md>/agent-*.md.
+    `extract_excerpts` against the parent session can't surface them.
+    """
+    agent_dir = main_transcript_path[:-3] if main_transcript_path.endswith(".md") else main_transcript_path
+    if not os.path.isdir(agent_dir):
+        return
+
+    agent_files = sorted(glob.glob(os.path.join(agent_dir, "agent-*.md")))
+    kw_filtered = [k for k in keywords if len(k) > 2]
+    if not kw_filtered:
+        return
+
+    scored: list[tuple[int, str]] = []
+    for agent_path in agent_files:
+        try:
+            with open(agent_path) as f:
+                content_lower = f.read().lower()
+        except OSError:
+            continue
+        score = sum(content_lower.count(k.lower()) for k in kw_filtered)
+        if score > 0:
+            scored.append((score, agent_path))
+
+    if not scored:
+        return
+
+    scored.sort(reverse=True)
+    top_score, top_path = scored[0]
+    top_excerpt = extract_excerpts(top_path, keywords, max_blocks=3, max_lines=60)
+    if top_excerpt:
+        agent_name = os.path.basename(top_path).replace(".md", "")
+        print(f"  ┄┄┄ {agent_name} ({top_score} keyword hits) ┄┄┄")
+        for line in top_excerpt.splitlines():
+            print(f"  {line}")
+
+    remaining = len(scored) - 1
+    if remaining > 0:
+        print(f"  [{remaining} more agent transcript(s) matched — read {agent_dir}/ directly for more]")
+
+
 def cmd_excerpt(args: argparse.Namespace) -> None:
     """Extract transcript excerpts from specific sessions."""
     start = time.monotonic()
@@ -139,8 +178,7 @@ def cmd_excerpt(args: argparse.Namespace) -> None:
             print(f"Session not found: {ident}")
             continue
         if not session.get("transcript_path"):
-            slug = session.get("slug") or session["session_id"][:12]
-            print(f"No transcript available for: {slug}")
+            print(f"No transcript available for: {session['session_id']}")
             continue
         resolved.append(session)
 
@@ -152,12 +190,12 @@ def cmd_excerpt(args: argparse.Namespace) -> None:
         return
 
     for session in resolved:
-        slug = session.get("slug") or session["session_id"][:12]
+        sid = session["session_id"]
         project = session.get("project") or "unknown"
         date = (session.get("started_at") or "")[:10]
 
         print(f"\n{'─' * 60}")
-        print(f"  {slug}  |  {project}  |  {date}")
+        print(f"  {sid}  |  {project}  |  {date}")
 
         excerpt = extract_excerpts(
             session["transcript_path"],
@@ -171,6 +209,8 @@ def cmd_excerpt(args: argparse.Namespace) -> None:
                 print(f"  {line}")
         else:
             print(f"  No matching excerpts for: {' '.join(keywords)}")
+
+        _print_agent_excerpts(session["transcript_path"], keywords)
 
     print(f"\n{'─' * 60}")
     _log_excerpt(
@@ -277,7 +317,6 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     write_transcript(
                         session.session_id,
                         session.messages,
-                        slug=session.slug,
                         project=session.project,
                         branch=session.branch,
                         timestamp=session.started_at,
@@ -349,7 +388,6 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 transcript_path = write_transcript(
                         session.session_id,
                         session.messages,
-                        slug=session.slug,
                         project=session.project,
                         branch=session.branch,
                         timestamp=session.started_at,
@@ -398,7 +436,6 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     transcript_path = write_transcript(
                         session.session_id,
                         session.messages,
-                        slug=session.slug,
                         project=session.project,
                         branch=session.branch,
                         timestamp=session.started_at,
@@ -669,7 +706,7 @@ def main() -> None:
 
     # excerpt
     sp_excerpt = subparsers.add_parser("excerpt", help="Extract transcript passages from specific sessions")
-    sp_excerpt.add_argument("sessions", nargs="+", help="Session slug(s) or ID(s) (max 3)")
+    sp_excerpt.add_argument("sessions", nargs="+", help="Session ID(s) or 8+ char prefix (max 3)")
     sp_excerpt.add_argument("--query", "-q", required=True, help="Keywords to focus extraction")
     sp_excerpt.set_defaults(func=cmd_excerpt)
 

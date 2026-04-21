@@ -247,29 +247,19 @@ def get_session(
     conn: sqlite3.Connection,
     identifier: str,
 ) -> dict[str, Any] | None:
-    """Look up a session by slug, full session_id, or session_id prefix.
+    """Look up a session by full session_id or unambiguous session_id prefix.
 
     Resolution order:
-      1. Exact slug match
-      2. Exact session_id match
-      3. session_id prefix match (8+ chars, must be unambiguous)
+      1. Exact session_id match
+      2. session_id prefix match (8+ chars, must be unambiguous)
     Returns None if not found or if prefix is ambiguous.
     """
-    # 1. Exact slug match
-    row = conn.execute(
-        "SELECT * FROM sessions WHERE slug = :id", {"id": identifier}
-    ).fetchone()
-    if row:
-        return dict(row)
-
-    # 2. Exact session_id match
     row = conn.execute(
         "SELECT * FROM sessions WHERE session_id = :id", {"id": identifier}
     ).fetchone()
     if row:
         return dict(row)
 
-    # 3. Prefix match (require 8+ chars to avoid false positives)
     if len(identifier) >= 8:
         rows = conn.execute(
             "SELECT * FROM sessions WHERE session_id LIKE :prefix",

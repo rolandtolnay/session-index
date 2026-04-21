@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts
+from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, _block_role
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -22,7 +22,6 @@ def test_write_transcript(tmp_path, monkeypatch):
     path = write_transcript(
         "test-session",
         messages,
-        slug="test-slug",
         project="myproject",
         branch="main",
         timestamp="2026-04-01T14:23:45Z",
@@ -31,7 +30,6 @@ def test_write_transcript(tmp_path, monkeypatch):
     assert os.path.exists(path)
     content = open(path).read()
     # Header
-    assert "test-slug" in content
     assert "myproject" in content
     assert "main" in content
     assert "2026-04-01" in content
@@ -382,3 +380,39 @@ def test_excerpt_skips_short_keywords(tmp_path):
     # Keywords with <= 2 chars should be skipped
     result = extract_excerpts(path, ["an", "to"])
     assert result is None
+
+
+def _write_agent_transcript(tmp_path, messages, filename="agent-test.md"):
+    """Helper: write an agent-style transcript using [prompt]/[agent] markers."""
+    path = str(tmp_path / filename)
+    lines = ["# general-purpose — 2026-04-01 14:40", "Parent: test-session", "---", ""]
+    for msg in messages:
+        role = msg["role"]
+        lines.append(f"[{role}] 14:40 {'─' * 30}")
+        lines.append(msg["content"])
+        lines.append("")
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    return path
+
+
+def test_block_role_maps_prompt_and_agent():
+    # Subagent transcripts use [prompt]/[agent]; treat them as user/assistant so
+    # downstream Q/A pairing works uniformly.
+    assert _block_role("[prompt] 14:40 ──────────────────────────────") == "user"
+    assert _block_role("[agent] 14:40 ──────────────────────────────") == "assistant"
+    assert _block_role("[user] 14:40 ──────────────────────────────") == "user"
+    assert _block_role("[assistant] 14:40 ──────────────────────────────") == "assistant"
+    assert _block_role("header line with no role") is None
+
+
+def test_excerpt_parses_agent_transcript(tmp_path):
+    # Regression: before [prompt]/[agent] were added to _ROLE_RE, agent transcripts
+    # parsed as a single header block and extract_excerpts returned None.
+    path = _write_agent_transcript(tmp_path, [
+        {"role": "prompt", "content": "Investigate claude-mem and episodic-memory trade-offs"},
+        {"role": "agent", "content": "I found that claude-mem has a ~72% summary failure rate."},
+    ])
+    result = extract_excerpts(path, ["claude-mem"])
+    assert result is not None
+    assert "claude-mem" in result

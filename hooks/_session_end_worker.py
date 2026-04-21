@@ -91,7 +91,6 @@ def main() -> None:
         transcript_path = write_transcript(
             session.session_id,
             session.messages,
-            slug=session.slug,
             project=session.project,
             branch=session.branch,
             timestamp=session.started_at,

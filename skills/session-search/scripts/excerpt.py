@@ -12,7 +12,7 @@ sys.path.insert(0, repo_root)
 from cli import cmd_excerpt
 
 parser = argparse.ArgumentParser(description="Extract transcript passages from specific sessions")
-parser.add_argument("sessions", nargs="+", help="Session slug(s) or ID(s) (max 3)")
+parser.add_argument("sessions", nargs="+", help="Session ID(s) or 8+ char prefix (max 3)")
 parser.add_argument("--query", "-q", required=True, help="Keywords to focus extraction")
 args = parser.parse_args()
 

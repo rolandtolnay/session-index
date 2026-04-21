@@ -253,13 +253,12 @@ def test_search_flexible_until_inclusive():
 # ── get_session tests ────────────────────────────────────────────────────────
 
 
-def test_get_session_by_slug():
+def test_get_session_does_not_match_slug():
+    """Slug lookup was removed — slugs aren't unique, session_id is the only key."""
     conn = _make_conn()
     upsert_session(conn, session_id="sess-abc-123-full", slug="fixing-login-bug",
                    project="proj", summary="Fixed login")
-    result = get_session(conn, "fixing-login-bug")
-    assert result is not None
-    assert result["session_id"] == "sess-abc-123-full"
+    assert get_session(conn, "fixing-login-bug") is None
     conn.close()
 
 
@@ -294,17 +293,6 @@ def test_get_session_not_found():
     conn = _make_conn()
     result = get_session(conn, "nonexistent")
     assert result is None
-    conn.close()
-
-
-def test_get_session_slug_priority():
-    """Slug match takes priority over session_id prefix match."""
-    conn = _make_conn()
-    upsert_session(conn, session_id="id-aaa-111-full", slug="id-bbb-222", project="proj")
-    upsert_session(conn, session_id="id-bbb-222-full", project="proj")
-    # "id-bbb-222" matches as slug for session 1, not as prefix for session 2
-    result = get_session(conn, "id-bbb-222")
-    assert result["session_id"] == "id-aaa-111-full"
     conn.close()
 
 

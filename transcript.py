@@ -69,7 +69,6 @@ def write_transcript(
     session_id: str,
     messages: list[dict[str, str]],
     *,
-    slug: str | None = None,
     project: str | None = None,
     branch: str | None = None,
     timestamp: str | None = None,
@@ -82,11 +81,7 @@ def write_transcript(
     lines: list[str] = []
     ref_index = [0]  # mutable counter for order-based matching
 
-    # Header
-    header_parts = []
-    if slug:
-        header_parts.append(slug)
-    header_parts.append(project or "unknown")
+    header_parts = [project or "unknown"]
     if branch:
         header_parts.append(branch)
     if timestamp:
@@ -191,7 +186,7 @@ def write_subagent_transcript(session_id: str, parsed: "ParsedSubagent") -> str:
 
 # ── Excerpt extraction ──────────────────────────────────────────────────────
 
-_ROLE_RE = re.compile(r"^\[(user|assistant|subagent)\] (?:\d{2}:\d{2}:\d{2} |\S+ )?─")
+_ROLE_RE = re.compile(r"^\[(user|assistant|subagent|prompt|agent)\] (?:\d{2}:\d{2}:\d{2} |\S+ )?─")
 
 _excerpt_log = logging.getLogger("session-index.excerpt")
 
@@ -232,11 +227,15 @@ def _keyword_density(block: str, keywords: list[str]) -> float:
 
 
 def _block_role(block: str) -> str | None:
-    """Extract role from block's first line."""
+    """Extract role from block's first line.
+
+    Subagent transcripts use [prompt]/[agent] markers — treat them as user/assistant
+    so Q/A pairing works uniformly.
+    """
     first_line = block.split("\n", 1)[0]
-    if "[user]" in first_line:
+    if "[user]" in first_line or "[prompt]" in first_line:
         return "user"
-    if "[assistant]" in first_line:
+    if "[assistant]" in first_line or "[agent]" in first_line:
         return "assistant"
     return None
 

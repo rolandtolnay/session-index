@@ -20,7 +20,7 @@ Search and extract content from past Claude Code conversations.
 uv run ~/.claude/skills/session-search/scripts/search.py [query] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--no-any] [--limit N]
 ```
 
-Returns session summaries: slug, project, date, branch, summary, files touched.
+Returns session summaries: session_id, project, date, branch, summary, files touched.
 
 - **query** -- FTS keywords (optional if filters given). Default: OR matching (any term matches)
 - **--project** -- prefix match (e.g., `--project synapto` matches synapto-backend, synapto-infra)
@@ -37,17 +37,27 @@ uv run ~/.claude/skills/session-search/scripts/excerpt.py <session> [<session> .
 
 Returns focused transcript blocks from specific sessions (max 3 per call).
 
-- **session** -- slug or session ID from search results (1-3 values)
+- **session** -- session ID (or 8+ char prefix) from search results (1-3 values)
 - **-q / --query** -- keywords to focus extraction (required)
-- Example: `excerpt.py fixing-login-bug -q "auth token refresh"`
-- Example: `excerpt.py slug1 slug2 -q "migration schema"`
+- Example: `excerpt.py 07983a7f -q "auth token refresh"`
+- Example: `excerpt.py 07983a7f cb3c90df -q "migration schema"`
 
 ## Workflow
 
 1. **Search first.** Run `search` to find relevant sessions by topic.
-2. **Extract if needed.** Copy slug(s) from search results, pass to `excerpt` with keywords.
+2. **Extract if needed.** Copy session ID(s) from search results, pass to `excerpt` with keywords.
+3. **Fall back to reading the cleaned transcript directly** if `excerpt` returns off-topic blocks after one query refinement, or when the footer reports more agent-transcript matches you want to see.
 
 Most questions are answered by summaries alone. Use `excerpt` only when you need the actual conversation content -- specific decisions, code explanations, or implementation details.
+
+## Transcript storage
+
+`excerpt` auto-scans subagent transcripts and reports additional matches in a footer. When you need to read more than the top hit, go to the files directly:
+
+- `~/.session-index/transcripts/<session-id>.md` -- main session transcript (user + assistant turns)
+- `~/.session-index/transcripts/<session-id>/agent-*.md` -- one file per spawned Agent tool call, with the full prompt at the top and every tool call that agent made
+
+These are cleaned markdown, much more compact than the raw JSONL at `~/.claude/projects/`. Prefer them as the fallback — do NOT read raw JSONL.
 
 ## Query Tips
 
