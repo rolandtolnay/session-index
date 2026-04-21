@@ -31,7 +31,7 @@ Search path (skill invocation):
 | `hooks/stop.py` | Stop: upserts deterministic fields (message counts, files touched, duration) |
 | `hooks/session_end.py` | SessionEnd: launches detached worker for LLM summary + transcript |
 | `hooks/_session_end_worker.py` | Detached worker: generates summary via Ollama, writes transcript, upserts DB |
-| `cli.py` | CLI entry point: search, backfill, status commands |
+| `cli.py` | CLI entry point: search, excerpt, backfill, status commands |
 | `db.py` | SQLite operations: schema, upsert, FTS5 search, stats |
 | `parser.py` | JSONL parser: extracts messages, files, tools, timestamps from raw session data |
 | `transcript.py` | Transcript writer + excerpt extractor for search results |
@@ -39,6 +39,7 @@ Search path (skill invocation):
 | `logger.py` | Structured logging with monthly rotation |
 | `client.py` | Standalone Ollama HTTP client (pure stdlib) |
 | `skills/session-search/scripts/search.py` | Skill wrapper: argparse → `cmd_search()` |
+| `skills/session-search/scripts/excerpt.py` | Skill wrapper: argparse → `cmd_excerpt()` |
 | `skills/session-search/SKILL.md` | Skill instructions for Claude Code agents |
 
 ---
