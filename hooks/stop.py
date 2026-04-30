@@ -39,38 +39,14 @@ def main() -> None:
         log(session_id, "stop", f"jsonl not found: {jsonl_path}")
         return
 
-    from parser import parse_jsonl
-    from db import init_db, get_connection, upsert_session
+    from indexer import index_fast
 
-    session = parse_jsonl(jsonl_path)
-
-    if session.user_message_count < 1 or session.assistant_message_count < 1:
-        log(session_id, "stop", f"skipped ({session.user_message_count} user, {session.assistant_message_count} assistant msgs)")
+    result = index_fast("claude", jsonl_path)
+    if result.skipped_reason:
+        log(session_id, "stop", f"skipped ({result.skipped_reason})")
         return
 
-    conn = get_connection()
-    init_db(conn)
-
-    upsert_session(
-        conn,
-        session_id=session.session_id,
-        slug=session.slug or None,
-        project_path=session.project_path or None,
-        project=session.project or None,
-        branch=session.branch or None,
-        model=session.model or None,
-        started_at=session.started_at or None,
-        ended_at=session.ended_at or None,
-        duration_seconds=session.duration_seconds or None,
-        user_message_count=session.user_message_count,
-        user_messages="\n---\n".join(session.user_messages) if session.user_messages else None,
-        files_touched=", ".join(session.files_touched) if session.files_touched else None,
-        tools_used=session.tools_used or None,
-        # No summary or transcript — those come from the worker
-    )
-    conn.close()
-
-    log(session_id, "stop", f"upserted ({session.user_message_count} msgs, {len(session.files_touched)} files)")
+    log(session_id, "stop", f"upserted ({result.user_message_count} msgs, {result.files_touched} files)")
 
 
 if __name__ == "__main__":
