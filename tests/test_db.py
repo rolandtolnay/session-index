@@ -35,6 +35,25 @@ def test_upsert_insert():
     assert row is not None
     assert row["project"] == "myproject"
     assert row["summary"] == "did stuff"
+    assert row["source"] == "claude"
+    assert row["native_session_id"] == "test-1"
+    conn.close()
+
+
+def test_get_session_by_native_pi_prefix():
+    conn = _make_conn()
+    upsert_session(
+        conn,
+        session_id="pi:019dde8f-eeb6-76dc-94fc-b173b083e8d2",
+        source="pi",
+        native_session_id="019dde8f-eeb6-76dc-94fc-b173b083e8d2",
+        project="session-index",
+    )
+
+    row = get_session(conn, "019dde8f")
+    assert row is not None
+    assert row["session_id"] == "pi:019dde8f-eeb6-76dc-94fc-b173b083e8d2"
+    assert row["source"] == "pi"
     conn.close()
 
 

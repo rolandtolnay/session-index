@@ -1,6 +1,6 @@
 """SQLite + FTS5 database for session indexing.
 
-Schema: 14-column sessions table + FTS5 virtual table.
+Schema: provider-aware sessions table + FTS5 virtual table.
 Uses WAL journal mode for concurrent read/write safety.
 FTS sync via INSERT/UPDATE/DELETE triggers.
 """
@@ -15,6 +15,9 @@ DB_PATH = os.path.join(DATA_DIR, "sessions.db")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
+    source TEXT,
+    native_session_id TEXT,
+    source_path TEXT,
     slug TEXT,
     project_path TEXT,
     project TEXT,
@@ -78,12 +81,28 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
 
-    # Migrations — add columns that don't exist in the original schema
-    try:
-        conn.execute("ALTER TABLE sessions ADD COLUMN subagent_transcripts TEXT")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # already exists
+    # Migrations — add columns that don't exist in older schemas.
+    migrations = [
+        ("source", "ALTER TABLE sessions ADD COLUMN source TEXT"),
+        ("native_session_id", "ALTER TABLE sessions ADD COLUMN native_session_id TEXT"),
+        ("source_path", "ALTER TABLE sessions ADD COLUMN source_path TEXT"),
+        ("subagent_transcripts", "ALTER TABLE sessions ADD COLUMN subagent_transcripts TEXT"),
+    ]
+    for _column, ddl in migrations:
+        try:
+            conn.execute(ddl)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # already exists
+
+    # Backfill provider metadata for pre-Pi rows.
+    conn.execute("UPDATE sessions SET source = 'claude' WHERE source IS NULL OR source = ''")
+    conn.execute("""
+        UPDATE sessions
+        SET native_session_id = session_id
+        WHERE native_session_id IS NULL OR native_session_id = ''
+    """)
+    conn.commit()
 
     if close:
         conn.close()
@@ -93,6 +112,9 @@ def upsert_session(
     conn: sqlite3.Connection,
     *,
     session_id: str,
+    source: str | None = None,
+    native_session_id: str | None = None,
+    source_path: str | None = None,
     slug: str | None = None,
     project_path: str | None = None,
     project: str | None = None,
@@ -110,19 +132,26 @@ def upsert_session(
     subagent_transcripts: str | None = None,
 ) -> None:
     """Insert or update a session, preserving existing values with COALESCE."""
+    source = source or "claude"
+    native_session_id = native_session_id or session_id
     conn.execute("""
         INSERT INTO sessions (
-            session_id, slug, project_path, project, branch, model,
+            session_id, source, native_session_id, source_path,
+            slug, project_path, project, branch, model,
             started_at, ended_at, duration_seconds, user_message_count,
             user_messages, files_touched, tools_used, summary, transcript_path,
             subagent_transcripts
         ) VALUES (
-            :session_id, :slug, :project_path, :project, :branch, :model,
+            :session_id, :source, :native_session_id, :source_path,
+            :slug, :project_path, :project, :branch, :model,
             :started_at, :ended_at, :duration_seconds, :user_message_count,
             :user_messages, :files_touched, :tools_used, :summary, :transcript_path,
             :subagent_transcripts
         )
         ON CONFLICT(session_id) DO UPDATE SET
+            source = COALESCE(:source, source),
+            native_session_id = COALESCE(:native_session_id, native_session_id),
+            source_path = COALESCE(:source_path, source_path),
             slug = COALESCE(:slug, slug),
             project_path = COALESCE(:project_path, project_path),
             project = COALESCE(:project, project),
@@ -140,6 +169,9 @@ def upsert_session(
             subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts)
     """, {
         "session_id": session_id,
+        "source": source,
+        "native_session_id": native_session_id,
+        "source_path": source_path,
         "slug": slug,
         "project_path": project_path,
         "project": project,
@@ -255,18 +287,27 @@ def get_session(
     Returns None if not found or if prefix is ambiguous.
     """
     row = conn.execute(
-        "SELECT * FROM sessions WHERE session_id = :id", {"id": identifier}
+        """
+        SELECT * FROM sessions
+        WHERE session_id = :id OR native_session_id = :id
+        """,
+        {"id": identifier},
     ).fetchone()
     if row:
         return dict(row)
 
     if len(identifier) >= 8:
         rows = conn.execute(
-            "SELECT * FROM sessions WHERE session_id LIKE :prefix",
+            """
+            SELECT * FROM sessions
+            WHERE session_id LIKE :prefix OR native_session_id LIKE :prefix
+            """,
             {"prefix": f"{identifier}%"},
         ).fetchall()
-        if len(rows) == 1:
-            return dict(rows[0])
+        # Deduplicate defensively in case session_id and native_session_id both match.
+        by_sid = {row["session_id"]: row for row in rows}
+        if len(by_sid) == 1:
+            return dict(next(iter(by_sid.values())))
 
     return None
 
