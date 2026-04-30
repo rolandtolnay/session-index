@@ -3,7 +3,7 @@
 
 Usage:
     uv run cli.py search "query"
-    uv run cli.py backfill [--force] [--prune]
+    uv run cli.py backfill [--source claude|pi|all] [--force] [--prune]
     uv run cli.py status [--fix]
 """
 
@@ -14,17 +14,16 @@ import shutil
 import sys
 import time
 
-from db import get_connection, init_db, upsert_session, search_flexible, get_session, get_stats, rebuild_fts, DB_PATH
+from db import get_connection, init_db, search_flexible, get_session, get_stats, rebuild_fts, DB_PATH
 from logger import log
-from parser import parse_jsonl, clean_user_messages
-from subagent_parser import discover_subagents, parse_subagent_jsonl
+from parser import clean_user_messages
 from summarizer import summarize
 from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, TRANSCRIPT_DIR
 
 
 def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
     """Log search call for auditing."""
-    session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+    session_id = os.environ.get("SESSION_INDEX_CALLER_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID", "")
     params = []
     if args.query:
         params.append(f'query="{args.query}"')
@@ -110,7 +109,7 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 def _log_excerpt(session_ids: list[str], query: str, elapsed_ms: int) -> None:
     """Log excerpt call for auditing."""
-    caller_sid = os.environ.get("CLAUDE_SESSION_ID", "")
+    caller_sid = os.environ.get("SESSION_INDEX_CALLER_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID", "")
     ids_str = ",".join(s[:12] for s in session_ids)
     log(caller_sid, "excerpt", f'sessions=[{ids_str}] query="{query}" ({elapsed_ms}ms)')
 
@@ -221,10 +220,28 @@ def cmd_excerpt(args: argparse.Namespace) -> None:
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
-    """Process all JSONL files from ~/.claude/projects/."""
-    projects_dir = os.path.expanduser("~/.claude/projects")
-    if not os.path.exists(projects_dir):
-        print(f"Projects dir not found: {projects_dir}")
+    """Process JSONL files from Claude Code and/or Pi."""
+    from indexer import (
+        discover_session_subagents,
+        parse_session_file,
+        parse_session_subagent,
+        upsert_parsed_session,
+    )
+    from sources import discover_sessions
+
+    source = getattr(args, "source", "all")
+    try:
+        source_files = discover_sessions(
+            source,
+            session_id=getattr(args, "session", None),
+            pi_session_dir=getattr(args, "pi_session_dir", None),
+        )
+    except ValueError as e:
+        print(str(e))
+        return
+
+    if not source_files:
+        print("No JSONL files found.")
         return
 
     conn = get_connection()
@@ -246,24 +263,6 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             conn.commit()
             print(f"Pruned {pruned} noise session(s)")
 
-    # Find JSONL files (optionally filtered)
-    if args.session:
-        # Single session: search all project dirs for this session ID
-        pattern = os.path.join(projects_dir, "*", f"{args.session}.jsonl")
-        jsonl_files = sorted(glob.glob(pattern))
-    else:
-        pattern = os.path.join(projects_dir, "*", "*.jsonl")
-        jsonl_files = sorted(glob.glob(pattern))
-
-    if not jsonl_files:
-        print("No JSONL files found.")
-        conn.close()
-        return
-
-    # Filter by project if requested (requires parsing to check project name)
-    # We do this lazily during iteration to avoid parsing everything upfront
-
-    # Check which sessions already have summaries (skip unless --force)
     existing = set()
     if not args.force and not args.transcripts_only and not args.subagents:
         cursor = conn.execute(
@@ -271,7 +270,6 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         )
         existing = {row[0] for row in cursor.fetchall()}
 
-    # For --subagents without --force, skip sessions that already have subagent_transcripts
     existing_subagents = set()
     if args.subagents and not args.force:
         cursor = conn.execute(
@@ -279,21 +277,28 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         )
         existing_subagents = {row[0] for row in cursor.fetchall()}
 
-    total = len(jsonl_files)
+    total = len(source_files)
     processed = 0
     skipped = 0
     errors = 0
 
-    for i, path in enumerate(jsonl_files, 1):
-        session_id = os.path.splitext(os.path.basename(path))[0]
-
-        if not args.subagents and session_id in existing:
-            skipped += 1
-            continue
+    for i, source_file in enumerate(source_files, 1):
+        source_name = source_file.source
+        path = source_file.path
+        display_id = os.path.splitext(os.path.basename(path))[0]
 
         try:
             start = time.monotonic()
-            session = parse_jsonl(path)
+            session = parse_session_file(source_name, path)
+            session_id = session.session_id or display_id
+
+            if not session.session_id:
+                skipped += 1
+                continue
+
+            if not args.subagents and session.session_id in existing:
+                skipped += 1
+                continue
 
             # Filter by project name if --project given
             if args.project and session.project.lower() != args.project.lower():
@@ -301,17 +306,12 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 continue
 
             if args.subagents:
-                # Subagent processing mode
-                already_processed = session_id in existing_subagents
+                already_processed = session.session_id in existing_subagents
 
-                # --transcripts-only: regenerate parent transcripts (with subagent links)
-                # even for sessions whose subagents were already processed
                 if args.transcripts_only and session.messages:
-                    # Discover subagents to build reference links
-                    sub_infos = discover_subagents(path)
                     sub_refs = []
-                    for info in sub_infos:
-                        parsed = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                    for info in discover_session_subagents(source_name, path):
+                        parsed = parse_session_subagent(source_name, info)
                         if parsed.messages:
                             sub_refs.append(SubagentRef(agent_type=parsed.agent_type, agent_id=parsed.agent_id))
                     write_transcript(
@@ -324,7 +324,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     )
                     if already_processed:
                         elapsed = time.monotonic() - start
-                        print(f"[{i}/{total}] {session_id[:12]}... transcript ({elapsed:.1f}s)")
+                        print(f"[{i}/{total}] {source_name}:{session_id[:12]}... transcript ({elapsed:.1f}s)")
                         processed += 1
                         continue
 
@@ -332,14 +332,9 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     skipped += 1
                     continue
 
-                subagent_infos = discover_subagents(path)
-                if not subagent_infos:
-                    skipped += 1
-                    continue
-
                 parsed_subagents = []
-                for info in subagent_infos:
-                    parsed = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                for info in discover_session_subagents(source_name, path):
+                    parsed = parse_session_subagent(source_name, info)
                     if parsed.messages:
                         parsed_subagents.append(parsed)
 
@@ -347,75 +342,65 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     skipped += 1
                     continue
 
-                # Aggregate subagent files_touched into parent
                 all_files = set(session.files_touched)
                 for sub in parsed_subagents:
                     all_files.update(sub.files_touched)
                 enriched_files = sorted(all_files)
 
-                # Write subagent transcripts
                 subagent_paths = []
                 for sub in parsed_subagents:
-                    sub_path = write_subagent_transcript(session.session_id or session_id, sub)
-                    subagent_paths.append(sub_path)
+                    subagent_paths.append(write_subagent_transcript(session.session_id, sub))
 
-                # Update DB with enriched files and subagent paths
-                upsert_session(
+                upsert_parsed_session(
                     conn,
-                    session_id=session.session_id or session_id,
-                    files_touched=", ".join(enriched_files) if enriched_files else None,
-                    subagent_transcripts=", ".join(subagent_paths) if subagent_paths else None,
+                    session,
+                    source=source_name,
+                    source_path=path,
+                    files_touched=enriched_files,
+                    subagent_transcripts=subagent_paths,
                 )
 
                 elapsed = time.monotonic() - start
-                print(f"[{i}/{total}] {session_id[:12]}... {len(parsed_subagents)} subagent(s) ({elapsed:.1f}s)")
+                print(f"[{i}/{total}] {source_name}:{session_id[:12]}... {len(parsed_subagents)} subagent(s) ({elapsed:.1f}s)")
                 processed += 1
 
             elif args.transcripts_only:
-                # Transcript-only: regenerate for any session that has messages,
-                # regardless of threshold (every DB entry deserves a transcript)
                 if not session.messages:
                     skipped += 1
                     continue
-                # Discover subagents for reference links
-                sub_infos = discover_subagents(path)
                 sub_refs = []
-                for info in sub_infos:
-                    parsed_sub = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                for info in discover_session_subagents(source_name, path):
+                    parsed_sub = parse_session_subagent(source_name, info)
                     if parsed_sub.messages:
                         sub_refs.append(SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id))
-                # Only regenerate transcript, skip summary
                 transcript_path = write_transcript(
-                        session.session_id,
-                        session.messages,
-                        project=session.project,
-                        branch=session.branch,
-                        timestamp=session.started_at,
-                        subagents=sub_refs or None,
-                    )
+                    session.session_id,
+                    session.messages,
+                    project=session.project,
+                    branch=session.branch,
+                    timestamp=session.started_at,
+                    subagents=sub_refs or None,
+                )
                 if transcript_path:
                     conn.execute(
-                        "UPDATE sessions SET transcript_path = ? WHERE session_id = ?",
-                        (transcript_path, session.session_id),
+                        "UPDATE sessions SET transcript_path = ?, source_path = COALESCE(?, source_path) WHERE session_id = ?",
+                        (transcript_path, path, session.session_id),
                     )
                     conn.commit()
 
                 elapsed = time.monotonic() - start
-                print(f"[{i}/{total}] {session_id[:12]}... transcript ({elapsed:.1f}s)")
+                print(f"[{i}/{total}] {source_name}:{session_id[:12]}... transcript ({elapsed:.1f}s)")
                 processed += 1
             else:
-                # Full processing: apply message threshold for new entries
                 if session.user_message_count < 1 or session.assistant_message_count < 1:
                     skipped += 1
                     continue
 
-                # For short sessions, include last assistant message for context
-                SHORT_SESSION_THRESHOLD = 5
+                short_session_threshold = 5
                 last_assistant = None
-                if session.user_message_count <= SHORT_SESSION_THRESHOLD and session.assistant_messages:
+                if session.user_message_count <= short_session_threshold and session.assistant_messages:
                     last_assistant = session.assistant_messages[-1]
 
-                # Generate summary + transcript
                 summary = summarize(
                     project=session.project,
                     branch=session.branch,
@@ -426,11 +411,9 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 
                 transcript_path = None
                 if session.messages:
-                    # Discover subagents for reference links in transcript
-                    sub_infos = discover_subagents(path)
                     sub_refs = []
-                    for info in sub_infos:
-                        parsed_sub = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+                    for info in discover_session_subagents(source_name, path):
+                        parsed_sub = parse_session_subagent(source_name, info)
                         if parsed_sub.messages:
                             sub_refs.append(SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id))
                     transcript_path = write_transcript(
@@ -442,32 +425,22 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                         subagents=sub_refs or None,
                     )
 
-                upsert_session(
+                upsert_parsed_session(
                     conn,
-                    session_id=session.session_id,
-                    slug=session.slug or None,
-                    project_path=session.project_path or None,
-                    project=session.project or None,
-                    branch=session.branch or None,
-                    model=session.model or None,
-                    started_at=session.started_at or None,
-                    ended_at=session.ended_at or None,
-                    duration_seconds=session.duration_seconds or None,
-                    user_message_count=session.user_message_count,
-                    user_messages="\n---\n".join(session.user_messages) if session.user_messages else None,
-                    files_touched=", ".join(session.files_touched) if session.files_touched else None,
-                    tools_used=session.tools_used or None,
+                    session,
+                    source=source_name,
+                    source_path=path,
                     summary=summary,
                     transcript_path=transcript_path,
                 )
 
                 elapsed = time.monotonic() - start
                 summary_status = f"summary ({elapsed:.1f}s)" if summary else "no summary"
-                print(f"[{i}/{total}] {session_id[:12]}... {summary_status}")
+                print(f"[{i}/{total}] {source_name}:{session_id[:12]}... {summary_status}")
                 processed += 1
 
         except Exception as e:
-            print(f"[{i}/{total}] {session_id[:12]}... ERROR: {e}")
+            print(f"[{i}/{total}] {source_name}:{display_id[:12]}... ERROR: {e}")
             errors += 1
 
     conn.close()
@@ -491,27 +464,34 @@ def _check_integrity(conn) -> dict:
 
     projects_dir = os.path.expanduser("~/.claude/projects")
 
+    def source_jsonl_exists(row) -> bool:
+        source_path = row["source_path"] if "source_path" in row.keys() else None
+        if source_path and os.path.exists(source_path):
+            return True
+        sid = row["session_id"]
+        native = row["native_session_id"] if "native_session_id" in row.keys() else sid
+        if (row["source"] if "source" in row.keys() else "claude") == "claude":
+            return bool(glob.glob(os.path.join(projects_dir, "*", f"{native}.jsonl")))
+        return False
+
     # Missing summaries
     cursor = conn.execute(
-        "SELECT session_id FROM sessions WHERE summary IS NULL"
+        "SELECT session_id, native_session_id, source, source_path FROM sessions WHERE summary IS NULL"
     )
     for row in cursor:
-        sid = row[0]
+        sid = row["session_id"]
         issues["missing_summary"].append(sid)
-        # Check if JSONL still exists (recoverable)
-        pattern = os.path.join(projects_dir, "*", f"{sid}.jsonl")
-        if glob.glob(pattern):
+        if source_jsonl_exists(row):
             issues["recoverable"].append(sid)
 
     # Missing transcripts
     cursor = conn.execute(
-        "SELECT session_id FROM sessions WHERE transcript_path IS NULL"
+        "SELECT session_id, native_session_id, source, source_path FROM sessions WHERE transcript_path IS NULL"
     )
     for row in cursor:
-        sid = row[0]
+        sid = row["session_id"]
         issues["missing_transcript"].append(sid)
-        pattern = os.path.join(projects_dir, "*", f"{sid}.jsonl")
-        if glob.glob(pattern):
+        if source_jsonl_exists(row):
             issues["transcript_recoverable"].append(sid)
 
     # Dangling transcript paths
@@ -714,6 +694,8 @@ def main() -> None:
     sp_backfill = subparsers.add_parser("backfill", help="Process all JSONL files")
     sp_backfill.add_argument("--force", action="store_true", help="Re-process sessions with existing summaries")
     sp_backfill.add_argument("--prune", action="store_true", help="Delete noise sessions before processing")
+    sp_backfill.add_argument("--source", choices=("claude", "pi", "all"), default="all", help="Conversation source to process (default: all)")
+    sp_backfill.add_argument("--pi-session-dir", help="Override Pi session directory")
     sp_backfill.add_argument("--project", help="Only process sessions for this project name")
     sp_backfill.add_argument("--session", help="Only process this specific session ID")
     sp_backfill.add_argument("--transcripts-only", action="store_true",
