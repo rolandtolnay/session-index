@@ -2,13 +2,14 @@
 /**
  * session-index installer
  *
- * Symlinks the skill into ~/.claude/skills/ and registers hooks
- * in ~/.claude/settings.json so Claude Code can use session search
- * and index conversations automatically.
+ * Installs Claude Code hooks/skill and/or Pi extension/skill.
  *
  * Usage:
- *   node install.js              # Install
- *   node install.js --uninstall  # Remove everything
+ *   node install.js                         # Install Claude + Pi integrations
+ *   node install.js --target claude         # Install Claude only
+ *   node install.js --target pi             # Install Pi only
+ *   node install.js --uninstall             # Remove Claude + Pi integrations
+ *   node install.js --uninstall --target pi # Remove Pi only
  */
 
 const fs = require("fs");
@@ -18,17 +19,27 @@ const os = require("os");
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const TOOLKIT_NAME = "session-index";
-const CLAUDE_DIR = path.join(os.homedir(), ".claude");
-const SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json");
-const MANIFEST_DIR = path.join(CLAUDE_DIR, TOOLKIT_NAME);
-const MANIFEST_PATH = path.join(MANIFEST_DIR, ".manifest.json");
 const REPO_ROOT = fs.realpathSync(__dirname);
+
+const CLAUDE_DIR = path.join(os.homedir(), ".claude");
+const CLAUDE_SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json");
+const CLAUDE_MANIFEST_DIR = path.join(CLAUDE_DIR, TOOLKIT_NAME);
+const CLAUDE_MANIFEST_PATH = path.join(CLAUDE_MANIFEST_DIR, ".manifest.json");
+
+const PI_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
+const PI_MANIFEST_DIR = path.join(PI_AGENT_DIR, TOOLKIT_NAME);
+const PI_MANIFEST_PATH = path.join(PI_MANIFEST_DIR, ".manifest.json");
 
 const SKILL_NAME = "session-search";
 const SKILL_SRC = path.join(REPO_ROOT, "skills", SKILL_NAME);
-const SKILL_DST = path.join(CLAUDE_DIR, "skills", SKILL_NAME);
+const CLAUDE_SKILL_DST = path.join(CLAUDE_DIR, "skills", SKILL_NAME);
+const PI_SKILL_DST = path.join(PI_AGENT_DIR, "skills", SKILL_NAME);
 
-const HOOKS = [
+const PI_EXTENSION_NAME = "session-index";
+const PI_EXTENSION_SRC = path.join(REPO_ROOT, "pi-extension");
+const PI_EXTENSION_DST = path.join(PI_AGENT_DIR, "extensions", PI_EXTENSION_NAME);
+
+const CLAUDE_HOOKS = [
   {
     event: "Stop",
     command: `uv run ${path.join(REPO_ROOT, "hooks", "stop.py")}`,
@@ -52,179 +63,188 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-function readSettings() {
-  if (!fs.existsSync(SETTINGS_PATH)) return {};
-  return JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8"));
+function readJson(file, fallback = {}) {
+  if (!fs.existsSync(file)) return fallback;
+  return JSON.parse(fs.readFileSync(file, "utf-8"));
 }
 
-function writeSettings(settings) {
-  ensureDir(CLAUDE_DIR);
-  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
+function writeJson(file, value) {
+  ensureDir(path.dirname(file));
+  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
 }
 
-/** Check if a hook entry's command references this repo. */
-function isOurHook(entry) {
-  return entry.hooks?.some((h) => h.command?.includes(REPO_ROOT));
-}
-
-// ── Install ─────────────────────────────────────────────────────────────────
-
-function install() {
-  console.log(`\nInstalling ${TOOLKIT_NAME} from ${REPO_ROOT}\n`);
-
-  // 1. Symlink skill
-  ensureDir(path.dirname(SKILL_DST));
+function linkResource(src, dst, label) {
+  ensureDir(path.dirname(dst));
   let dstExists = false;
-  try { fs.lstatSync(SKILL_DST); dstExists = true; } catch {}
+  try { fs.lstatSync(dst); dstExists = true; } catch {}
+
   if (dstExists) {
     try {
-      const target = fs.realpathSync(SKILL_DST);
-      if (target === SKILL_SRC) {
-        console.log(`  [skip] Skill already linked: ${SKILL_NAME}`);
+      const target = fs.realpathSync(dst);
+      if (target === src) {
+        console.log(`  [skip] ${label} already linked`);
       } else {
-        console.log(
-          `  [WARN] ${SKILL_DST} exists but points to ${target} — skipping`
-        );
-        console.log(`         Remove it manually if you want to re-link.`);
+        console.log(`  [WARN] ${dst} exists but points to ${target} — skipping`);
+        console.log("         Remove it manually if you want to re-link.");
       }
     } catch {
-      // Broken symlink — remove and re-create
-      fs.unlinkSync(SKILL_DST);
-      fs.symlinkSync(SKILL_SRC, SKILL_DST);
-      console.log(`  [fix]  Re-linked skill: ${SKILL_NAME} (was broken)`);
+      fs.rmSync(dst, { recursive: true, force: true });
+      fs.symlinkSync(src, dst, fs.statSync(src).isDirectory() ? "dir" : "file");
+      console.log(`  [fix]  Re-linked ${label} (was broken)`);
     }
   } else {
-    fs.symlinkSync(SKILL_SRC, SKILL_DST);
-    console.log(`  [ok]   Linked skill: ${SKILL_NAME}`);
+    fs.symlinkSync(src, dst, fs.statSync(src).isDirectory() ? "dir" : "file");
+    console.log(`  [ok]   Linked ${label}`);
+  }
+}
+
+function unlinkResource(dst, expectedSrc, label) {
+  let dstExists = false;
+  try { fs.lstatSync(dst); dstExists = true; } catch {}
+  if (!dstExists) {
+    console.log(`  [skip] ${label} not installed`);
+    return;
   }
 
-  // 2. Register hooks in settings.json
-  const settings = readSettings();
+  try {
+    const target = fs.realpathSync(dst);
+    if (target === expectedSrc) {
+      fs.rmSync(dst, { recursive: true, force: true });
+      console.log(`  [ok]   Removed ${label}`);
+    } else {
+      console.log(`  [skip] ${label} points elsewhere — not removing`);
+    }
+  } catch {
+    fs.rmSync(dst, { recursive: true, force: true });
+    console.log(`  [ok]   Removed broken ${label} symlink`);
+  }
+}
+
+function isOurHook(entry, repoRoot = REPO_ROOT) {
+  return entry.hooks?.some((h) => h.command?.includes(repoRoot));
+}
+
+function parseTarget(args) {
+  const idx = args.indexOf("--target");
+  const target = idx >= 0 ? args[idx + 1] : "all";
+  if (!["claude", "pi", "all"].includes(target)) {
+    console.error(`Invalid --target: ${target}. Use claude, pi, or all.`);
+    process.exit(1);
+  }
+  return target;
+}
+
+function includesTarget(target, name) {
+  return target === "all" || target === name;
+}
+
+// ── Claude install ──────────────────────────────────────────────────────────
+
+function installClaude() {
+  console.log("\nClaude Code integration");
+
+  linkResource(SKILL_SRC, CLAUDE_SKILL_DST, `Claude skill: ${SKILL_NAME}`);
+
+  const settings = readJson(CLAUDE_SETTINGS_PATH, {});
   if (!settings.hooks) settings.hooks = {};
 
   let hooksChanged = false;
-  for (const { event, command, timeout } of HOOKS) {
+  for (const { event, command, timeout } of CLAUDE_HOOKS) {
     if (!settings.hooks[event]) settings.hooks[event] = [];
 
-    const already = settings.hooks[event].some(isOurHook);
+    const already = settings.hooks[event].some((entry) => isOurHook(entry));
     if (already) {
       console.log(`  [skip] Hook already registered: ${event}`);
     } else {
-      settings.hooks[event].push({
-        hooks: [{ type: "command", command, timeout }],
-      });
+      settings.hooks[event].push({ hooks: [{ type: "command", command, timeout }] });
       console.log(`  [ok]   Registered hook: ${event}`);
       hooksChanged = true;
     }
   }
 
-  if (hooksChanged) writeSettings(settings);
+  if (hooksChanged) writeJson(CLAUDE_SETTINGS_PATH, settings);
 
-  // 3. Write manifest
-  ensureDir(MANIFEST_DIR);
-  const manifest = {
+  writeJson(CLAUDE_MANIFEST_PATH, {
     version: "1.0.0",
     installedAt: new Date().toISOString(),
+    target: "claude",
     repoRoot: REPO_ROOT,
     skill: SKILL_NAME,
-    hookEvents: HOOKS.map((h) => h.event),
-  };
-  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + "\n");
-
-  console.log(`\n  Manifest written to ${MANIFEST_PATH}`);
-  console.log(`\nDone! Next steps:`);
-  console.log(`  1. Make sure Ollama is running: ollama pull qwen3.5:4b`);
-  console.log(`  2. Backfill existing sessions:  cd ${REPO_ROOT} && uv run cli.py backfill`);
-  console.log(`  3. Search from any conversation: /session-search <query>\n`);
+    hookEvents: CLAUDE_HOOKS.map((h) => h.event),
+  });
+  console.log(`  [ok]   Manifest: ${CLAUDE_MANIFEST_PATH}`);
 }
 
-// ── Uninstall ───────────────────────────────────────────────────────────────
+function uninstallClaude() {
+  console.log("\nClaude Code integration");
 
-function uninstall() {
-  console.log(`\nUninstalling ${TOOLKIT_NAME}\n`);
-
-  // Read manifest for repo root (handles case where uninstall runs from different dir)
   let repoRoot = REPO_ROOT;
-  if (fs.existsSync(MANIFEST_PATH)) {
-    try {
-      const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf-8"));
-      repoRoot = manifest.repoRoot || REPO_ROOT;
-    } catch {}
+  if (fs.existsSync(CLAUDE_MANIFEST_PATH)) {
+    try { repoRoot = readJson(CLAUDE_MANIFEST_PATH).repoRoot || REPO_ROOT; } catch {}
   }
 
-  // 1. Remove skill symlink
-  let dstExists = false;
-  try { fs.lstatSync(SKILL_DST); dstExists = true; } catch {}
-  if (dstExists) {
-    try {
-      const target = fs.realpathSync(SKILL_DST);
-      if (target === path.join(repoRoot, "skills", SKILL_NAME)) {
-        fs.unlinkSync(SKILL_DST);
-        console.log(`  [ok]   Removed skill: ${SKILL_NAME}`);
-      } else {
-        console.log(`  [skip] Skill points elsewhere — not removing`);
-      }
-    } catch {
-      // Broken symlink
-      fs.unlinkSync(SKILL_DST);
-      console.log(`  [ok]   Removed broken skill symlink: ${SKILL_NAME}`);
-    }
-  } else {
-    console.log(`  [skip] Skill not installed`);
-  }
+  unlinkResource(CLAUDE_SKILL_DST, path.join(repoRoot, "skills", SKILL_NAME), `Claude skill: ${SKILL_NAME}`);
 
-  // 2. Remove hooks from settings.json
-  if (fs.existsSync(SETTINGS_PATH)) {
-    const settings = readSettings();
+  if (fs.existsSync(CLAUDE_SETTINGS_PATH)) {
+    const settings = readJson(CLAUDE_SETTINGS_PATH, {});
     let changed = false;
 
     if (settings.hooks) {
-      for (const { event } of HOOKS) {
+      for (const { event } of CLAUDE_HOOKS) {
         if (!settings.hooks[event]) continue;
-
         const before = settings.hooks[event].length;
-        settings.hooks[event] = settings.hooks[event].filter((entry) => {
-          // Match by repo root from manifest or current script location
-          return !entry.hooks?.some(
-            (h) => h.command?.includes(repoRoot)
-          );
-        });
-        const after = settings.hooks[event].length;
-
-        if (after < before) {
+        settings.hooks[event] = settings.hooks[event].filter((entry) => !isOurHook(entry, repoRoot));
+        if (settings.hooks[event].length < before) {
           console.log(`  [ok]   Removed hook: ${event}`);
           changed = true;
         } else {
           console.log(`  [skip] Hook not found: ${event}`);
         }
-
-        // Clean up empty arrays
-        if (settings.hooks[event].length === 0) {
-          delete settings.hooks[event];
-        }
+        if (settings.hooks[event].length === 0) delete settings.hooks[event];
       }
-
-      // Clean up empty hooks object
-      if (Object.keys(settings.hooks).length === 0) {
-        delete settings.hooks;
-      }
+      if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
     }
 
-    if (changed) writeSettings(settings);
+    if (changed) writeJson(CLAUDE_SETTINGS_PATH, settings);
   }
 
-  // 3. Remove manifest
-  if (fs.existsSync(MANIFEST_PATH)) {
-    fs.unlinkSync(MANIFEST_PATH);
-    console.log(`  [ok]   Removed manifest`);
-  }
-  if (fs.existsSync(MANIFEST_DIR)) {
-    try {
-      fs.rmdirSync(MANIFEST_DIR);
-    } catch {}
+  fs.rmSync(CLAUDE_MANIFEST_PATH, { force: true });
+  try { fs.rmdirSync(CLAUDE_MANIFEST_DIR); } catch {}
+  console.log("  [ok]   Claude manifest removed if present");
+}
+
+// ── Pi install ──────────────────────────────────────────────────────────────
+
+function installPi() {
+  console.log("\nPi integration");
+  linkResource(SKILL_SRC, PI_SKILL_DST, `Pi skill: ${SKILL_NAME}`);
+  linkResource(PI_EXTENSION_SRC, PI_EXTENSION_DST, `Pi extension: ${PI_EXTENSION_NAME}`);
+
+  writeJson(PI_MANIFEST_PATH, {
+    version: "1.0.0",
+    installedAt: new Date().toISOString(),
+    target: "pi",
+    repoRoot: REPO_ROOT,
+    skill: SKILL_NAME,
+    extension: PI_EXTENSION_NAME,
+  });
+  console.log(`  [ok]   Manifest: ${PI_MANIFEST_PATH}`);
+}
+
+function uninstallPi() {
+  console.log("\nPi integration");
+
+  let repoRoot = REPO_ROOT;
+  if (fs.existsSync(PI_MANIFEST_PATH)) {
+    try { repoRoot = readJson(PI_MANIFEST_PATH).repoRoot || REPO_ROOT; } catch {}
   }
 
-  console.log(`\nDone! session-index has been uninstalled.\n`);
+  unlinkResource(PI_SKILL_DST, path.join(repoRoot, "skills", SKILL_NAME), `Pi skill: ${SKILL_NAME}`);
+  unlinkResource(PI_EXTENSION_DST, path.join(repoRoot, "pi-extension"), `Pi extension: ${PI_EXTENSION_NAME}`);
+
+  fs.rmSync(PI_MANIFEST_PATH, { force: true });
+  try { fs.rmdirSync(PI_MANIFEST_DIR); } catch {}
+  console.log("  [ok]   Pi manifest removed if present");
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -236,14 +256,27 @@ if (args.includes("--help") || args.includes("-h")) {
 Usage: node install.js [options]
 
 Options:
-  --uninstall   Remove skill, hooks, and manifest
-  --help        Show this help
+  --target <claude|pi|all>  Integration target (default: all)
+  --uninstall               Remove installed integrations
+  --help                    Show this help
 `);
   process.exit(0);
 }
 
-if (args.includes("--uninstall")) {
-  uninstall();
+const target = parseTarget(args);
+const uninstall = args.includes("--uninstall");
+
+console.log(`\n${uninstall ? "Uninstalling" : "Installing"} ${TOOLKIT_NAME} from ${REPO_ROOT}`);
+
+if (uninstall) {
+  if (includesTarget(target, "claude")) uninstallClaude();
+  if (includesTarget(target, "pi")) uninstallPi();
+  console.log("\nDone.\n");
 } else {
-  install();
+  if (includesTarget(target, "claude")) installClaude();
+  if (includesTarget(target, "pi")) installPi();
+  console.log(`\nDone! Next steps:`);
+  console.log(`  1. Make sure Ollama is running: ollama pull qwen3.5:4b`);
+  console.log(`  2. Backfill existing sessions: cd ${REPO_ROOT} && uv run cli.py backfill --source all`);
+  console.log(`  3. In Pi, run /reload or restart Pi so the extension and skill load.\n`);
 }
