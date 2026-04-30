@@ -1,6 +1,6 @@
 ---
 name: session-search
-description: Search past Claude Code conversations by topic, file, project, or decision
+description: Search past Claude Code and Pi conversations by topic, file, project, or decision
 user_invocable: true
 arguments:
   - name: query
@@ -10,20 +10,26 @@ arguments:
 
 # Session Search
 
-Search and extract content from past Claude Code conversations.
+Search and extract content from past Claude Code and Pi conversations indexed in `~/.session-index`.
 
 ## Commands
 
 ### search — Find sessions
 
 ```bash
-uv run ~/.claude/skills/session-search/scripts/search.py [query] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--no-any] [--limit N]
+uv run ~/.pi/agent/skills/session-search/scripts/search.py [query] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--no-any] [--limit N]
+```
+
+If you are running from Claude Code and only have the Claude skill installed, the same script is available at:
+
+```bash
+uv run ~/.claude/skills/session-search/scripts/search.py [query]
 ```
 
 Returns session summaries: session_id, project, date, branch, summary, files touched.
 
 - **query** -- FTS keywords (optional if filters given). Default: OR matching (any term matches)
-- **--project** -- prefix match (e.g., `--project synapto` matches synapto-backend, synapto-infra)
+- **--project** -- prefix match (e.g., `--project session` matches session-index)
 - **--since / --until** -- date range filter (ISO dates)
 - **--no-any** -- require ALL terms to match (AND). Default is OR
 - **--limit** -- max results (default 20)
@@ -32,15 +38,21 @@ Returns session summaries: session_id, project, date, branch, summary, files tou
 ### excerpt — Extract transcript passages
 
 ```bash
-uv run ~/.claude/skills/session-search/scripts/excerpt.py <session> [<session> ...] -q "keywords"
+uv run ~/.pi/agent/skills/session-search/scripts/excerpt.py <session> [<session> ...] -q "keywords"
+```
+
+Claude Code path, if needed:
+
+```bash
+uv run ~/.claude/skills/session-search/scripts/excerpt.py <session> -q "keywords"
 ```
 
 Returns focused transcript blocks from specific sessions (max 3 per call).
 
-- **session** -- session ID (or 8+ char prefix) from search results (1-3 values)
+- **session** -- session ID (or 8+ char prefix). Pi rows are stored as `pi:<uuid>` but raw UUID prefixes also resolve.
 - **-q / --query** -- keywords to focus extraction (required)
 - Example: `excerpt.py 07983a7f -q "auth token refresh"`
-- Example: `excerpt.py 07983a7f cb3c90df -q "migration schema"`
+- Example: `excerpt.py 019dde8f -q "pi transcript parser"`
 
 ## Workflow
 
@@ -55,9 +67,9 @@ Most questions are answered by summaries alone. Use `excerpt` only when you need
 `excerpt` auto-scans subagent transcripts and reports additional matches in a footer. When you need to read more than the top hit, go to the files directly:
 
 - `~/.session-index/transcripts/<session-id>.md` -- main session transcript (user + assistant turns)
-- `~/.session-index/transcripts/<session-id>/agent-*.md` -- one file per spawned Agent tool call, with the full prompt at the top and every tool call that agent made
+- `~/.session-index/transcripts/<session-id>/agent-*.md` -- one file per spawned subagent, when available
 
-These are cleaned markdown, much more compact than the raw JSONL at `~/.claude/projects/`. Prefer them as the fallback — do NOT read raw JSONL.
+These are cleaned markdown, much more compact than raw JSONL at `~/.claude/projects/` or `~/.pi/agent/sessions/`. Prefer them as the fallback — do NOT read raw JSONL.
 
 ## Query Tips
 
@@ -70,7 +82,7 @@ These are cleaned markdown, much more compact than the raw JSONL at `~/.claude/p
 Invoke this skill when the user:
 - References past work in another project
 - Asks about a prior decision or discussion
-- Wants to find or resume a previous conversation (`claude --resume <session_id>`)
+- Wants to find or resume a previous conversation
 - Asks to generate PR summaries or changelogs from recent work
 
-Note: Recent same-project sessions are already in context via the SessionStart hook -- use this skill for older sessions, other projects, or specific topic lookups.
+Note: Recent same-project sessions are already injected automatically when the relevant Claude hook or Pi extension is installed. Use this skill for older sessions, other projects, or specific topic lookups.

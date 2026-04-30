@@ -7,16 +7,23 @@ Architecture details, log format, and troubleshooting for session-index.
 ## Architecture Overview
 
 ```
-settings.json hooks config
+Claude settings.json hooks config
     │
     ├─ SessionStart ──────► session_start.py ──► inject recent context into conversation
     │
-    ├─ Stop ──────────────► stop.py ──► upsert deterministic fields (messages, files, duration)
+    ├─ Stop ──────────────► stop.py ──► shared indexer fast upsert
     │
     └─ SessionEnd ────────► session_end.py ──► fork _session_end_worker.py
-                                                 ├─ LLM summary via Ollama
-                                                 ├─ Cleaned transcript → ~/.session-index/transcripts/
-                                                 └─ Full DB upsert (summary, transcript_path, slug)
+                                                 └─ shared indexer full pass
+
+Pi extension
+    │
+    ├─ before_agent_start ─► pi_context.py ──► inject recent context into system prompt
+    ├─ agent_end ──────────► pi_index.py --mode fast
+    └─ session_shutdown ───► pi_index.py --mode full
+
+Shared full pass:
+    parser adapter ─► LLM summary via Ollama ─► cleaned transcript ─► DB upsert
 
 Search path (skill invocation):
     search.py (skill wrapper) ──► cmd_search() in cli.py ──► FTS5 query ──► formatted output
@@ -27,20 +34,27 @@ Search path (skill invocation):
 
 | File | Purpose |
 |------|---------|
-| `hooks/session_start.py` | SessionStart: injects recent same-project + cross-project session context |
-| `hooks/stop.py` | Stop: upserts deterministic fields (message counts, files touched, duration) |
-| `hooks/session_end.py` | SessionEnd: launches detached worker for LLM summary + transcript |
-| `hooks/_session_end_worker.py` | Detached worker: generates summary via Ollama, writes transcript, upserts DB |
+| `hooks/session_start.py` | Claude SessionStart: injects recent same-project + cross-project context |
+| `hooks/stop.py` | Claude Stop: shared deterministic fast upsert |
+| `hooks/session_end.py` | Claude SessionEnd: launches detached worker |
+| `hooks/_session_end_worker.py` | Claude detached worker: runs shared full index pass |
+| `hooks/pi_index.py` | Pi extension entry point for fast/full indexing |
+| `hooks/pi_context.py` | Pi extension entry point for recent-context system prompt injection |
+| `pi-extension/index.ts` | Pi extension wiring for lifecycle events |
+| `indexer.py` | Shared parse/summarize/transcript/upsert pipeline |
+| `sources.py` | Claude/Pi source JSONL discovery for backfill |
+| `recent_context.py` | Shared recent-session context builder |
 | `cli.py` | CLI entry point: search, excerpt, backfill, status commands |
-| `db.py` | SQLite operations: schema, upsert, FTS5 search, stats |
-| `parser.py` | JSONL parser: extracts messages, files, tools, timestamps from raw session data |
+| `db.py` | SQLite operations: provider-aware schema, upsert, FTS5 search, stats |
+| `parser.py` | Claude JSONL parser |
+| `pi_parser.py` | Pi tree-structured JSONL parser |
 | `transcript.py` | Transcript writer + excerpt extractor for search results |
 | `summarizer.py` | LLM summary generator using local Ollama model |
 | `logger.py` | Structured logging with monthly rotation |
 | `client.py` | Standalone Ollama HTTP client (pure stdlib) |
 | `skills/session-search/scripts/search.py` | Skill wrapper: argparse → `cmd_search()` |
 | `skills/session-search/scripts/excerpt.py` | Skill wrapper: argparse → `cmd_excerpt()` |
-| `skills/session-search/SKILL.md` | Skill instructions for Claude Code agents |
+| `skills/session-search/SKILL.md` | Skill instructions for Claude Code and Pi agents |
 
 ---
 
@@ -52,7 +66,8 @@ Search path (skill invocation):
 | Transcripts | `~/.session-index/transcripts/{session_id}.md` | Permanent |
 | Log (current month) | `~/.session-index/logs/session-index.log` | Monthly rotation |
 | Log (previous month) | `~/.session-index/logs/session-index.prev.log` | Overwritten monthly |
-| Source JSONL | `~/.claude/projects/{encoded_path}/{session_id}.jsonl` | ~3 months (Claude Code managed) |
+| Claude source JSONL | `~/.claude/projects/{encoded_path}/{session_id}.jsonl` | Claude Code managed |
+| Pi source JSONL | `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl` | Pi managed |
 
 ---
 
@@ -72,7 +87,7 @@ HH:MM:SS.mmm [sid] hook_name          | message
 
 - `HH:MM:SS.mmm` — wall-clock timestamp with millisecond precision
 - `[sid]` — last 6 characters of the session ID (or `??????` if unavailable)
-- `hook_name` — left-padded to 18 chars. Values: `session_start`, `session_end`, `worker`, `stop`, `search`
+- `hook_name` — left-padded to 18 chars. Common values: `session_start`, `session_end`, `worker`, `stop`, `pi_index`, `pi_context`, `search`
 - `message` — free-form, action-oriented
 
 ### Filtering by Session
@@ -107,9 +122,10 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 ## Diagnosing Common Issues
 
 **Session not indexed:**
-- `stop | skipped (N user, M assistant msgs)` — needs at least 1 user + 1 assistant message
-- No `session_end` or `worker` lines — session still active, or SessionEnd hook didn't fire
-- `worker | jsonl not found` — JSONL path encoding mismatch
+- `stop | skipped (N user, M assistant msgs)` or `pi_index | fast skipped (...)` — needs at least 1 user + 1 assistant message
+- Claude: no `session_end` or `worker` lines — session still active, or SessionEnd hook didn't fire
+- Pi: no `pi_index` lines — run `/reload` or restart Pi after installing the extension
+- `worker | jsonl not found` / `pi_index | missing session file` — source JSONL path mismatch
 
 **Summary missing:**
 - `worker | llm error: ...` — Ollama not running or model unavailable
