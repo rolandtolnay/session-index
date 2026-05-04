@@ -21,6 +21,8 @@ def test_parse_pi_metadata(monkeypatch):
     assert session.started_at == "2026-04-01T10:00:00.000Z"
     assert session.ended_at == "2026-04-01T10:00:12.000Z"
     assert session.duration_seconds == 12
+    assert session.parent_session_path == "2026-04-01T09-30-00-000Z_019ddfb1-7362-7526-8b21-8a6d77c82fe0.jsonl"
+    assert session.parent_native_session_id == "019ddfb1-7362-7526-8b21-8a6d77c82fe0"
 
 
 def test_parse_pi_active_branch_only():

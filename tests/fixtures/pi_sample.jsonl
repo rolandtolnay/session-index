@@ -1,4 +1,4 @@
-{"type":"session","version":3,"id":"019pi-sample-0001","timestamp":"2026-04-01T10:00:00.000Z","cwd":"/Users/test/project"}
+{"type":"session","version":3,"id":"019pi-sample-0001","timestamp":"2026-04-01T10:00:00.000Z","cwd":"/Users/test/project","parentSession":"2026-04-01T09-30-00-000Z_019ddfb1-7362-7526-8b21-8a6d77c82fe0.jsonl"}
 {"type":"model_change","id":"m0","parentId":null,"timestamp":"2026-04-01T10:00:01.000Z","provider":"openai-codex","modelId":"gpt-5.5"}
 {"type":"thinking_level_change","id":"t0","parentId":"m0","timestamp":"2026-04-01T10:00:02.000Z","thinkingLevel":"high"}
 {"type":"message","id":"u1","parentId":"t0","timestamp":"2026-04-01T10:00:03.000Z","message":{"role":"user","content":"Fix the Pi parser in app.py","timestamp":1775037603000}}

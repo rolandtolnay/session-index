@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     files_touched TEXT,
     tools_used TEXT,
     summary TEXT,
-    transcript_path TEXT
+    transcript_path TEXT,
+    parent_session_path TEXT,
+    parent_native_session_id TEXT
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
@@ -87,6 +89,8 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         ("native_session_id", "ALTER TABLE sessions ADD COLUMN native_session_id TEXT"),
         ("source_path", "ALTER TABLE sessions ADD COLUMN source_path TEXT"),
         ("subagent_transcripts", "ALTER TABLE sessions ADD COLUMN subagent_transcripts TEXT"),
+        ("parent_session_path", "ALTER TABLE sessions ADD COLUMN parent_session_path TEXT"),
+        ("parent_native_session_id", "ALTER TABLE sessions ADD COLUMN parent_native_session_id TEXT"),
     ]
     for _column, ddl in migrations:
         try:
@@ -130,6 +134,8 @@ def upsert_session(
     summary: str | None = None,
     transcript_path: str | None = None,
     subagent_transcripts: str | None = None,
+    parent_session_path: str | None = None,
+    parent_native_session_id: str | None = None,
 ) -> None:
     """Insert or update a session, preserving existing values with COALESCE."""
     source = source or "claude"
@@ -140,13 +146,13 @@ def upsert_session(
             slug, project_path, project, branch, model,
             started_at, ended_at, duration_seconds, user_message_count,
             user_messages, files_touched, tools_used, summary, transcript_path,
-            subagent_transcripts
+            subagent_transcripts, parent_session_path, parent_native_session_id
         ) VALUES (
             :session_id, :source, :native_session_id, :source_path,
             :slug, :project_path, :project, :branch, :model,
             :started_at, :ended_at, :duration_seconds, :user_message_count,
             :user_messages, :files_touched, :tools_used, :summary, :transcript_path,
-            :subagent_transcripts
+            :subagent_transcripts, :parent_session_path, :parent_native_session_id
         )
         ON CONFLICT(session_id) DO UPDATE SET
             source = COALESCE(:source, source),
@@ -166,7 +172,9 @@ def upsert_session(
             tools_used = COALESCE(:tools_used, tools_used),
             summary = COALESCE(:summary, summary),
             transcript_path = COALESCE(:transcript_path, transcript_path),
-            subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts)
+            subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts),
+            parent_session_path = COALESCE(:parent_session_path, parent_session_path),
+            parent_native_session_id = COALESCE(:parent_native_session_id, parent_native_session_id)
     """, {
         "session_id": session_id,
         "source": source,
@@ -187,6 +195,8 @@ def upsert_session(
         "summary": summary,
         "transcript_path": transcript_path,
         "subagent_transcripts": subagent_transcripts,
+        "parent_session_path": parent_session_path,
+        "parent_native_session_id": parent_native_session_id,
     })
     conn.commit()
 

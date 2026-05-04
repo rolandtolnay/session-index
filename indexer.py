@@ -90,6 +90,8 @@ def upsert_parsed_session(
         summary=summary,
         transcript_path=transcript_path,
         subagent_transcripts=", ".join(subagent_transcripts) if subagent_transcripts else None,
+        parent_session_path=session.parent_session_path or None,
+        parent_native_session_id=session.parent_native_session_id or None,
     )
 
 

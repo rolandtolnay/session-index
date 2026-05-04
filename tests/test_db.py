@@ -25,6 +25,9 @@ def test_init_db():
     names = {row[0] for row in tables}
     assert "sessions" in names
     assert "sessions_fts" in names
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    assert "parent_session_path" in columns
+    assert "parent_native_session_id" in columns
     conn.close()
 
 
@@ -48,7 +51,16 @@ def test_get_session_by_native_pi_prefix():
         source="pi",
         native_session_id="019dde8f-eeb6-76dc-94fc-b173b083e8d2",
         project="session-index",
+        parent_session_path="2026-04-30T18-40-41-826Z_019ddfb1-7362-7526-8b21-8a6d77c82fe0.jsonl",
+        parent_native_session_id="019ddfb1-7362-7526-8b21-8a6d77c82fe0",
     )
+
+    stored = conn.execute(
+        "SELECT parent_session_path, parent_native_session_id FROM sessions WHERE session_id = ?",
+        ("pi:019dde8f-eeb6-76dc-94fc-b173b083e8d2",),
+    ).fetchone()
+    assert stored["parent_session_path"].endswith("019ddfb1-7362-7526-8b21-8a6d77c82fe0.jsonl")
+    assert stored["parent_native_session_id"] == "019ddfb1-7362-7526-8b21-8a6d77c82fe0"
 
     row = get_session(conn, "019dde8f")
     assert row is not None

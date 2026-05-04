@@ -32,6 +32,7 @@ _NOISE_COMMANDS = {
 }
 
 _SLUG_CHARS = re.compile(r"[^a-z0-9-]+")
+_PI_UUID_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", re.IGNORECASE)
 
 
 @dataclass
@@ -85,6 +86,15 @@ def _select_active_branch(entries: list[dict[str, Any]]) -> PiParsedFile:
 
 def _prefixed_session_id(native_id: str) -> str:
     return f"{PI_SESSION_PREFIX}{native_id}" if native_id else ""
+
+
+def _parent_native_session_id(parent_session: str) -> str:
+    """Extract a Pi native session id from a parentSession file reference."""
+    if not parent_session:
+        return ""
+    parent_session = parent_session.split(PI_SESSION_PREFIX, 1)[-1]
+    match = _PI_UUID_RE.search(parent_session)
+    return match.group(1) if match else ""
 
 
 def _slugify(name: str) -> str:
@@ -246,6 +256,10 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
     native_id = header.get("id", "")
     if isinstance(native_id, str):
         session.session_id = _prefixed_session_id(native_id)
+    parent_session = header.get("parentSession", "")
+    if isinstance(parent_session, str) and parent_session:
+        session.parent_session_path = parent_session
+        session.parent_native_session_id = _parent_native_session_id(parent_session)
     cwd = header.get("cwd", "")
     if isinstance(cwd, str) and cwd:
         session.project_path = _git_root(cwd)

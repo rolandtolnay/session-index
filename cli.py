@@ -382,11 +382,13 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     subagents=sub_refs or None,
                 )
                 if transcript_path:
-                    conn.execute(
-                        "UPDATE sessions SET transcript_path = ?, source_path = COALESCE(?, source_path) WHERE session_id = ?",
-                        (transcript_path, path, session.session_id),
+                    upsert_parsed_session(
+                        conn,
+                        session,
+                        source=source_name,
+                        source_path=path,
+                        transcript_path=transcript_path,
                     )
-                    conn.commit()
 
                 elapsed = time.monotonic() - start
                 print(f"[{i}/{total}] {source_name}:{session_id[:12]}... transcript ({elapsed:.1f}s)")

@@ -35,6 +35,8 @@ class ParsedSession:
     tools_used: str = ""
     user_message_count: int = 0
     assistant_message_count: int = 0
+    parent_session_path: str = ""
+    parent_native_session_id: str = ""
 
 
 def _git_root(cwd: str) -> str:
