@@ -1,11 +1,12 @@
 """Tests for CLI helpers."""
 
+import argparse
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cli import _print_agent_excerpts
+from cli import _print_agent_excerpts, cmd_excerpt, cmd_search
 
 
 def _write_agent_file(path, messages, header_lines=("# general-purpose — 2026-04-01 14:40", "Parent: test", "---", "")):
@@ -79,3 +80,47 @@ def test_print_agent_excerpts_no_matches_is_silent(tmp_path, capsys):
 
     _print_agent_excerpts(main_transcript, ["authentication"])
     assert capsys.readouterr().out == ""
+
+
+class _DummyConn:
+    def close(self):
+        pass
+
+
+def test_cmd_search_prints_tool_log_path(monkeypatch, capsys):
+    monkeypatch.setattr("cli.get_connection", lambda: _DummyConn())
+    monkeypatch.setattr("cli.init_db", lambda conn: None)
+    monkeypatch.setattr("cli._log_search", lambda args, count, elapsed_ms: None)
+    monkeypatch.setattr("cli.search_flexible", lambda *args, **kwargs: [{
+        "session_id": "s1",
+        "project": "proj",
+        "started_at": "2026-01-01T00:00:00Z",
+        "duration_seconds": 12,
+        "summary": "Did work",
+        "tool_log_path": "/tmp/s1.tools.md",
+    }])
+
+    cmd_search(argparse.Namespace(query="work", project=None, since=None, until=None, limit=20, any=False))
+    out = capsys.readouterr().out
+
+    assert "tool log: /tmp/s1.tools.md" in out
+
+
+def test_cmd_excerpt_prints_tool_log_path(monkeypatch, tmp_path, capsys):
+    transcript = tmp_path / "s1.md"
+    transcript.write_text("proj | main | 2026-01-01\n---\n\n[user] ────────────────────────────────────────\nFind token\n")
+    monkeypatch.setattr("cli.get_connection", lambda: _DummyConn())
+    monkeypatch.setattr("cli.init_db", lambda conn: None)
+    monkeypatch.setattr("cli._log_excerpt", lambda session_ids, query, elapsed_ms: None)
+    monkeypatch.setattr("cli.get_session", lambda conn, ident: {
+        "session_id": "s1",
+        "project": "proj",
+        "started_at": "2026-01-01T00:00:00Z",
+        "transcript_path": str(transcript),
+        "tool_log_path": "/tmp/s1.tools.md",
+    })
+
+    cmd_excerpt(argparse.Namespace(sessions=["s1"], query="token"))
+    out = capsys.readouterr().out
+
+    assert "Tool log available: /tmp/s1.tools.md" in out

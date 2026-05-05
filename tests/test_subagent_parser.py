@@ -81,6 +81,15 @@ def test_tool_call_count():
     assert parsed.tool_call_count == 3
 
 
+def test_tool_calls_include_successful_results():
+    parsed = parse_subagent_jsonl(EXPLORE_JSONL, EXPLORE_META)
+
+    assert [call.tool_name for call in parsed.tool_calls] == ["Bash", "Read", "Grep"]
+    assert parsed.tool_calls[0].tool_call_id == "tool-sa-001"
+    assert "main.py" in parsed.tool_calls[0].result
+    assert parsed.tool_calls[0].is_error is False
+
+
 # ── Narration NOT stripped ──────────────────────────────────────────────────
 
 

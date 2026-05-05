@@ -11,7 +11,7 @@ import os
 from collections import Counter
 from dataclasses import dataclass, field
 
-from parser import _clean_text, _NOISE_TAGS, _ANSI_ESCAPE
+from parser import ParsedToolCall, _clean_text, _NOISE_TAGS, _ANSI_ESCAPE
 
 
 @dataclass
@@ -27,6 +27,7 @@ class ParsedSubagent:
     tool_call_count: int = 0
     messages: list[dict] = field(default_factory=list)
     initial_prompt: str = ""
+    tool_calls: list[ParsedToolCall] = field(default_factory=list)
 
 
 @dataclass
@@ -159,6 +160,7 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
 
     # First pass: collect tool results, files_touched, tools_used, timestamps
     tool_results: dict[str, dict] = {}
+    raw_tool_calls: list[ParsedToolCall] = []
     files_set: set[str] = set()
     tool_counter: Counter = Counter()
     timestamps: list[str] = []
@@ -204,6 +206,14 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
                     name = item.get("name", "")
                     tool_counter[name] += 1
                     inp = item.get("input", {})
+                    if not isinstance(inp, dict):
+                        inp = {}
+                    raw_tool_calls.append(ParsedToolCall(
+                        timestamp=ts,
+                        tool_call_id=item.get("id", ""),
+                        tool_name=name,
+                        arguments=inp,
+                    ))
                     if name in ("Read", "Edit", "Write"):
                         fp = inp.get("file_path", "")
                         if fp:
@@ -227,6 +237,19 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
         result.tools_used = ", ".join(
             f"{name}:{count}" for name, count in tool_counter.most_common()
         )
+    result.tool_calls = []
+    for call in raw_tool_calls:
+        tr = tool_results.get(call.tool_call_id, {})
+        result.tool_calls.append(ParsedToolCall(
+            scope=call.scope,
+            sequence=call.sequence,
+            timestamp=call.timestamp,
+            tool_call_id=call.tool_call_id,
+            tool_name=call.tool_name,
+            arguments=call.arguments,
+            result=tr.get("content", ""),
+            is_error=bool(tr.get("is_error", False)),
+        ))
 
     # Second pass: build messages with subagent cleaning rules
     pending_tool_uses: list[dict] = []

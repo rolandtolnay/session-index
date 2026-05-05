@@ -26,7 +26,7 @@ If you are running from Claude Code and only have the Claude skill installed, th
 uv run ~/.claude/skills/session-search/scripts/search.py [query]
 ```
 
-Returns session summaries: session_id, project, date, branch, summary, files touched.
+Returns session summaries: session_id, project, date, branch, summary, files touched, and a `tool log:` path when detailed tool-call artifacts exist.
 
 - **query** -- FTS keywords (optional if filters given). Default: OR matching (any term matches)
 - **--project** -- prefix match (e.g., `--project session` matches session-index)
@@ -47,7 +47,7 @@ Claude Code path, if needed:
 uv run ~/.claude/skills/session-search/scripts/excerpt.py <session> -q "keywords"
 ```
 
-Returns focused transcript blocks from specific sessions (max 3 per call).
+Returns focused transcript blocks from specific sessions (max 3 per call). When available, it also prints `Tool log available:` for detailed tool-call debugging.
 
 - **session** -- session ID (or 8+ char prefix). Pi rows are stored as `pi:<uuid>` but raw UUID prefixes also resolve.
 - **-q / --query** -- keywords to focus extraction (required)
@@ -67,9 +67,10 @@ Most questions are answered by summaries alone. Use `excerpt` only when you need
 `excerpt` auto-scans subagent transcripts and reports additional matches in a footer. When you need to read more than the top hit, go to the files directly:
 
 - `~/.session-index/transcripts/<session-id>.md` -- main session transcript (user + assistant turns)
+- `~/.session-index/transcripts/<session-id>.tools.md` -- ordered tool calls, arguments, status, and capped result text; read this when debugging past tool behavior
 - `~/.session-index/transcripts/<session-id>/agent-*.md` -- one file per spawned subagent, when available
 
-These are cleaned markdown, much more compact than raw JSONL at `~/.claude/projects/` or `~/.pi/agent/sessions/`. Prefer them as the fallback — do NOT read raw JSONL.
+These are cleaned/generated markdown, much more compact than raw JSONL at `~/.claude/projects/` or `~/.pi/agent/sessions/`. Prefer them as the fallback — do NOT read raw JSONL unless the cleaned transcript and tool log are insufficient.
 
 ## Query Tips
 

@@ -28,6 +28,7 @@ def test_init_db():
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
     assert "parent_session_path" in columns
     assert "parent_native_session_id" in columns
+    assert "tool_log_path" in columns
     conn.close()
 
 
@@ -71,21 +72,23 @@ def test_get_session_by_native_pi_prefix():
 
 def test_upsert_preserves_existing():
     conn = _make_conn()
-    upsert_session(conn, session_id="test-2", project="proj", summary="first summary")
-    # Update without summary — should preserve existing
+    upsert_session(conn, session_id="test-2", project="proj", summary="first summary", tool_log_path="/tmp/tools.md")
+    # Update without summary/tool_log_path — should preserve existing
     upsert_session(conn, session_id="test-2", branch="feature-x")
     row = conn.execute("SELECT * FROM sessions WHERE session_id='test-2'").fetchone()
     assert row["summary"] == "first summary"
+    assert row["tool_log_path"] == "/tmp/tools.md"
     assert row["branch"] == "feature-x"
     conn.close()
 
 
 def test_upsert_overwrites_with_value():
     conn = _make_conn()
-    upsert_session(conn, session_id="test-3", summary="old")
-    upsert_session(conn, session_id="test-3", summary="new")
+    upsert_session(conn, session_id="test-3", summary="old", tool_log_path="/tmp/old.tools.md")
+    upsert_session(conn, session_id="test-3", summary="new", tool_log_path="/tmp/new.tools.md")
     row = conn.execute("SELECT * FROM sessions WHERE session_id='test-3'").fetchone()
     assert row["summary"] == "new"
+    assert row["tool_log_path"] == "/tmp/new.tools.md"
     conn.close()
 
 

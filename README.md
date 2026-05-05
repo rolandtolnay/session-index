@@ -8,6 +8,7 @@ Automatic indexing, summarization, and search for Claude Code and Pi conversatio
 - **Pi extension** — indexes Pi sessions after turns/shutdown and injects recent context before the first prompt in a session
 - **Unified DB** — stores both sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
+- **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
 - **CLI** — search, backfill, status, and excerpts from the terminal
 - **Skill** — `session-search` skill for Claude Code and Pi
 
@@ -102,7 +103,7 @@ decisions, or discussions from another project. Do NOT read raw JSONL files.
 
 ## Important: raw session cleanup
 
-Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). Pi session files remain under `~/.pi/agent/sessions/` unless deleted. The session-index DB and cleaned transcripts persist independently, so indexed data survives raw-log cleanup/deletion.
+Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). Pi session files remain under `~/.pi/agent/sessions/` unless deleted. The session-index DB, cleaned transcripts, and generated tool logs persist independently, so indexed data survives raw-log cleanup/deletion. Cleaned transcripts intentionally omit detailed tool calls; use the `.tools.md` artifact when debugging commands, tool parameters, or returned results.
 
 ## CLI Commands
 
@@ -116,7 +117,8 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 ## Data locations
 
 - Database: `~/.session-index/sessions.db`
-- Clean transcripts: `~/.session-index/transcripts/`
+- Clean transcripts: `~/.session-index/transcripts/{session_id}.md`
+- Tool logs: `~/.session-index/transcripts/{session_id}.tools.md`
 - Logs: `~/.session-index/logs/session-index.log`
 - Claude source JSONL: `~/.claude/projects/{encoded_path}/{session_id}.jsonl`
 - Pi source JSONL: `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`

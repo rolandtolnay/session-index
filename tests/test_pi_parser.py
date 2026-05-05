@@ -48,6 +48,17 @@ def test_parse_pi_tools_and_files():
     assert "edit:1" in session.tools_used
 
 
+def test_parse_pi_tool_calls_active_branch_only():
+    session = parse_pi_jsonl(FIXTURE)
+
+    assert [call.tool_call_id for call in session.tool_calls] == ["call-read", "call-edit"]
+    read_call = session.tool_calls[0]
+    assert read_call.tool_name == "read"
+    assert read_call.arguments["path"] == "/Users/test/project/app.py"
+    assert read_call.result == "<file content omitted>"
+    assert read_call.is_error is False
+
+
 def test_parse_pi_messages_skip_thinking_and_tool_results():
     session = parse_pi_jsonl(FIXTURE)
     all_content = "\n".join(m["content"] for m in session.messages)

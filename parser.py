@@ -18,6 +18,18 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 
 
 @dataclass
+class ParsedToolCall:
+    scope: str = "main"
+    sequence: int = 0
+    timestamp: str = ""
+    tool_call_id: str = ""
+    tool_name: str = ""
+    arguments: dict[str, Any] = field(default_factory=dict)
+    result: str = ""
+    is_error: bool = False
+
+
+@dataclass
 class ParsedSession:
     session_id: str = ""
     slug: str = ""
@@ -37,6 +49,7 @@ class ParsedSession:
     assistant_message_count: int = 0
     parent_session_path: str = ""
     parent_native_session_id: str = ""
+    tool_calls: list[ParsedToolCall] = field(default_factory=list)
 
 
 def _git_root(cwd: str) -> str:
@@ -151,6 +164,7 @@ def parse_jsonl(path: str) -> ParsedSession:
 
     # Build tool_use_id -> tool_result mapping for Bash results
     tool_results: dict[str, dict] = {}
+    raw_tool_calls: list[ParsedToolCall] = []
     files_set: set[str] = set()
     tool_counter: Counter = Counter()
     timestamps: list[str] = []
@@ -224,6 +238,14 @@ def parse_jsonl(path: str) -> ParsedSession:
                     name = item.get("name", "")
                     tool_counter[name] += 1
                     inp = item.get("input", {})
+                    if not isinstance(inp, dict):
+                        inp = {}
+                    raw_tool_calls.append(ParsedToolCall(
+                        timestamp=ts,
+                        tool_call_id=item.get("id", ""),
+                        tool_name=name,
+                        arguments=inp,
+                    ))
                     # Track files
                     if name in ("Read", "Edit", "Write"):
                         fp = inp.get("file_path", "")
@@ -256,6 +278,19 @@ def parse_jsonl(path: str) -> ParsedSession:
         session.tools_used = ", ".join(
             f"{name}:{count}" for name, count in tool_counter.most_common()
         )
+    session.tool_calls = []
+    for call in raw_tool_calls:
+        tr = tool_results.get(call.tool_call_id, {})
+        session.tool_calls.append(ParsedToolCall(
+            scope=call.scope,
+            sequence=call.sequence,
+            timestamp=call.timestamp,
+            tool_call_id=call.tool_call_id,
+            tool_name=call.tool_name,
+            arguments=call.arguments,
+            result=tr.get("content", ""),
+            is_error=bool(tr.get("is_error", False)),
+        ))
 
     # Second pass: build messages
     pending_tool_uses: list[dict] = []  # tool_use blocks from current assistant turn

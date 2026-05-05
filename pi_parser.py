@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from parser import ParsedSession, _clean_text, _format_bash_result, _git_root, _strip_narration
+from parser import ParsedSession, ParsedToolCall, _clean_text, _format_bash_result, _git_root, _strip_narration
 from subagent_parser import ParsedSubagent, SubagentInfo
 
 PI_SOURCE = "pi"
@@ -282,6 +282,7 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
 
     # First pass: metadata, tool counts/results, files.
     tool_results: dict[str, dict[str, Any]] = {}
+    raw_tool_calls: list[ParsedToolCall] = []
     files_set: set[str] = set()
     tool_counter: Counter[str] = Counter()
 
@@ -314,6 +315,12 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
                             continue
                         tool_counter[name] += 1
                         args = _tool_args(block)
+                        raw_tool_calls.append(ParsedToolCall(
+                            timestamp=_message_timestamp(entry, msg),
+                            tool_call_id=str(block.get("id", "")),
+                            tool_name=name,
+                            arguments=args,
+                        ))
                         files_set.update(_tool_file_paths(name, args))
             elif role == "toolResult":
                 tool_call_id = msg.get("toolCallId", "")
@@ -329,6 +336,19 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
         session.tools_used = ", ".join(
             f"{name}:{count}" for name, count in tool_counter.most_common()
         )
+    session.tool_calls = []
+    for call in raw_tool_calls:
+        tr = tool_results.get(call.tool_call_id, {})
+        session.tool_calls.append(ParsedToolCall(
+            scope=call.scope,
+            sequence=call.sequence,
+            timestamp=call.timestamp,
+            tool_call_id=call.tool_call_id,
+            tool_name=call.tool_name,
+            arguments=call.arguments,
+            result=tr.get("content", ""),
+            is_error=bool(tr.get("is_error", False)),
+        ))
 
     # Second pass: cleaned transcript/search messages.
     pending_tool_calls: list[dict[str, Any]] = []
@@ -460,6 +480,8 @@ def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str
 
     tool_counter: Counter[str] = Counter()
     files_set: set[str] = set()
+    raw_tool_calls: list[ParsedToolCall] = []
+    tool_results: dict[str, dict[str, Any]] = {}
     first_user = True
 
     for entry in parsed.branch:
@@ -496,6 +518,12 @@ def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str
                         args = _tool_args(block)
                         if isinstance(name, str):
                             tool_counter[name] += 1
+                            raw_tool_calls.append(ParsedToolCall(
+                                timestamp=ts,
+                                tool_call_id=str(block.get("id", "")),
+                                tool_name=name,
+                                arguments=args,
+                            ))
                             files_set.update(_tool_file_paths(name, args))
                             parts.append(_format_tool_signature(name, args))
             elif isinstance(content, str):
@@ -505,10 +533,18 @@ def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str
             if parts:
                 result.messages.append({"role": "agent", "content": "\n".join(parts), "timestamp": ts})
 
-        elif role == "toolResult" and msg.get("isError"):
-            text = _format_bash_result(_collect_tool_result_text(msg), is_error=True)
-            if text:
-                result.messages.append({"role": "error", "content": text, "timestamp": ts})
+        elif role == "toolResult":
+            tool_call_id = msg.get("toolCallId", "")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                tool_results[tool_call_id] = {
+                    "content": _collect_tool_result_text(msg),
+                    "is_error": bool(msg.get("isError", False)),
+                    "tool_name": msg.get("toolName", ""),
+                }
+            if msg.get("isError"):
+                text = _format_bash_result(_collect_tool_result_text(msg), is_error=True)
+                if text:
+                    result.messages.append({"role": "error", "content": text, "timestamp": ts})
 
     result.files_touched = sorted(files_set)
     result.tool_call_count = sum(tool_counter.values())
@@ -516,4 +552,17 @@ def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str
         result.tools_used = ", ".join(
             f"{name}:{count}" for name, count in tool_counter.most_common()
         )
+    result.tool_calls = []
+    for call in raw_tool_calls:
+        tr = tool_results.get(call.tool_call_id, {})
+        result.tool_calls.append(ParsedToolCall(
+            scope=call.scope,
+            sequence=call.sequence,
+            timestamp=call.timestamp,
+            tool_call_id=call.tool_call_id,
+            tool_name=call.tool_name,
+            arguments=call.arguments,
+            result=tr.get("content", ""),
+            is_error=bool(tr.get("is_error", False)),
+        ))
     return result

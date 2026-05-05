@@ -18,6 +18,7 @@ class IndexResult:
     subagents: int = 0
     summary_generated: bool = False
     transcript_path: str | None = None
+    tool_log_path: str | None = None
     skipped_reason: str = ""
 
 
@@ -61,6 +62,7 @@ def upsert_parsed_session(
     files_touched: list[str] | None = None,
     summary: str | None = None,
     transcript_path: str | None = None,
+    tool_log_path: str | None = None,
     subagent_transcripts: list[str] | None = None,
 ) -> None:
     from db import upsert_session
@@ -89,6 +91,7 @@ def upsert_parsed_session(
         tools_used=session.tools_used or None,
         summary=summary,
         transcript_path=transcript_path,
+        tool_log_path=tool_log_path,
         subagent_transcripts=", ".join(subagent_transcripts) if subagent_transcripts else None,
         parent_session_path=session.parent_session_path or None,
         parent_native_session_id=session.parent_native_session_id or None,
@@ -123,6 +126,7 @@ def index_full(source: str, path: str) -> IndexResult:
     from db import get_connection, init_db
     from summarizer import summarize
     from transcript import SubagentRef, write_subagent_transcript, write_transcript
+    from tool_log import combine_tool_calls, write_tool_log
 
     session = parse_session_file(source, path)
     result = IndexResult(
@@ -183,6 +187,19 @@ def index_full(source: str, path: str) -> IndexResult:
     result.subagents = len(subagent_paths)
     result.files_touched = len(enriched_files)
 
+    tool_log_path = None
+    try:
+        tool_log_path = write_tool_log(
+            session.session_id,
+            combine_tool_calls(session.tool_calls, parsed_subagents),
+            project=session.project,
+            source=source,
+            started_at=session.started_at,
+        )
+        result.tool_log_path = tool_log_path
+    except OSError:
+        tool_log_path = None
+
     conn = get_connection()
     init_db(conn)
     upsert_parsed_session(
@@ -193,6 +210,7 @@ def index_full(source: str, path: str) -> IndexResult:
         files_touched=enriched_files,
         summary=summary,
         transcript_path=transcript_path,
+        tool_log_path=tool_log_path,
         subagent_transcripts=subagent_paths,
     )
     conn.close()

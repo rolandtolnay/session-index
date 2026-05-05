@@ -19,6 +19,7 @@ from logger import log
 from parser import clean_user_messages
 from summarizer import summarize
 from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, TRANSCRIPT_DIR
+from tool_log import combine_tool_calls, write_tool_log
 
 
 def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
@@ -101,6 +102,8 @@ def cmd_search(args: argparse.Namespace) -> None:
         if r.get("files_touched"):
             files = r["files_touched"][:200]
             print(f"  files: {files}")
+        if r.get("tool_log_path"):
+            print(f"  tool log: {r['tool_log_path']}")
 
     print(f"\n{'─' * 60}")
     print(f"  {len(results)} result(s)")
@@ -210,6 +213,8 @@ def cmd_excerpt(args: argparse.Namespace) -> None:
             print(f"  No matching excerpts for: {' '.join(keywords)}")
 
         _print_agent_excerpts(session["transcript_path"], keywords)
+        if session.get("tool_log_path"):
+            print(f"  Tool log available: {session['tool_log_path']}")
 
     print(f"\n{'─' * 60}")
     _log_excerpt(
@@ -266,14 +271,16 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     existing = set()
     if not args.force and not args.transcripts_only and not args.subagents:
         cursor = conn.execute(
-            "SELECT session_id FROM sessions WHERE summary IS NOT NULL"
+            "SELECT session_id FROM sessions WHERE summary IS NOT NULL "
+            "AND (tools_used IS NULL OR tools_used = '' OR tool_log_path IS NOT NULL)"
         )
         existing = {row[0] for row in cursor.fetchall()}
 
     existing_subagents = set()
     if args.subagents and not args.force:
         cursor = conn.execute(
-            "SELECT session_id FROM sessions WHERE subagent_transcripts IS NOT NULL"
+            "SELECT session_id FROM sessions WHERE subagent_transcripts IS NOT NULL "
+            "AND tool_log_path IS NOT NULL"
         )
         existing_subagents = {row[0] for row in cursor.fetchall()}
 
@@ -281,6 +288,18 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     processed = 0
     skipped = 0
     errors = 0
+
+    def _write_combined_tool_log(session, parsed_subagents, source_name):
+        try:
+            return write_tool_log(
+                session.session_id,
+                combine_tool_calls(session.tool_calls, parsed_subagents),
+                project=session.project,
+                source=source_name,
+                started_at=session.started_at,
+            )
+        except OSError:
+            return None
 
     for i, source_file in enumerate(source_files, 1):
         source_name = source_file.source
@@ -309,18 +328,31 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 already_processed = session.session_id in existing_subagents
 
                 if args.transcripts_only and session.messages:
-                    sub_refs = []
+                    parsed_subagents = []
                     for info in discover_session_subagents(source_name, path):
                         parsed = parse_session_subagent(source_name, info)
                         if parsed.messages:
-                            sub_refs.append(SubagentRef(agent_type=parsed.agent_type, agent_id=parsed.agent_id))
-                    write_transcript(
+                            parsed_subagents.append(parsed)
+                    sub_refs = [
+                        SubagentRef(agent_type=parsed.agent_type, agent_id=parsed.agent_id)
+                        for parsed in parsed_subagents
+                    ]
+                    transcript_path = write_transcript(
                         session.session_id,
                         session.messages,
                         project=session.project,
                         branch=session.branch,
                         timestamp=session.started_at,
                         subagents=sub_refs or None,
+                    )
+                    tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
+                    upsert_parsed_session(
+                        conn,
+                        session,
+                        source=source_name,
+                        source_path=path,
+                        transcript_path=transcript_path,
+                        tool_log_path=tool_log_path,
                     )
                     if already_processed:
                         elapsed = time.monotonic() - start
@@ -350,6 +382,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 subagent_paths = []
                 for sub in parsed_subagents:
                     subagent_paths.append(write_subagent_transcript(session.session_id, sub))
+                tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
 
                 upsert_parsed_session(
                     conn,
@@ -357,6 +390,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     source=source_name,
                     source_path=path,
                     files_touched=enriched_files,
+                    tool_log_path=tool_log_path,
                     subagent_transcripts=subagent_paths,
                 )
 
@@ -368,11 +402,15 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 if not session.messages:
                     skipped += 1
                     continue
-                sub_refs = []
+                parsed_subagents = []
                 for info in discover_session_subagents(source_name, path):
                     parsed_sub = parse_session_subagent(source_name, info)
                     if parsed_sub.messages:
-                        sub_refs.append(SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id))
+                        parsed_subagents.append(parsed_sub)
+                sub_refs = [
+                    SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id)
+                    for parsed_sub in parsed_subagents
+                ]
                 transcript_path = write_transcript(
                     session.session_id,
                     session.messages,
@@ -381,13 +419,15 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     timestamp=session.started_at,
                     subagents=sub_refs or None,
                 )
-                if transcript_path:
+                tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
+                if transcript_path or tool_log_path:
                     upsert_parsed_session(
                         conn,
                         session,
                         source=source_name,
                         source_path=path,
                         transcript_path=transcript_path,
+                        tool_log_path=tool_log_path,
                     )
 
                 elapsed = time.monotonic() - start
@@ -411,13 +451,18 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     last_assistant_message=last_assistant,
                 )
 
+                parsed_subagents = []
+                for info in discover_session_subagents(source_name, path):
+                    parsed_sub = parse_session_subagent(source_name, info)
+                    if parsed_sub.messages:
+                        parsed_subagents.append(parsed_sub)
+
                 transcript_path = None
                 if session.messages:
-                    sub_refs = []
-                    for info in discover_session_subagents(source_name, path):
-                        parsed_sub = parse_session_subagent(source_name, info)
-                        if parsed_sub.messages:
-                            sub_refs.append(SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id))
+                    sub_refs = [
+                        SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id)
+                        for parsed_sub in parsed_subagents
+                    ]
                     transcript_path = write_transcript(
                         session.session_id,
                         session.messages,
@@ -427,6 +472,8 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                         subagents=sub_refs or None,
                     )
 
+                tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
+
                 upsert_parsed_session(
                     conn,
                     session,
@@ -434,6 +481,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     source_path=path,
                     summary=summary,
                     transcript_path=transcript_path,
+                    tool_log_path=tool_log_path,
                 )
 
                 elapsed = time.monotonic() - start

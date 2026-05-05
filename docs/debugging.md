@@ -23,7 +23,7 @@ Pi extension
     └─ session_shutdown ───► pi_index.py --mode full
 
 Shared full pass:
-    parser adapter ─► LLM summary via Ollama ─► cleaned transcript ─► DB upsert
+    parser adapter ─► LLM summary via Ollama ─► cleaned transcript + tool log ─► DB upsert
 
 Search path (skill invocation):
     search.py (skill wrapper) ──► cmd_search() in cli.py ──► FTS5 query ──► formatted output
@@ -49,6 +49,7 @@ Search path (skill invocation):
 | `parser.py` | Claude JSONL parser |
 | `pi_parser.py` | Pi tree-structured JSONL parser |
 | `transcript.py` | Transcript writer + excerpt extractor for search results |
+| `tool_log.py` | Per-session Markdown tool-call log writer |
 | `summarizer.py` | LLM summary generator using local Ollama model |
 | `logger.py` | Structured logging with monthly rotation |
 | `client.py` | Standalone Ollama HTTP client (pure stdlib) |
@@ -64,6 +65,7 @@ Search path (skill invocation):
 |------|------|----------|
 | Database | `~/.session-index/sessions.db` | Permanent |
 | Transcripts | `~/.session-index/transcripts/{session_id}.md` | Permanent |
+| Tool logs | `~/.session-index/transcripts/{session_id}.tools.md` | Permanent |
 | Log (current month) | `~/.session-index/logs/session-index.log` | Monthly rotation |
 | Log (previous month) | `~/.session-index/logs/session-index.prev.log` | Overwritten monthly |
 | Claude source JSONL | `~/.claude/projects/{encoded_path}/{session_id}.jsonl` | Claude Code managed |
@@ -167,7 +169,7 @@ Note: the system was installed on **2026-04-02**. Sessions before that date are 
 
 ## Auditing Search Effectiveness
 
-The search log enables mechanical auditing: hit rates, common failure patterns, and filter usage. For intent-based auditing (was this the right search for what the user wanted?), cross-reference with the session's raw JSONL.
+The search log enables mechanical auditing: hit rates, common failure patterns, and filter usage. For intent-based auditing (was this the right search for what the user wanted?), start with the cleaned transcript and tool log; use raw JSONL only when provider-specific reconstruction is still needed and the source file exists.
 
 ### Three-source audit workflow
 
@@ -176,8 +178,9 @@ Each search call exists in up to three places with different detail levels:
 | Source | Contains | Limitation |
 |--------|----------|------------|
 | **Log** (`session-index.log`) | Query, flags, result count, duration | No results content, no user intent |
-| **Cleaned transcript** (`transcripts/{sid}.md`) | Conversation narrative around the search | Exact commands and outputs stripped |
-| **Raw JSONL** (`~/.claude/projects/.../{sid}.jsonl`) | Full Bash commands, outputs, surrounding messages | Ephemeral (~3 months), requires JSON parsing |
+| **Cleaned transcript** (`transcripts/{sid}.md`) | Conversation narrative around the search | Detailed tool calls intentionally stripped |
+| **Tool log** (`transcripts/{sid}.tools.md`) | Ordered tool names, parameters, status, and result text | Result text is capped at 20,000 characters per call |
+| **Raw JSONL** (`~/.claude/projects/.../{sid}.jsonl`) | Provider-native events and any details not normalized into artifacts | Ephemeral (~3 months), requires JSON parsing |
 
 ### Step-by-step audit
 
@@ -191,44 +194,24 @@ Each search call exists in up to three places with different detail levels:
    - Multiple searches from the same `[sid]` (progressive narrowing/broadening)
    - Repeated queries across sessions (systemic gaps)
 
-3. **For flagged sessions, check the JSONL** (if it still exists):
+3. **Read the transcript for context** — understand what the user was trying to find:
    ```bash
-   # Find the full session ID from the sid suffix
-   ls ~/.claude/projects/*/ | grep 'abc123'
-   
-   # Extract search commands and their outputs
-   python3 -c "
-   import json
-   with open('path/to/session.jsonl') as f:
-       for line in f:
-           entry = json.loads(line.strip())
-           msg = entry.get('message', {})
-           if not isinstance(msg, dict): continue
-           content = msg.get('content', '')
-           if isinstance(content, list):
-               for block in content:
-                   if isinstance(block, dict) and block.get('type') == 'tool_use':
-                       cmd = block.get('input', {}).get('command', '')
-                       if 'search.py' in cmd:
-                           print(f'CALL: {cmd}')
-                   if isinstance(block, dict) and block.get('type') == 'tool_result':
-                       c = block.get('content', '')
-                       if isinstance(c, str) and ('result' in c or 'No results' in c):
-                           print(f'  -> {c[:120]}')
-   "
-   ```
-
-4. **Read the transcript for context** — understand what the user was trying to find:
-   ```bash
-   # The transcript has the conversation flow but not exact commands
    cat ~/.session-index/transcripts/{session_id}.md
    ```
+
+4. **Read the tool log when debugging tool behavior** — search/excerpt output prints `tool log:` / `Tool log available:` when present:
+   ```bash
+   cat ~/.session-index/transcripts/{session_id}.tools.md
+   ```
+
+5. **Fall back to raw JSONL only if needed** — for provider-native fields that are not normalized into the cleaned transcript or tool log.
 
 ### Known audit limitations
 
 - **Log ↔ transcript reconciliation**: Both the log and the cleaned transcript include timestamps (`HH:MM:SS` format). Match a search log entry's timestamp to the nearest `[user]` or `[assistant]` timestamp in the transcript to locate the surrounding conversation context. Transcripts generated before per-message timestamps were added (pre-2026-04) lack these markers — re-run `backfill --transcripts-only --force` to regenerate them.
-- **JSONL expiry**: Full audit (with command-level detail) is only possible while the JSONL still exists (~3 months). After that, only the log + transcript remain.
-- **Cross-session queries**: The `[sid]` in the log is the session that *ran* the search, not the sessions that were *found*. To audit result quality, you need the JSONL.
+- **Tool-log truncation**: Tool result text is capped at 20,000 characters per call, preserving the beginning and end with a truncation marker.
+- **JSONL expiry**: Provider-native raw logs can still disappear, but indexed sessions keep DB rows, cleaned transcripts, and generated tool logs.
+- **Cross-session queries**: The `[sid]` in the log is the session that *ran* the search, not the sessions that were *found*. To audit result quality, inspect the found sessions' transcripts/tool logs.
 
 ---
 
@@ -250,8 +233,8 @@ Each search call exists in up to three places with different detail levels:
 
 1. `session_end.py` forks a detached worker process and exits immediately (< 1s)
 2. Worker generates LLM summary via local Ollama (bounded by 8192-token context)
-3. Worker writes cleaned Markdown transcript
-4. Worker upserts all fields to DB (summary, transcript_path, slug)
+3. Worker writes cleaned Markdown transcript and separate `.tools.md` tool log when tool calls exist
+4. Worker upserts all fields to DB (summary, transcript_path, tool_log_path, slug)
 5. All failures are caught and logged — worker never crashes silently
 
 ### settings.json Hook Registration

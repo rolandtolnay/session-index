@@ -42,6 +42,19 @@ def test_parse_tools_used():
     assert "Bash" in session.tools_used
 
 
+def test_parse_tool_calls_with_results():
+    session = parse_jsonl(FIXTURE)
+    names = [call.tool_name for call in session.tool_calls]
+    assert "Read" in names
+    assert "Edit" in names
+    assert "Bash" in names
+
+    bash_call = next(call for call in session.tool_calls if call.tool_call_id == "tool-003")
+    assert bash_call.arguments["command"] == "python3 -m pytest tests/test_auth.py"
+    assert "PASSED test_login_valid" in bash_call.result
+    assert bash_call.is_error is False
+
+
 def test_parse_timestamps():
     session = parse_jsonl(FIXTURE)
     assert session.started_at.startswith("2026-01-15")
