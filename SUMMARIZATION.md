@@ -10,13 +10,22 @@ Any new summarization approach must either use gemma4:e4b or bypass Ollama entir
 
 ## Current Quality
 
-Current summarization with gemma4:e4b + Variant F prompt: **10.74/15** composite.
-This is a known regression from qwen3.5:4b (**12.05/15**) accepted due to the single-model constraint.
+Production summarization now uses headless Pi print mode with `openai-codex/gpt-5.4-mini`, low thinking, the compact GPT prompt, and rich transcript input. The Pi call disables sessions, tools, extensions, skills, prompt templates, and context files so summarization does not create recursive index entries or load unrelated project context.
 
-Qwen produces more specific summaries (ticket numbers, component names, technical details) but can't be used while Gemma 4 is serving tab titles.
+Benchmark result on the 19-session ground-truth set: **13.47/15** composite for `gpt-5.4-mini + rich + compact prompt`.
+
+Historical baselines:
+- gemma4:e4b + Variant F prompt: **10.74/15**
+- qwen3.5:4b + improved prompt: **12.05/15**
+- gpt-5.5 + rich input: ~**13.9/15**, but roughly 2x slower than gpt-5.4-mini
 
 ## Decision: Decouple Summarization from Ollama
 
-Gemma 4 E4B stays loaded for tab-title generation (local-llm project). Summarization will use a separate approach that bypasses Ollama entirely, avoiding the single-model constraint and the quality regression vs Qwen.
+Gemma 4 E4B stays loaded for tab-title generation (local-llm project). Summarization bypasses Ollama entirely by default, avoiding the single-model constraint and the quality regression vs Qwen.
 
-The benchmark harness and ground truth set (19 sessions) are ready for evaluating any new approach — see `tests/eval_results/LEARNINGS.md`.
+If Pi is unavailable or disabled via `SESSION_INDEX_DISABLE_PI_SUMMARIZER`, the code falls back to the legacy Gemini/local path.
+
+Relevant benchmark artifacts:
+- `tests/eval_results/pi_gpt_benchmark_report.md`
+- `tests/eval_results/pi_gpt_prompt_benchmark_report.md`
+- `tests/eval_results/LEARNINGS.md`

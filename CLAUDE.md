@@ -3,13 +3,13 @@
 ## Runtime
 - Python 3.11+, stdlib only (no pip dependencies)
 - Run scripts with `uv run` (not `python3`)
-- Ollama client uses `gemma4:e4b` model — change in `client.py` if needed
+- Summaries use headless Pi by default (`openai-codex/gpt-5.4-mini`, low thinking); `client.py` is legacy Ollama fallback
 
 ## Architecture
 - **Hooks never block:** All hooks exit 0, wrap everything in try/except, self-imposed timeouts
 - **Message threshold:** Sessions need at least 1 user + 1 assistant message to be indexed
 - **WAL mode:** SQLite uses WAL journal mode for concurrent read/write safety from hooks
-- **Detached worker:** SessionEnd forks a detached subprocess so the LLM summary can complete after the hook's ~1.5s timeout. Response time is implicitly bounded by the 8192-token context window in `client.py`
+- **Detached worker:** SessionEnd forks a detached subprocess so the Pi/GPT summary can complete after the hook's ~1.5s timeout
 
 ## Data locations
 - **Database:** `~/.session-index/sessions.db`
@@ -66,12 +66,13 @@ Use `--select-sessions` to list available sessions by bucket.
 | **Framing** | Reads as project description | Acceptable summary | Clear session summary, distinguishes planning vs implementation |
 
 ### Established winners
-- **Config D** is the settled input/output configuration: 2000-char first message, scaled tokens (200/300/400), local backend. Do not re-test configs unless changing the input pipeline.
-- **Prompt Variant F** is the current best prompt for Gemma 4 (10.74/15). It combines goal-framing, verb list, 4 real examples, and recency-ordered instructions.
-- See `tests/eval_results/LEARNINGS.md` for full findings and result file index.
+- **Production winner:** `openai-codex/gpt-5.4-mini` with low thinking, rich transcript input, and compact prompt: 13.47/15.
+- **Quality ceiling tested:** `openai-codex/gpt-5.5` with rich input: ~13.9/15 but roughly 2x slower.
+- Legacy local benchmarks remain in `tests/benchmark.py`; Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py`.
+- See `tests/eval_results/LEARNINGS.md`, `pi_gpt_benchmark_report.md`, and `pi_gpt_prompt_benchmark_report.md` for findings.
 
 ### Constraint: Ollama single-model
-Ollama serves one model at a time. The active model (`gemma4:e4b`) is shared with tab-title generation in the local-llm project. Switching models adds ~10-15s latency, so summarization must use whatever model is currently loaded.
+Ollama still serves one model at a time for local fallback/tab-title workflows. Production summarization bypasses Ollama by default through Pi, so do not optimize summary quality by swapping local models.
 
 ## Summarization context
 See [SUMMARIZATION.md](SUMMARIZATION.md) for constraints, quality baselines, and next steps.

@@ -125,7 +125,7 @@ def index_full(source: str, path: str) -> IndexResult:
     """Parse, summarize, write transcripts, and upsert a complete row."""
     from db import get_connection, init_db
     from summarizer import summarize
-    from transcript import SubagentRef, write_subagent_transcript, write_transcript
+    from transcript import SubagentRef, render_transcript, write_subagent_transcript, write_transcript
     from tool_log import combine_tool_calls, write_tool_log
 
     session = parse_session_file(source, path)
@@ -156,21 +156,32 @@ def index_full(source: str, path: str) -> IndexResult:
     if session.user_message_count <= short_session_threshold and session.assistant_messages:
         last_assistant = session.assistant_messages[-1]
 
+    subagent_refs = [
+        SubagentRef(agent_type=sub.agent_type, agent_id=sub.agent_id)
+        for sub in parsed_subagents
+    ]
+    transcript_text = None
+    if session.messages:
+        transcript_text = render_transcript(
+            session.messages,
+            project=session.project,
+            branch=session.branch,
+            timestamp=session.started_at,
+            subagents=subagent_refs or None,
+        )
+
     summary = summarize(
         project=session.project,
         branch=session.branch,
         user_messages=clean_user_messages(session.user_messages),
-        files_touched=session.files_touched,
+        files_touched=enriched_files,
         last_assistant_message=last_assistant,
+        transcript_text=transcript_text,
     )
     result.summary_generated = bool(summary)
 
     transcript_path = None
     if session.messages:
-        subagent_refs = [
-            SubagentRef(agent_type=sub.agent_type, agent_id=sub.agent_id)
-            for sub in parsed_subagents
-        ]
         transcript_path = write_transcript(
             session.session_id,
             session.messages,

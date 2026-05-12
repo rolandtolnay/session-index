@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from summarizer import _select_messages, _build_prompt
+from summarizer import _select_messages, _build_prompt, _build_rich_prompt, _call_pi
 
 
 def test_short_list_unchanged():
@@ -74,3 +74,70 @@ def test_build_prompt_none_assistant_same_as_omitted():
     p1 = _build_prompt("proj", "main", ["msg"], [])
     p2 = _build_prompt("proj", "main", ["msg"], [], last_assistant_message=None)
     assert p1 == p2
+
+
+# --- rich Pi prompt ---
+
+
+def test_build_rich_prompt_prefers_transcript():
+    prompt = _build_rich_prompt(
+        "proj",
+        "main",
+        ["user-only fallback"],
+        [f"file{i}.py" for i in range(100)],
+        "[user] do thing\n[assistant] done",
+    )
+    assert "Full cleaned transcript:" in prompt
+    assert "[assistant] done" in prompt
+    assert "user-only fallback" not in prompt
+    assert "file0.py" in prompt
+    assert "file79.py" in prompt
+    assert "file80.py" not in prompt
+
+
+def test_build_rich_prompt_falls_back_to_user_messages():
+    prompt = _build_rich_prompt("proj", "", ["fix the bug"], [], None)
+    assert "User messages:" in prompt
+    assert "- fix the bug" in prompt
+
+
+def test_call_pi_uses_headless_print_mode(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = " summary \n"
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return Result()
+
+    monkeypatch.delenv("SESSION_INDEX_DISABLE_PI_SUMMARIZER", raising=False)
+    monkeypatch.setenv("SESSION_INDEX_SUMMARY_MODEL", "openai-codex/gpt-5.4-mini")
+    monkeypatch.setenv("SESSION_INDEX_SUMMARY_THINKING", "low")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert _call_pi("prompt") == "summary"
+    cmd, kwargs = calls[0]
+    assert cmd[:2] == ["pi", "-p"]
+    assert "--no-session" in cmd
+    assert "--no-tools" in cmd
+    assert "--no-extensions" in cmd
+    assert "--model" in cmd
+    assert kwargs["input"] == "prompt"
+    assert kwargs["env"]["PI_SKIP_VERSION_CHECK"] == "1"
+
+
+def test_call_pi_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("SESSION_INDEX_DISABLE_PI_SUMMARIZER", "1")
+    assert _call_pi("prompt") is None
+
+
+def test_call_pi_returns_none_on_subprocess_error(monkeypatch):
+    monkeypatch.delenv("SESSION_INDEX_DISABLE_PI_SUMMARIZER", raising=False)
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("pi")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert _call_pi("prompt") is None

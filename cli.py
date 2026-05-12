@@ -18,7 +18,7 @@ from db import get_connection, init_db, search_flexible, get_session, get_stats,
 from logger import log
 from parser import clean_user_messages
 from summarizer import summarize
-from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, TRANSCRIPT_DIR
+from transcript import render_transcript, write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, TRANSCRIPT_DIR
 from tool_log import combine_tool_calls, write_tool_log
 
 
@@ -438,6 +438,31 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     skipped += 1
                     continue
 
+                parsed_subagents = []
+                for info in discover_session_subagents(source_name, path):
+                    parsed_sub = parse_session_subagent(source_name, info)
+                    if parsed_sub.messages:
+                        parsed_subagents.append(parsed_sub)
+
+                all_files = set(session.files_touched)
+                for parsed_sub in parsed_subagents:
+                    all_files.update(parsed_sub.files_touched)
+                enriched_files = sorted(all_files)
+
+                sub_refs = [
+                    SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id)
+                    for parsed_sub in parsed_subagents
+                ]
+                transcript_text = None
+                if session.messages:
+                    transcript_text = render_transcript(
+                        session.messages,
+                        project=session.project,
+                        branch=session.branch,
+                        timestamp=session.started_at,
+                        subagents=sub_refs or None,
+                    )
+
                 short_session_threshold = 5
                 last_assistant = None
                 if session.user_message_count <= short_session_threshold and session.assistant_messages:
@@ -447,22 +472,13 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     project=session.project,
                     branch=session.branch,
                     user_messages=clean_user_messages(session.user_messages),
-                    files_touched=session.files_touched,
+                    files_touched=enriched_files,
                     last_assistant_message=last_assistant,
+                    transcript_text=transcript_text,
                 )
-
-                parsed_subagents = []
-                for info in discover_session_subagents(source_name, path):
-                    parsed_sub = parse_session_subagent(source_name, info)
-                    if parsed_sub.messages:
-                        parsed_subagents.append(parsed_sub)
 
                 transcript_path = None
                 if session.messages:
-                    sub_refs = [
-                        SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id)
-                        for parsed_sub in parsed_subagents
-                    ]
                     transcript_path = write_transcript(
                         session.session_id,
                         session.messages,
@@ -479,6 +495,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                     session,
                     source=source_name,
                     source_path=path,
+                    files_touched=enriched_files,
                     summary=summary,
                     transcript_path=transcript_path,
                     tool_log_path=tool_log_path,

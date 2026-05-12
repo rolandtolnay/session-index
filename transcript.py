@@ -65,8 +65,7 @@ def _expand_subagent_markers(
     return "\n".join(out_lines)
 
 
-def write_transcript(
-    session_id: str,
+def render_transcript(
     messages: list[dict[str, str]],
     *,
     project: str | None = None,
@@ -74,10 +73,7 @@ def write_transcript(
     timestamp: str | None = None,
     subagents: list[SubagentRef] | None = None,
 ) -> str:
-    """Write a cleaned transcript to disk. Returns the file path."""
-    os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
-    path = os.path.join(TRANSCRIPT_DIR, f"{session_id}.md")
-
+    """Render a cleaned transcript as markdown."""
     lines: list[str] = []
     ref_index = [0]  # mutable counter for order-based matching
 
@@ -113,8 +109,31 @@ def write_transcript(
             lines.append(content)
         lines.append("")  # blank line between messages
 
+    return "\n".join(lines)
+
+
+def write_transcript(
+    session_id: str,
+    messages: list[dict[str, str]],
+    *,
+    project: str | None = None,
+    branch: str | None = None,
+    timestamp: str | None = None,
+    subagents: list[SubagentRef] | None = None,
+) -> str:
+    """Write a cleaned transcript to disk. Returns the file path."""
+    os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+    path = os.path.join(TRANSCRIPT_DIR, f"{session_id}.md")
+
+    rendered = render_transcript(
+        messages,
+        project=project,
+        branch=branch,
+        timestamp=timestamp,
+        subagents=subagents,
+    )
     with open(path, "w") as f:
-        f.write("\n".join(lines))
+        f.write(rendered)
 
     return path
 

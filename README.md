@@ -17,7 +17,8 @@ Automatic indexing, summarization, and search for Claude Code and Pi conversatio
 - [Node.js](https://nodejs.org) (for the installer)
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv) (for running scripts)
-- [Ollama](https://ollama.ai) with `qwen3.5:4b` model (for summaries)
+- [Pi](https://pi.dev) authenticated with a GPT-capable provider (default summaries use `openai-codex/gpt-5.4-mini`)
+- Optional fallback: [Ollama](https://ollama.ai) with the configured local model
 
 ## Quick start
 
@@ -25,7 +26,7 @@ Automatic indexing, summarization, and search for Claude Code and Pi conversatio
 git clone https://github.com/rolandtolnay/session-index.git
 cd session-index
 node install.js
-ollama pull qwen3.5:4b
+pi          # then run /login and choose a GPT-capable provider such as OpenAI Codex
 ```
 
 By default the installer sets up both integrations:
@@ -48,6 +49,18 @@ node install.js --uninstall --target pi
 ```
 
 After installing the Pi integration, run `/reload` in Pi or restart Pi.
+
+## Summary model configuration
+
+Summaries run in the background through headless Pi print mode. Defaults:
+
+```bash
+SESSION_INDEX_SUMMARY_MODEL=openai-codex/gpt-5.4-mini
+SESSION_INDEX_SUMMARY_THINKING=low
+SESSION_INDEX_SUMMARY_TIMEOUT=180
+```
+
+Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy fallback path.
 
 ## Backfill existing conversations
 

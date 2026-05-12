@@ -23,7 +23,7 @@ Pi extension
     └─ session_shutdown ───► pi_index.py --mode full
 
 Shared full pass:
-    parser adapter ─► LLM summary via Ollama ─► cleaned transcript + tool log ─► DB upsert
+    parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► cleaned transcript + tool log ─► DB upsert
 
 Search path (skill invocation):
     search.py (skill wrapper) ──► cmd_search() in cli.py ──► FTS5 query ──► formatted output
@@ -50,9 +50,9 @@ Search path (skill invocation):
 | `pi_parser.py` | Pi tree-structured JSONL parser |
 | `transcript.py` | Transcript writer + excerpt extractor for search results |
 | `tool_log.py` | Per-session Markdown tool-call log writer |
-| `summarizer.py` | LLM summary generator using local Ollama model |
+| `summarizer.py` | LLM summary generator using headless Pi, with legacy Gemini/Ollama fallback |
 | `logger.py` | Structured logging with monthly rotation |
-| `client.py` | Standalone Ollama HTTP client (pure stdlib) |
+| `client.py` | Standalone Ollama HTTP client for fallback summaries (pure stdlib) |
 | `skills/session-search/scripts/search.py` | Skill wrapper: argparse → `cmd_search()` |
 | `skills/session-search/scripts/excerpt.py` | Skill wrapper: argparse → `cmd_excerpt()` |
 | `skills/session-search/SKILL.md` | Skill instructions for Claude Code and Pi agents |
@@ -130,9 +130,10 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - `worker | jsonl not found` / `pi_index | missing session file` — source JSONL path mismatch
 
 **Summary missing:**
-- `worker | llm error: ...` — Ollama not running or model unavailable
-- `worker | llm summary empty` — model returned empty response
-- Run `uv run cli.py status` to find sessions missing summaries
+- Check Pi auth/model availability: default is `openai-codex/gpt-5.4-mini` via `pi -p --no-session --no-tools`.
+- Set `SESSION_INDEX_SUMMARY_MODEL`, `SESSION_INDEX_SUMMARY_THINKING`, or `SESSION_INDEX_SUMMARY_TIMEOUT` to override the default.
+- Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to force the legacy fallback path.
+- Run `uv run cli.py status` to find sessions missing summaries.
 
 **Search returns no results:**
 - Check the log for `search | query="..." -> 0 results` to confirm the search ran
@@ -232,7 +233,7 @@ Each search call exists in up to three places with different detail levels:
 ### `session_end.py` + `_session_end_worker.py` (SessionEnd)
 
 1. `session_end.py` forks a detached worker process and exits immediately (< 1s)
-2. Worker generates LLM summary via local Ollama (bounded by 8192-token context)
+2. Worker renders the cleaned transcript in memory and generates an LLM summary via headless Pi print mode
 3. Worker writes cleaned Markdown transcript and separate `.tools.md` tool log when tool calls exist
 4. Worker upserts all fields to DB (summary, transcript_path, tool_log_path, slug)
 5. All failures are caught and logged — worker never crashes silently

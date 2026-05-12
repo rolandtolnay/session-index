@@ -1,13 +1,13 @@
 """LLM summary generation for sessions.
 
-Short sessions (≤30 messages): local Ollama model with goal-oriented prompt.
-Long sessions (30+ messages): Gemini 2.5 Flash Lite with specificity-focused prompt.
-Input: project + branch + user messages + files touched (no tool content).
+Primary path: headless Pi print mode using a GPT model and rich transcript input.
+Fallback path: legacy Gemini/local Ollama summarization for unavailable Pi/auth.
 Returns None on any failure.
 """
 
 import json
 import os
+import subprocess
 import urllib.request
 
 from client import llm
@@ -62,6 +62,16 @@ topics, technologies, and components so keyword searches find this session. \
 If the session spans multiple topics, mention all of them. \
 Summarize the topics discussed — never answer the user's questions directly."""
 
+SYSTEM_PROMPT_PI = """\
+You summarize coding sessions so an AI assistant can find relevant past work by keyword search.
+
+Start with an action verb: Implemented, Fixed, Refactored, Added, Configured, Migrated, Debugged, Investigated, Planned, Designed, Updated, Created, Removed, Replaced, Extracted.
+
+Write 1-4 sentences capturing what this session accomplished and why. Include specific topics, technologies, files, functions, components, ticket IDs, commands, and decisions so keyword searches find this session. If the session spans multiple topics, mention all important ones.
+
+Distinguish planning, research, debugging, and implementation. Only state facts visible in the provided session data. Do not describe the overall project; describe what happened in this session. Never answer the user's questions directly.
+"""
+
 SYSTEM_PROMPT_GEMINI = """\
 Summarize this coding session for a searchable archive. Another AI will \
 read your summary to decide if this session is relevant to a future question.
@@ -85,6 +95,9 @@ _GEMINI_URL = (
 )
 _GEMINI_MODEL = "gemini-2.5-flash-lite"
 _LONG_SESSION_THRESHOLD = 30
+_PI_MODEL = "openai-codex/gpt-5.4-mini"
+_PI_THINKING = "low"
+_PI_TIMEOUT_SECONDS = 180
 
 
 def _select_messages(msgs: list[str], budget: int = 30) -> list[str]:
@@ -129,6 +142,40 @@ def _build_prompt(
     return "\n".join(parts)
 
 
+def _build_rich_prompt(
+    project: str,
+    branch: str,
+    user_messages: list[str],
+    files_touched: list[str],
+    transcript_text: str | None,
+) -> str:
+    """Build the rich Pi summarizer input prompt."""
+    parts = [
+        "Summarize the coding session below for a searchable archive.",
+        "",
+        f"Project: {project}",
+    ]
+    if branch:
+        parts.append(f"Branch: {branch}")
+    parts.append(f"User message count: {len(user_messages)}")
+    if files_touched:
+        parts.append("Files touched:")
+        for file_name in files_touched[:80]:
+            parts.append(f"- {file_name}")
+    parts.append("")
+
+    if transcript_text:
+        parts.append("Full cleaned transcript:")
+        parts.append(transcript_text)
+    else:
+        parts.append("User messages:")
+        for msg in user_messages:
+            parts.append(f"- {msg}")
+
+    parts.append("\nSummary:")
+    return "\n".join(parts)
+
+
 def _call_gemini(prompt: str, max_tokens: int) -> str | None:
     """Call Gemini 2.5 Flash Lite. Returns None on any failure."""
     api_key = os.environ.get("GEMINI_API_KEY", "")
@@ -157,7 +204,58 @@ def _call_gemini(prompt: str, max_tokens: int) -> str | None:
     return text.strip() or None
 
 
-def summarize(
+def _call_pi(prompt: str) -> str | None:
+    """Call headless Pi print mode. Returns None on any failure."""
+    disabled = os.environ.get("SESSION_INDEX_DISABLE_PI_SUMMARIZER", "").lower()
+    if disabled in {"1", "true", "yes", "on"}:
+        return None
+
+    model = os.environ.get("SESSION_INDEX_SUMMARY_MODEL", _PI_MODEL)
+    thinking = os.environ.get("SESSION_INDEX_SUMMARY_THINKING", _PI_THINKING)
+    try:
+        timeout = int(os.environ.get("SESSION_INDEX_SUMMARY_TIMEOUT", str(_PI_TIMEOUT_SECONDS)))
+    except ValueError:
+        timeout = _PI_TIMEOUT_SECONDS
+
+    cmd = [
+        "pi",
+        "-p",
+        "--no-session",
+        "--no-tools",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-context-files",
+        "--model",
+        model,
+        "--thinking",
+        thinking,
+        "--system-prompt",
+        SYSTEM_PROMPT_PI,
+    ]
+    env = {
+        **os.environ,
+        "PI_SKIP_VERSION_CHECK": "1",
+    }
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            env=env,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    text = proc.stdout.strip()
+    return text or None
+
+
+def _legacy_summarize(
     *,
     project: str,
     branch: str,
@@ -165,35 +263,64 @@ def summarize(
     files_touched: list[str],
     last_assistant_message: str | None = None,
 ) -> str | None:
+    """Legacy Gemini/local fallback. Returns None on failure."""
+    prompt = _build_prompt(
+        project, branch, user_messages, files_touched,
+        last_assistant_message=last_assistant_message,
+    )
+
+    msg_count = len(user_messages)
+    if msg_count <= 15:
+        max_tokens = 200
+    elif msg_count <= 30:
+        max_tokens = 300
+    else:
+        max_tokens = 400
+
+    if msg_count > _LONG_SESSION_THRESHOLD:
+        result = _call_gemini(prompt, max_tokens)
+        if result:
+            return result
+
+    result = llm(
+        prompt,
+        system=SYSTEM_PROMPT_LOCAL,
+        temperature=0.1,
+        max_tokens=max_tokens,
+        think=False,
+        timeout=30,
+    )
+    return result.strip() if result and result.strip() else None
+
+
+def summarize(
+    *,
+    project: str,
+    branch: str,
+    user_messages: list[str],
+    files_touched: list[str],
+    last_assistant_message: str | None = None,
+    transcript_text: str | None = None,
+) -> str | None:
     """Generate a summary for a session. Returns None on failure."""
     try:
-        prompt = _build_prompt(
-            project, branch, user_messages, files_touched,
+        pi_prompt = _build_rich_prompt(
+            project,
+            branch,
+            user_messages,
+            files_touched,
+            transcript_text,
+        )
+        result = _call_pi(pi_prompt)
+        if result:
+            return result.strip()
+
+        return _legacy_summarize(
+            project=project,
+            branch=branch,
+            user_messages=user_messages,
+            files_touched=files_touched,
             last_assistant_message=last_assistant_message,
         )
-
-        msg_count = len(user_messages)
-        if msg_count <= 15:
-            max_tokens = 200
-        elif msg_count <= 30:
-            max_tokens = 300
-        else:
-            max_tokens = 400
-
-        # Long sessions: try Gemini Flash Lite first, fall back to local
-        if msg_count > _LONG_SESSION_THRESHOLD:
-            result = _call_gemini(prompt, max_tokens)
-            if result:
-                return result
-
-        result = llm(
-            prompt,
-            system=SYSTEM_PROMPT_LOCAL,
-            temperature=0.1,
-            max_tokens=max_tokens,
-            think=False,
-            timeout=30,
-        )
-        return result.strip() if result and result.strip() else None
     except Exception:
         return None
