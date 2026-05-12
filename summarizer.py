@@ -13,24 +13,54 @@ import urllib.request
 from client import llm
 
 SYSTEM_PROMPT_LOCAL = """\
-You summarize coding sessions for a searchable index. Future AI assistants \
-will search these summaries to find relevant past work. Write 1-3 sentences \
-capturing what was done and why, so the right session surfaces when someone \
-searches for the topic. Include the specific topics, technologies, and \
-questions the user raised so searches for those terms find this session. \
+You summarize coding sessions so an AI assistant can find relevant past \
+work by keyword search.
+
+Start with an action verb: Implemented, Fixed, Refactored, Added, \
+Configured, Migrated, Debugged, Investigated, Planned, Designed, Updated, \
+Created, Removed, Replaced, Extracted.
+
+Example input: User investigated a production bug where revoking team \
+member access failed silently. Found console.log was swallowing errors \
+and root cause was missing contact_email on legacy child accounts. Added \
+inline error feedback. Project: dashboard-web.
+Example output: Debugged a silent member revocation failure in production. \
+Root cause was empty contact_email on legacy child accounts failing \
+assertValidAccount. Added visible error feedback via inline Alert and \
+drafted a Slack message explaining the catch-22 fix options.
+
+Example input: User researched how to programmatically access Mobbin \
+screenshots. Analyzed API surface, discovered Supabase RLS blocks direct \
+REST but RSC payloads contain all data. Created Linear ticket MIN-160. \
+Project: mindsystem.
+Example output: Investigated Mobbin API access for design inspiration. \
+Discovered Supabase REST is blocked by RLS but Next.js RSC payloads \
+contain all data with images downloadable from Bytescale CDN. Assessed \
+Python CLI feasibility (~300-400 lines) and created Linear ticket MIN-160.
+
+Example input: User conducted 51 design decision questions for a shadcn \
+UI redesign. Covered layout, density, components, architecture, tokens. \
+Produced 10-SPEC.md and 11-phase implementation plan. \
+Project: first-things-first.
+Example output: Planned the shadcn UI redesign of First Things First \
+through 51 design decisions covering full-bleed layout, 28px slot density, \
+unified BlockCard component, and shadcn token unification. Produced \
+10-SPEC.md (876 lines) and an 11-phase implementation plan.
+
+Example input: User implemented SYN-342 payout UX improvements. Extracted \
+AddExternalBankAccountModal, added empty-state banner, auto-select logic, \
+pending verification handling, currency filtering. Created PR #31. \
+Project: dashboard-web.
+Example output: Implemented SYN-342 payout UX: extracted \
+AddExternalBankAccountModal as reusable component, added empty-state \
+banner, auto-selection of single compatible bank account, pending \
+verification handling, and non-GBP currency filtering via useEbaSupport(). \
+Created PR #31.
+
+Write 1-3 sentences capturing what was done and why. Include specific \
+topics, technologies, and components so keyword searches find this session. \
 If the session spans multiple topics, mention all of them. \
-Summarize the topics discussed — never answer the user's questions directly.
-
-Example input: User asked to fix login timeout. Modified auth/session.ts \
-and tests. Branch: fix/login-timeout.
-Example output: Fixed session timeout bug by increasing token TTL from 15m \
-to 1h and adding automatic refresh before expiry.
-
-Example input: User asked to add dark mode toggle. Created ThemeProvider, \
-modified App.tsx and settings page. Branch: feat/dark-mode.
-Example output: Implemented dark mode with a ThemeProvider context, CSS \
-variables for color tokens, and a toggle in user settings that persists \
-to localStorage."""
+Summarize the topics discussed — never answer the user's questions directly."""
 
 SYSTEM_PROMPT_GEMINI = """\
 Summarize this coding session for a searchable archive. Another AI will \
