@@ -28,6 +28,10 @@ Shared full pass:
 Search path (skill invocation):
     search.py (skill wrapper) ──► cmd_search() in cli.py ──► FTS5 query ──► formatted output
                                                           └─► log entry to session-index.log
+
+Current-session lookup:
+    active runtime env ──► current_session.py ──► cli.py current ──► Canonical Session ID / artifact paths
+                         └─► no DB, latest-session, terminal, or registry fallback
 ```
 
 ## File Map
@@ -41,6 +45,8 @@ Search path (skill invocation):
 | `hooks/pi_index.py` | Pi extension entry point for fast/full indexing |
 | `hooks/pi_context.py` | Pi extension entry point for recent-context system prompt injection |
 | `pi-extension/index.ts` | Pi extension wiring for lifecycle events |
+| `pi-extension/session-index-env.ts` | Pi runtime environment helper for current-session lookup |
+| `current_session.py` | Exact current-session resolver using Session Index runtime env |
 | `indexer.py` | Shared parse/summarize/transcript/upsert pipeline |
 | `sources.py` | Claude/Pi source JSONL discovery for backfill |
 | `recent_context.py` | Shared recent-session context builder |
@@ -144,6 +150,15 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 **Transcript not generated:**
 - `worker | transcript written` should appear — if missing, check for errors before it
 - Run `uv run cli.py status --fix` to identify and repair dangling paths
+
+**Current session lookup fails:**
+- `uv run cli.py current` works only inside an active runtime that exposes exact Session Index identity.
+- Required public env: `SESSION_INDEX_SESSION_ID`, `SESSION_INDEX_NATIVE_SESSION_ID`, `SESSION_INDEX_SOURCE`, and `SESSION_INDEX_SOURCE_PATH`.
+- Optional public env: `SESSION_INDEX_LEAF_ID` for Pi leaf metadata; it is reported as `leaf_id` in JSON when available.
+- `source_path` is the raw provider Source Transcript, `transcript_path` is the generated Clean Transcript artifact, and `tool_log_path` is the generated Tool Log artifact.
+- The Clean Transcript and Tool Log paths are derived from the Canonical Session ID under `~/.session-index/transcripts/`; a database row is not required.
+- Missing or inconsistent runtime identity exits non-zero by design. v1 does not fall back to the latest session, focused terminal, registry state, or the database.
+- Subagent transcript paths are not returned by `current` in v1.
 
 ---
 

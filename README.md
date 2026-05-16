@@ -101,6 +101,45 @@ uv run cli.py excerpt 019dde8f -q "pi transcript parser"
 uv run cli.py status
 ```
 
+## Current session lookup
+
+Inside an active Claude Code or Pi runtime that exposes Session Index environment, the `current` command identifies the exact conversation running that command:
+
+```bash
+uv run cli.py current          # Canonical Session ID
+uv run cli.py current --path   # generated Clean Transcript artifact path
+uv run cli.py current --native # provider-native session ID
+uv run cli.py current --json   # full current-session metadata
+```
+
+`current --json` uses Session Index terminology:
+
+- `session_id` — Canonical Session ID. Pi sessions use the `pi:<uuid>` namespace; Claude sessions use the native UUID.
+- `native_session_id` — provider-native session ID without Session Index namespacing.
+- `source` — provider source, currently `claude` or `pi`.
+- `source_path` — raw provider Source Transcript path.
+- `transcript_path` — generated Clean Transcript Markdown artifact path.
+- `tool_log_path` — generated Tool Log Markdown artifact path.
+- `source_path_exists`, `transcript_exists`, `tool_log_exists` — whether those paths exist at command time.
+- `resolution_method` — current v1 resolver, `session_index_env`.
+- `leaf_id` — optional Pi leaf metadata when available; it traces the active Pi branch but does not affect session-level artifact paths.
+
+The Session Index-owned runtime environment contract is:
+
+| Variable | Required | Meaning |
+|----------|----------|---------|
+| `SESSION_INDEX_SESSION_ID` | yes | Canonical Session ID |
+| `SESSION_INDEX_NATIVE_SESSION_ID` | yes | Provider-native session ID |
+| `SESSION_INDEX_SOURCE` | yes | Provider source (`claude` or `pi`) |
+| `SESSION_INDEX_SOURCE_PATH` | yes | Raw provider Source Transcript path |
+| `SESSION_INDEX_LEAF_ID` | no | Optional Pi leaf metadata |
+
+`SESSION_INDEX_*` variables are the public contract and take precedence. Claude-native environment can be used only as compatibility input when it provides both the native session ID (`CLAUDE_SESSION_ID`) and Source Transcript path (`CLAUDE_TRANSCRIPT_PATH` or `CLAUDE_CODE_TRANSCRIPT_PATH`) needed to construct the same result.
+
+`current` does not require a database row. It derives `transcript_path` and `tool_log_path` from the Canonical Session ID using the standard artifact paths under `~/.session-index/transcripts/`, so it can work before full indexing has completed.
+
+If runtime identity is missing or inconsistent, `current` exits non-zero with a clear error. v1 intentionally does not guess from the latest session, focused terminal, runtime registry, or database. Subagent transcript paths are out of scope for v1; `current` returns only the main session artifact paths.
+
 ## Add to global agent instructions
 
 For Claude Code, add to `~/.claude/CLAUDE.md`. For Pi, add to `~/.pi/agent/AGENTS.md` if you want an explicit reminder beyond the installed skill metadata:
@@ -122,6 +161,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 
 | Command | Description |
 |---------|-------------|
+| `current [--path\|--native\|--json]` | Show the exact active runtime session from Session Index env |
 | `search [query] [--project NAME] [--since DATE] [--until DATE]` | Full-text search with optional project prefix and date range |
 | `excerpt <session>... -q QUERY` | Extract focused transcript passages |
 | `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--transcripts-only]` | Process JSONL files; `--transcripts-only` skips LLM summaries |
