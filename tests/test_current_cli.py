@@ -41,46 +41,37 @@ def _run_cli(monkeypatch, args):
     cli.main()
 
 
-def test_current_prints_canonical_id(monkeypatch, tmp_path, capsys):
+@pytest.fixture
+def current_cli_setup(monkeypatch, tmp_path):
     _clear_current_env(monkeypatch)
     monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
     monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
     _set_pi_env(monkeypatch, tmp_path / "source.jsonl")
+    return tmp_path
 
+
+def test_current_prints_canonical_id(monkeypatch, current_cli_setup, capsys):
     _run_cli(monkeypatch, ["current"])
 
     assert capsys.readouterr().out == "pi:019pi-session\n"
 
 
-def test_current_path_prints_clean_transcript_path(monkeypatch, tmp_path, capsys):
-    _clear_current_env(monkeypatch)
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
-    _set_pi_env(monkeypatch, tmp_path / "source.jsonl")
-
+def test_current_path_prints_clean_transcript_path(monkeypatch, current_cli_setup, capsys):
     _run_cli(monkeypatch, ["current", "--path"])
 
-    assert capsys.readouterr().out == f"{tmp_path / 'pi:019pi-session.md'}\n"
+    assert capsys.readouterr().out == f"{current_cli_setup / 'pi:019pi-session.md'}\n"
 
 
-def test_current_native_prints_provider_native_id(monkeypatch, tmp_path, capsys):
-    _clear_current_env(monkeypatch)
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
-    _set_pi_env(monkeypatch, tmp_path / "source.jsonl")
-
+def test_current_native_prints_provider_native_id(monkeypatch, current_cli_setup, capsys):
     _run_cli(monkeypatch, ["current", "--native"])
 
     assert capsys.readouterr().out == "019pi-session\n"
 
 
-def test_current_json_prints_structured_metadata(monkeypatch, tmp_path, capsys):
-    _clear_current_env(monkeypatch)
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
-    source = tmp_path / "source.jsonl"
+def test_current_json_prints_structured_metadata(monkeypatch, current_cli_setup, capsys):
+    source = current_cli_setup / "source.jsonl"
     source.write_text("{}\n")
-    transcript_path = tmp_path / "pi:019pi-session.md"
+    transcript_path = current_cli_setup / "pi:019pi-session.md"
     transcript_path.write_text("transcript")
     _set_pi_env(monkeypatch, source, leaf_id="leaf-json")
 
@@ -93,7 +84,7 @@ def test_current_json_prints_structured_metadata(monkeypatch, tmp_path, capsys):
         "source": "pi",
         "source_path": str(source),
         "transcript_path": str(transcript_path),
-        "tool_log_path": str(tmp_path / "pi:019pi-session.tools.md"),
+        "tool_log_path": str(current_cli_setup / "pi:019pi-session.tools.md"),
         "source_path_exists": True,
         "transcript_exists": True,
         "tool_log_exists": False,

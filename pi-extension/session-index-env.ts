@@ -9,11 +9,12 @@ export const SESSION_INDEX_ENV_KEYS = [
 ] as const;
 
 export type SessionIndexEnvKey = (typeof SESSION_INDEX_ENV_KEYS)[number];
-export type SessionIndexEnv = Partial<Record<SessionIndexEnvKey, string>> & {
+export type SessionIndexEnv = {
 	SESSION_INDEX_SESSION_ID: string;
 	SESSION_INDEX_NATIVE_SESSION_ID: string;
 	SESSION_INDEX_SOURCE: "pi";
 	SESSION_INDEX_SOURCE_PATH: string;
+	SESSION_INDEX_LEAF_ID?: string;
 };
 
 type MutableEnv = Record<string, string | undefined>;

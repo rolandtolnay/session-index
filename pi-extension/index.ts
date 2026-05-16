@@ -14,6 +14,12 @@ const repoRoot = path.resolve(extensionDir, "..");
 const piIndexScript = path.join(repoRoot, "hooks", "pi_index.py");
 const piContextScript = path.join(repoRoot, "hooks", "pi_context.py");
 
+function refreshSessionIndexEnv(sessionManager: Parameters<typeof buildSessionIndexEnv>[0]) {
+	const sessionEnv = buildSessionIndexEnv(sessionManager);
+	applySessionIndexEnv(process.env, sessionEnv);
+	return sessionEnv;
+}
+
 function spawnIndexer(mode: "fast" | "full", sessionFile: string, sessionEnv: SessionIndexEnv | undefined) {
 	const childEnv = overlaySessionIndexEnv(process.env, sessionEnv);
 	childEnv.SESSION_INDEX_PROVIDER = "pi";
@@ -38,12 +44,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		injectedForSession = undefined;
 		lastFastIndexKey = undefined;
-		applySessionIndexEnv(process.env, buildSessionIndexEnv(ctx.sessionManager));
+		refreshSessionIndexEnv(ctx.sessionManager);
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		const sessionEnv = buildSessionIndexEnv(ctx.sessionManager);
-		applySessionIndexEnv(process.env, sessionEnv);
+		const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
 		const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.() ?? "ephemeral";
 		if (injectedForSession === sessionFile) return;
 		injectedForSession = sessionFile;
@@ -74,8 +79,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		const sessionEnv = buildSessionIndexEnv(ctx.sessionManager);
-		applySessionIndexEnv(process.env, sessionEnv);
+		const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
 		const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.();
 		if (!sessionFile) return;
 		const leaf = sessionEnv?.SESSION_INDEX_LEAF_ID ?? ctx.sessionManager.getLeafId?.() ?? "";
@@ -87,8 +91,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		if (event.reason === "reload") return;
-		const sessionEnv = buildSessionIndexEnv(ctx.sessionManager);
-		applySessionIndexEnv(process.env, sessionEnv);
+		const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
 		const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.();
 		if (!sessionFile) return;
 		spawnIndexer("full", sessionFile, sessionEnv);

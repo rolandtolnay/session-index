@@ -27,8 +27,6 @@ REQUIRED_ENV = (
     ENV_SOURCE,
     ENV_SOURCE_PATH,
 )
-PUBLIC_ENV = (*REQUIRED_ENV, ENV_LEAF_ID)
-
 RESOLUTION_METHOD = "session_index_env"
 _ERROR_PREFIX = (
     "current only works inside an active agent runtime exposing Session Index env"
@@ -89,12 +87,12 @@ def _required_value(env: Mapping[str, str], name: str) -> str | None:
     return value.strip()
 
 
-def _first_required_value(env: Mapping[str, str], names: tuple[str, ...]) -> tuple[str | None, str | None]:
+def _first_required_value(env: Mapping[str, str], names: tuple[str, ...]) -> str | None:
     for name in names:
         value = _required_value(env, name)
         if value is not None:
-            return value, name
-    return None, None
+            return value
+    return None
 
 
 def _fail(detail: str) -> CurrentSessionError:
@@ -127,25 +125,35 @@ def _normalize_identity(source: str, session_id: str, native_session_id: str) ->
 
 
 def _has_public_env(env: Mapping[str, str]) -> bool:
-    return any(_required_value(env, name) is not None for name in PUBLIC_ENV)
+    return any(_required_value(env, name) is not None for name in REQUIRED_ENV)
 
 
 def _resolve_public_env(env: Mapping[str, str]) -> tuple[str, str, str, str, str | None]:
-    missing = [name for name in REQUIRED_ENV if _required_value(env, name) is None]
+    values: dict[str, str] = {}
+    missing: list[str] = []
+    for name in REQUIRED_ENV:
+        value = _required_value(env, name)
+        if value is None:
+            missing.append(name)
+        else:
+            values[name] = value
+
     if missing:
         raise _fail(f"missing required env: {', '.join(missing)}")
 
-    session_id = _required_value(env, ENV_SESSION_ID) or ""
-    native_session_id = _required_value(env, ENV_NATIVE_SESSION_ID) or ""
-    source = (_required_value(env, ENV_SOURCE) or "").lower()
-    source_path = _required_value(env, ENV_SOURCE_PATH) or ""
     leaf_id = _required_value(env, ENV_LEAF_ID)
-    return session_id, native_session_id, source, source_path, leaf_id
+    return (
+        values[ENV_SESSION_ID],
+        values[ENV_NATIVE_SESSION_ID],
+        values[ENV_SOURCE].lower(),
+        values[ENV_SOURCE_PATH],
+        leaf_id,
+    )
 
 
 def _resolve_claude_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, str, None]:
     session_id = _required_value(env, CLAUDE_ENV_SESSION_ID)
-    source_path, _source_path_env = _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS)
+    source_path = _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS)
 
     missing = []
     if session_id is None:
@@ -167,7 +175,7 @@ def _resolve_env_inputs(env: Mapping[str, str]) -> tuple[str, str, str, str, str
 
     has_claude_compat = (
         _required_value(env, CLAUDE_ENV_SESSION_ID) is not None
-        or _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS)[0] is not None
+        or _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS) is not None
     )
     if has_claude_compat:
         return _resolve_claude_compat_env(env)

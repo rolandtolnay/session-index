@@ -1,6 +1,5 @@
 """Tests for exact current-session env resolution."""
 
-import json
 import os
 import sys
 
@@ -129,7 +128,6 @@ def test_resolve_json_dict_includes_public_fields_and_pi_leaf(tmp_path, monkeypa
         "resolution_method": "session_index_env",
         "leaf_id": "leaf-a",
     }
-    json.dumps(current.to_json_dict())
 
 
 def test_resolve_claude_compat_env_matches_public_contract(tmp_path, monkeypatch):
@@ -170,6 +168,24 @@ def test_resolve_claude_compat_accepts_alternate_transcript_path_env(tmp_path, m
     assert current.session_id == "claude-alt"
     assert current.source_path == str(source)
     assert current.transcript_path == str(tmp_path / "claude-alt.md")
+
+
+def test_optional_session_index_leaf_does_not_block_claude_compat(tmp_path, monkeypatch):
+    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
+    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    source = tmp_path / "claude-source.jsonl"
+
+    current = resolve_current_session({
+        "SESSION_INDEX_LEAF_ID": "stale-pi-leaf",
+        "CLAUDE_SESSION_ID": "claude-with-stale-leaf",
+        "CLAUDE_TRANSCRIPT_PATH": str(source),
+    })
+
+    assert current.session_id == "claude-with-stale-leaf"
+    assert current.native_session_id == "claude-with-stale-leaf"
+    assert current.source == "claude"
+    assert current.source_path == str(source)
+    assert current.leaf_id is None
 
 
 def test_insufficient_claude_compat_env_fails_clearly():
