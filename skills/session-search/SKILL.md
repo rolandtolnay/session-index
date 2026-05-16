@@ -54,11 +54,23 @@ Returns focused transcript blocks from specific sessions (max 3 per call). When 
 - Example: `excerpt.py 07983a7f -q "auth token refresh"`
 - Example: `excerpt.py 019dde8f -q "pi transcript parser"`
 
+### current — Identify this active session
+
+```bash
+uv run cli.py current          # Canonical Session ID
+uv run cli.py current --path   # cleaned transcript path for this conversation
+uv run cli.py current --native # provider-native session ID
+uv run cli.py current --json   # structured IDs, source path, artifact paths, existence flags
+```
+
+Use `current --path` when you need the deterministic cleaned transcript path for the conversation you are currently in. It works from exact runtime identity exposed via Session Index env and does not guess from latest sessions, terminals, or the database. If the active runtime does not expose that identity, it exits non-zero instead of returning a potentially wrong session.
+
 ## Workflow
 
-1. **Search first.** Run `search` to find relevant sessions by topic.
-2. **Extract if needed.** Copy session ID(s) from search results, pass to `excerpt` with keywords.
-3. **Fall back to reading the cleaned transcript directly** if `excerpt` returns off-topic blocks after one query refinement, or when the footer reports more agent-transcript matches you want to see.
+1. **For this active conversation, use `current --path`.** This gives the exact cleaned transcript path without searching.
+2. **For past conversations, search first.** Run `search` to find relevant sessions by topic.
+3. **Extract if needed.** Copy session ID(s) from search results, pass to `excerpt` with keywords.
+4. **Fall back to reading the cleaned transcript directly** if `excerpt` returns off-topic blocks after one query refinement, or when the footer reports more agent-transcript matches you want to see.
 
 Most questions are answered by summaries alone. Use `excerpt` only when you need the actual conversation content -- specific decisions, code explanations, or implementation details.
 

@@ -9,11 +9,13 @@ Usage:
 
 import argparse
 import glob
+import json
 import os
 import shutil
 import sys
 import time
 
+from current_session import CurrentSessionError, resolve_current_session
 from db import get_connection, init_db, search_flexible, get_session, get_stats, rebuild_fts, DB_PATH
 from logger import log
 from parser import clean_user_messages
@@ -37,6 +39,24 @@ def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
     if args.limit != 20:
         params.append(f"limit={args.limit}")
     log(session_id, "search", f"{' '.join(params)} -> {count} results ({elapsed_ms}ms)")
+
+
+def cmd_current(args: argparse.Namespace) -> None:
+    """Print the exact active runtime session from Session Index env."""
+    try:
+        current = resolve_current_session()
+    except CurrentSessionError as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(1)
+
+    if args.json:
+        print(json.dumps(current.to_json_dict(), sort_keys=True))
+    elif args.path:
+        print(current.transcript_path)
+    elif args.native:
+        print(current.native_session_id)
+    else:
+        print(current.session_id)
 
 
 def cmd_search(args: argparse.Namespace) -> None:
@@ -740,6 +760,14 @@ def _fix_issues(conn, issues: dict) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Session Index CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # current
+    sp_current = subparsers.add_parser("current", help="Show the active runtime session")
+    current_output = sp_current.add_mutually_exclusive_group()
+    current_output.add_argument("--path", action="store_true", help="Print the deterministic clean transcript path")
+    current_output.add_argument("--native", action="store_true", help="Print the provider-native session ID")
+    current_output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")
+    sp_current.set_defaults(func=cmd_current)
 
     # search
     sp_search = subparsers.add_parser("search", help="Full-text search")

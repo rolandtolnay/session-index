@@ -2,13 +2,28 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import {
+	applySessionIndexEnv,
+	buildSessionIndexEnv,
+	overlaySessionIndexEnv,
+	type SessionIndexEnv,
+} from "./session-index-env.ts";
 
 const extensionDir = realpathSync(__dirname);
 const repoRoot = path.resolve(extensionDir, "..");
 const piIndexScript = path.join(repoRoot, "hooks", "pi_index.py");
 const piContextScript = path.join(repoRoot, "hooks", "pi_context.py");
 
-function spawnIndexer(mode: "fast" | "full", sessionFile: string) {
+function refreshSessionIndexEnv(sessionManager: Parameters<typeof buildSessionIndexEnv>[0]) {
+	const sessionEnv = buildSessionIndexEnv(sessionManager);
+	applySessionIndexEnv(process.env, sessionEnv);
+	return sessionEnv;
+}
+
+function spawnIndexer(mode: "fast" | "full", sessionFile: string, sessionEnv: SessionIndexEnv | undefined) {
+	const childEnv = overlaySessionIndexEnv(process.env, sessionEnv);
+	childEnv.SESSION_INDEX_PROVIDER = "pi";
+
 	const child = spawn(
 		"uv",
 		["run", piIndexScript, "--mode", mode, "--session-file", sessionFile],
@@ -16,10 +31,7 @@ function spawnIndexer(mode: "fast" | "full", sessionFile: string) {
 			cwd: repoRoot,
 			detached: true,
 			stdio: "ignore",
-			env: {
-				...process.env,
-				SESSION_INDEX_PROVIDER: "pi",
-			},
+			env: childEnv,
 		},
 	);
 	child.unref();
@@ -29,13 +41,15 @@ export default function (pi: ExtensionAPI) {
 	let injectedForSession: string | undefined;
 	let lastFastIndexKey: string | undefined;
 
-	pi.on("session_start", async (_event, _ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		injectedForSession = undefined;
 		lastFastIndexKey = undefined;
+		refreshSessionIndexEnv(ctx.sessionManager);
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		const sessionFile = ctx.sessionManager.getSessionFile?.() ?? "ephemeral";
+		const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
+		const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.() ?? "ephemeral";
 		if (injectedForSession === sessionFile) return;
 		injectedForSession = sessionFile;
 
@@ -49,7 +63,7 @@ export default function (pi: ExtensionAPI) {
 					"--cwd",
 					ctx.cwd,
 					"--session-id",
-					ctx.sessionManager.getSessionId?.() ?? "",
+					sessionEnv?.SESSION_INDEX_NATIVE_SESSION_ID ?? ctx.sessionManager.getSessionId?.() ?? "",
 				],
 				{ cwd: repoRoot, timeout: 3000 },
 			);
@@ -65,19 +79,21 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {
-		const sessionFile = ctx.sessionManager.getSessionFile?.();
+		const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
+		const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.();
 		if (!sessionFile) return;
-		const leaf = ctx.sessionManager.getLeafId?.() ?? "";
+		const leaf = sessionEnv?.SESSION_INDEX_LEAF_ID ?? ctx.sessionManager.getLeafId?.() ?? "";
 		const key = `${sessionFile}:${leaf}`;
 		if (key === lastFastIndexKey) return;
 		lastFastIndexKey = key;
-		spawnIndexer("fast", sessionFile);
+		spawnIndexer("fast", sessionFile, sessionEnv);
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		if (event.reason === "reload") return;
-		const sessionFile = ctx.sessionManager.getSessionFile?.();
+		const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
+		const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.();
 		if (!sessionFile) return;
-		spawnIndexer("full", sessionFile);
+		spawnIndexer("full", sessionFile, sessionEnv);
 	});
 }
