@@ -57,10 +57,16 @@ Returns focused transcript blocks from specific sessions (max 3 per call). When 
 ### current — Identify this active session
 
 ```bash
-uv run cli.py current          # Canonical Session ID
-uv run cli.py current --path   # cleaned transcript path for this conversation
-uv run cli.py current --native # provider-native session ID
-uv run cli.py current --json   # structured IDs, source path, artifact paths, existence flags
+uv run ~/.pi/agent/skills/session-search/scripts/current.py          # Canonical Session ID
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --path   # cleaned transcript path for this conversation
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --native # provider-native session ID
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured IDs, source path, artifact paths, existence flags
+```
+
+Claude Code path, if needed:
+
+```bash
+uv run ~/.claude/skills/session-search/scripts/current.py --path
 ```
 
 Use `current --path` when you need the deterministic cleaned transcript path for the conversation you are currently in. It works from exact runtime identity exposed via Session Index env and does not guess from latest sessions, terminals, or the database. If the active runtime does not expose that identity, it exits non-zero instead of returning a potentially wrong session.

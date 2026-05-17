@@ -28,6 +28,11 @@ cd /path/to/session-index
 uv run --with pytest -m pytest tests/
 ```
 
+## Skill maintenance
+- `skills/session-search/` is the agent-facing interface for this project. When adding or changing CLI user-facing commands/options, update `skills/session-search/SKILL.md` and add/update thin wrappers in `skills/session-search/scripts/` as needed.
+- Skill scripts should not duplicate CLI logic. They should resolve the repo root, import the relevant `cli.py` command function, parse only the skill entrypoint arguments, and delegate.
+- Installed Claude/Pi skill paths are normally symlinks to this repo, so source changes are picked up without reinstall unless the install layout changes.
+
 ## Benchmarking
 
 ### Overview
