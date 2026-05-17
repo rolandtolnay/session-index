@@ -28,6 +28,9 @@ cd /path/to/session-index
 uv run --with pytest -m pytest tests/
 ```
 
+## Local utilities
+- `clean_pi_transcript.py`: local-only helper for turning a raw Pi JSONL transcript into readable Markdown with user messages, assistant messages, assistant thinking blocks, and tool-call names/targets while omitting tool results. Run directly when needed: `uv run clean_pi_transcript.py /path/to/session.jsonl`. This is intentionally not exposed through the project CLI or any skill.
+
 ## Skill maintenance
 - `skills/session-search/` is the agent-facing interface for this project. When adding or changing CLI user-facing commands/options, update `skills/session-search/SKILL.md` and add/update thin wrappers in `skills/session-search/scripts/` as needed.
 - Skill scripts should not duplicate CLI logic. They should resolve the repo root, import the relevant `cli.py` command function, parse only the skill entrypoint arguments, and delegate.
