@@ -56,10 +56,24 @@ def test_current_prints_canonical_id(monkeypatch, current_cli_setup, capsys):
     assert capsys.readouterr().out == "pi:019pi-session\n"
 
 
-def test_current_path_prints_clean_transcript_path(monkeypatch, current_cli_setup, capsys):
+def test_current_path_prints_clean_transcript_path_and_warns_when_missing(monkeypatch, current_cli_setup, capsys):
     _run_cli(monkeypatch, ["current", "--path"])
 
-    assert capsys.readouterr().out == f"{current_cli_setup / 'pi:019pi-session.md'}\n"
+    captured = capsys.readouterr()
+    expected_path = current_cli_setup / "pi:019pi-session.md"
+    assert captured.out == f"{expected_path}\n"
+    assert captured.err == f"Warning: Clean Transcript does not exist yet: {expected_path}\n"
+
+
+def test_current_path_does_not_warn_when_transcript_exists(monkeypatch, current_cli_setup, capsys):
+    transcript_path = current_cli_setup / "pi:019pi-session.md"
+    transcript_path.write_text("transcript")
+
+    _run_cli(monkeypatch, ["current", "--path"])
+
+    captured = capsys.readouterr()
+    assert captured.out == f"{transcript_path}\n"
+    assert captured.err == ""
 
 
 def test_current_native_prints_provider_native_id(monkeypatch, current_cli_setup, capsys):

@@ -157,6 +157,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - Optional public env: `SESSION_INDEX_LEAF_ID` for Pi leaf metadata; it is reported as `leaf_id` in JSON when available.
 - `source_path` is the raw provider Source Transcript, `transcript_path` is the generated Clean Transcript artifact, and `tool_log_path` is the generated Tool Log artifact.
 - The Clean Transcript and Tool Log paths are derived from the Canonical Session ID under `~/.session-index/transcripts/`; a database row is not required.
+- `current --path` prints the deterministic Clean Transcript path on stdout and warns on stderr if that file does not exist yet. For machine-readable checks, use `current --json` and inspect `transcript_exists`.
 - Missing or inconsistent runtime identity exits non-zero by design. v1 does not fall back to the latest session, focused terminal, registry state, or the database.
 - Subagent transcript paths are not returned by `current` in v1.
 

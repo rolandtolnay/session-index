@@ -58,7 +58,7 @@ Returns focused transcript blocks from specific sessions (max 3 per call). When 
 
 ```bash
 uv run ~/.pi/agent/skills/session-search/scripts/current.py          # Canonical Session ID
-uv run ~/.pi/agent/skills/session-search/scripts/current.py --path   # cleaned transcript path for this conversation
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --path   # cleaned transcript path; warns if missing
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --native # provider-native session ID
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured IDs, source path, artifact paths, existence flags
 ```
@@ -69,11 +69,11 @@ Claude Code path, if needed:
 uv run ~/.claude/skills/session-search/scripts/current.py --path
 ```
 
-Use `current --path` when you need the deterministic cleaned transcript path for the conversation you are currently in. It works from exact runtime identity exposed via Session Index env and does not guess from latest sessions, terminals, or the database. If the active runtime does not expose that identity, it exits non-zero instead of returning a potentially wrong session.
+Use `current --path` when you need the deterministic cleaned transcript path for the conversation you are currently in. It prints the path on stdout and warns on stderr if the cleaned transcript file has not been written yet; use `current --json` for machine-readable existence flags. It works from exact runtime identity exposed via Session Index env and does not guess from latest sessions, terminals, or the database. If the active runtime does not expose that identity, it exits non-zero instead of returning a potentially wrong session.
 
 ## Workflow
 
-1. **For this active conversation, use `current --path`.** This gives the exact cleaned transcript path without searching.
+1. **For this active conversation, use `current --path`.** This gives the exact cleaned transcript path without searching, with a stderr warning if the file does not exist yet.
 2. **For past conversations, search first.** Run `search` to find relevant sessions by topic.
 3. **Extract if needed.** Copy session ID(s) from search results, pass to `excerpt` with keywords.
 4. **Fall back to reading the cleaned transcript directly** if `excerpt` returns off-topic blocks after one query refinement, or when the footer reports more agent-transcript matches you want to see.

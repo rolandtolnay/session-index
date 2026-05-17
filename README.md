@@ -107,7 +107,7 @@ Inside an active Claude Code or Pi runtime that exposes Session Index environmen
 
 ```bash
 uv run cli.py current          # Canonical Session ID
-uv run cli.py current --path   # generated Clean Transcript artifact path
+uv run cli.py current --path   # deterministic Clean Transcript artifact path; warns if missing
 uv run cli.py current --native # provider-native session ID
 uv run cli.py current --json   # full current-session metadata
 ```
@@ -136,7 +136,7 @@ The Session Index-owned runtime environment contract is:
 
 `SESSION_INDEX_*` variables are the public contract and take precedence. Claude-native environment can be used only as compatibility input when it provides both the native session ID (`CLAUDE_SESSION_ID`) and Source Transcript path (`CLAUDE_TRANSCRIPT_PATH` or `CLAUDE_CODE_TRANSCRIPT_PATH`) needed to construct the same result.
 
-`current` does not require a database row. It derives `transcript_path` and `tool_log_path` from the Canonical Session ID using the standard artifact paths under `~/.session-index/transcripts/`, so it can work before full indexing has completed.
+`current` does not require a database row. It derives `transcript_path` and `tool_log_path` from the Canonical Session ID using the standard artifact paths under `~/.session-index/transcripts/`, so it can work before full indexing has completed. Because those paths can be deterministic before the artifacts are written, `current --path` prints the path on stdout and warns on stderr when the Clean Transcript file does not exist yet; use `current --json` when callers need machine-readable existence flags.
 
 If runtime identity is missing or inconsistent, `current` exits non-zero with a clear error. v1 intentionally does not guess from the latest session, focused terminal, runtime registry, or database. Subagent transcript paths are out of scope for v1; `current` returns only the main session artifact paths.
 

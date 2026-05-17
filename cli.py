@@ -41,6 +41,11 @@ def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
     log(session_id, "search", f"{' '.join(params)} -> {count} results ({elapsed_ms}ms)")
 
 
+def _warn_missing_path(label: str, path: str) -> None:
+    """Warn that a printed path is not currently openable."""
+    print(f"Warning: {label} does not exist yet: {path}", file=sys.stderr)
+
+
 def cmd_current(args: argparse.Namespace) -> None:
     """Print the exact active runtime session from Session Index env."""
     try:
@@ -53,6 +58,8 @@ def cmd_current(args: argparse.Namespace) -> None:
         print(json.dumps(current.to_json_dict(), sort_keys=True))
     elif args.path:
         print(current.transcript_path)
+        if not current.transcript_exists:
+            _warn_missing_path("Clean Transcript", current.transcript_path)
     elif args.native:
         print(current.native_session_id)
     else:
@@ -764,7 +771,11 @@ def main() -> None:
     # current
     sp_current = subparsers.add_parser("current", help="Show the active runtime session")
     current_output = sp_current.add_mutually_exclusive_group()
-    current_output.add_argument("--path", action="store_true", help="Print the deterministic clean transcript path")
+    current_output.add_argument(
+        "--path",
+        action="store_true",
+        help="Print the deterministic clean transcript path; warn if it does not exist yet",
+    )
     current_output.add_argument("--native", action="store_true", help="Print the provider-native session ID")
     current_output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")
     sp_current.set_defaults(func=cmd_current)

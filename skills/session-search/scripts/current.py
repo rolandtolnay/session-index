@@ -13,7 +13,11 @@ from cli import cmd_current
 
 parser = argparse.ArgumentParser(description="Show the active runtime session")
 output = parser.add_mutually_exclusive_group()
-output.add_argument("--path", action="store_true", help="Print the deterministic clean transcript path")
+output.add_argument(
+    "--path",
+    action="store_true",
+    help="Print the deterministic clean transcript path; warn if it does not exist yet",
+)
 output.add_argument("--native", action="store_true", help="Print the provider-native session ID")
 output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")
 args = parser.parse_args()
