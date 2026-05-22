@@ -8,6 +8,10 @@ Session Index preserves searchable records of agent conversations and exposes en
 The agent conversation associated with the active agent/runtime process.
 _Avoid_: Latest session, current terminal session, current project session
 
+**Current Session Display**:
+A user-visible presentation of Current Session identity and artifact locations for copying or inspection.
+_Avoid_: Chat message, model context, transcript lookup
+
 **Canonical Session ID**:
 The Session Index identifier for a session, including any provider namespace prefix required for uniqueness.
 _Avoid_: Native ID, raw provider ID
@@ -43,6 +47,7 @@ _Avoid_: Observed child type, artifact title
 - A **Current Session** has one deterministic **Clean Transcript** path, even before that file exists.
 - A **Current Session** has one deterministic **Tool Log** path, even before that file exists.
 - A **Current Session** may expose a **Leaf ID** when the provider has branch-level identity.
+- A **Current Session Display** presents metadata about exactly one **Current Session**.
 - A session may request zero or more **Subagent Runs**.
 - A **Subagent Run** has one **Requested Agent Type** when the parent session records the request.
 - A **Subagent Run** may be known from the parent request even when its child Source Transcript or generated artifacts are missing.
