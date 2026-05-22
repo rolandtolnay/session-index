@@ -18,10 +18,7 @@ import time
 from current_session import CurrentSessionError, resolve_current_session
 from db import get_connection, init_db, search_flexible, get_session, get_stats, rebuild_fts, DB_PATH
 from logger import log
-from parser import clean_user_messages
-from summarizer import summarize
-from transcript import render_transcript, write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, TRANSCRIPT_DIR
-from tool_log import combine_tool_calls, write_tool_log
+from transcript import extract_excerpts, TRANSCRIPT_DIR
 
 
 def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
@@ -251,13 +248,36 @@ def cmd_excerpt(args: argparse.Namespace) -> None:
     )
 
 
+def _backfill_options(args: argparse.Namespace):
+    """Map CLI mode flags to staged indexing options."""
+    from indexer import (
+        FULL_INDEX_OPTIONS,
+        TRANSCRIPTS_ONLY_OPTIONS,
+        SUBAGENTS_ONLY_OPTIONS,
+        IndexOptions,
+        IndexStage,
+    )
+
+    if args.subagents and args.transcripts_only:
+        return IndexOptions(frozenset({
+            IndexStage.SESSION_METADATA,
+            IndexStage.CLEAN_TRANSCRIPT,
+            IndexStage.SUBAGENT_TRANSCRIPTS,
+            IndexStage.TOOL_LOG,
+        }))
+    if args.subagents:
+        return SUBAGENTS_ONLY_OPTIONS
+    if args.transcripts_only:
+        return TRANSCRIPTS_ONLY_OPTIONS
+    return FULL_INDEX_OPTIONS
+
+
 def cmd_backfill(args: argparse.Namespace) -> None:
     """Process JSONL files from Claude Code and/or Pi."""
     from indexer import (
-        discover_session_subagents,
+        IndexStage,
+        index_source_transcript,
         parse_session_file,
-        parse_session_subagent,
-        upsert_parsed_session,
     )
     from sources import discover_sessions
 
@@ -295,6 +315,8 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             conn.commit()
             print(f"Pruned {pruned} noise session(s)")
 
+    options = _backfill_options(args)
+
     existing = set()
     if not args.force and not args.transcripts_only and not args.subagents:
         cursor = conn.execute(
@@ -316,18 +338,6 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     skipped = 0
     errors = 0
 
-    def _write_combined_tool_log(session, parsed_subagents, source_name):
-        try:
-            return write_tool_log(
-                session.session_id,
-                combine_tool_calls(session.tool_calls, parsed_subagents),
-                project=session.project,
-                source=source_name,
-                started_at=session.started_at,
-            )
-        except OSError:
-            return None
-
     for i, source_file in enumerate(source_files, 1):
         source_name = source_file.source
         path = source_file.path
@@ -346,192 +356,33 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 skipped += 1
                 continue
 
-            # Filter by project name if --project given
+            if args.subagents and not args.transcripts_only and session.session_id in existing_subagents:
+                skipped += 1
+                continue
+
+            # Filter by project name before invoking expensive stages.
             if args.project and session.project.lower() != args.project.lower():
                 skipped += 1
                 continue
 
-            if args.subagents:
-                already_processed = session.session_id in existing_subagents
+            result = index_source_transcript(source_name, path, options, parsed_session=session)
+            if result.skipped_reason:
+                skipped += 1
+                continue
 
-                if args.transcripts_only and session.messages:
-                    parsed_subagents = []
-                    for info in discover_session_subagents(source_name, path):
-                        parsed = parse_session_subagent(source_name, info)
-                        if parsed.messages:
-                            parsed_subagents.append(parsed)
-                    sub_refs = [
-                        SubagentRef(agent_type=parsed.agent_type, agent_id=parsed.agent_id)
-                        for parsed in parsed_subagents
-                    ]
-                    transcript_path = write_transcript(
-                        session.session_id,
-                        session.messages,
-                        project=session.project,
-                        branch=session.branch,
-                        timestamp=session.started_at,
-                        subagents=sub_refs or None,
-                    )
-                    tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
-                    upsert_parsed_session(
-                        conn,
-                        session,
-                        source=source_name,
-                        source_path=path,
-                        transcript_path=transcript_path,
-                        tool_log_path=tool_log_path,
-                    )
-                    if already_processed:
-                        elapsed = time.monotonic() - start
-                        print(f"[{i}/{total}] {source_name}:{session_id[:12]}... transcript ({elapsed:.1f}s)")
-                        processed += 1
-                        continue
-
-                if already_processed:
-                    skipped += 1
-                    continue
-
-                parsed_subagents = []
-                for info in discover_session_subagents(source_name, path):
-                    parsed = parse_session_subagent(source_name, info)
-                    if parsed.messages:
-                        parsed_subagents.append(parsed)
-
-                if not parsed_subagents:
-                    skipped += 1
-                    continue
-
-                all_files = set(session.files_touched)
-                for sub in parsed_subagents:
-                    all_files.update(sub.files_touched)
-                enriched_files = sorted(all_files)
-
-                subagent_paths = []
-                for sub in parsed_subagents:
-                    subagent_paths.append(write_subagent_transcript(session.session_id, sub))
-                tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
-
-                upsert_parsed_session(
-                    conn,
-                    session,
-                    source=source_name,
-                    source_path=path,
-                    files_touched=enriched_files,
-                    tool_log_path=tool_log_path,
-                    subagent_transcripts=subagent_paths,
-                )
-
-                elapsed = time.monotonic() - start
-                print(f"[{i}/{total}] {source_name}:{session_id[:12]}... {len(parsed_subagents)} subagent(s) ({elapsed:.1f}s)")
-                processed += 1
-
-            elif args.transcripts_only:
-                if not session.messages:
-                    skipped += 1
-                    continue
-                parsed_subagents = []
-                for info in discover_session_subagents(source_name, path):
-                    parsed_sub = parse_session_subagent(source_name, info)
-                    if parsed_sub.messages:
-                        parsed_subagents.append(parsed_sub)
-                sub_refs = [
-                    SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id)
-                    for parsed_sub in parsed_subagents
-                ]
-                transcript_path = write_transcript(
-                    session.session_id,
-                    session.messages,
-                    project=session.project,
-                    branch=session.branch,
-                    timestamp=session.started_at,
-                    subagents=sub_refs or None,
-                )
-                tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
-                if transcript_path or tool_log_path:
-                    upsert_parsed_session(
-                        conn,
-                        session,
-                        source=source_name,
-                        source_path=path,
-                        transcript_path=transcript_path,
-                        tool_log_path=tool_log_path,
-                    )
-
-                elapsed = time.monotonic() - start
-                print(f"[{i}/{total}] {source_name}:{session_id[:12]}... transcript ({elapsed:.1f}s)")
-                processed += 1
-            else:
-                if session.user_message_count < 1 or session.assistant_message_count < 1:
-                    skipped += 1
-                    continue
-
-                parsed_subagents = []
-                for info in discover_session_subagents(source_name, path):
-                    parsed_sub = parse_session_subagent(source_name, info)
-                    if parsed_sub.messages:
-                        parsed_subagents.append(parsed_sub)
-
-                all_files = set(session.files_touched)
-                for parsed_sub in parsed_subagents:
-                    all_files.update(parsed_sub.files_touched)
-                enriched_files = sorted(all_files)
-
-                sub_refs = [
-                    SubagentRef(agent_type=parsed_sub.agent_type, agent_id=parsed_sub.agent_id)
-                    for parsed_sub in parsed_subagents
-                ]
-                transcript_text = None
-                if session.messages:
-                    transcript_text = render_transcript(
-                        session.messages,
-                        project=session.project,
-                        branch=session.branch,
-                        timestamp=session.started_at,
-                        subagents=sub_refs or None,
-                    )
-
-                short_session_threshold = 5
-                last_assistant = None
-                if session.user_message_count <= short_session_threshold and session.assistant_messages:
-                    last_assistant = session.assistant_messages[-1]
-
-                summary = summarize(
-                    project=session.project,
-                    branch=session.branch,
-                    user_messages=clean_user_messages(session.user_messages),
-                    files_touched=enriched_files,
-                    last_assistant_message=last_assistant,
-                    transcript_text=transcript_text,
-                )
-
-                transcript_path = None
-                if session.messages:
-                    transcript_path = write_transcript(
-                        session.session_id,
-                        session.messages,
-                        project=session.project,
-                        branch=session.branch,
-                        timestamp=session.started_at,
-                        subagents=sub_refs or None,
-                    )
-
-                tool_log_path = _write_combined_tool_log(session, parsed_subagents, source_name)
-
-                upsert_parsed_session(
-                    conn,
-                    session,
-                    source=source_name,
-                    source_path=path,
-                    files_touched=enriched_files,
-                    summary=summary,
-                    transcript_path=transcript_path,
-                    tool_log_path=tool_log_path,
-                )
-
-                elapsed = time.monotonic() - start
-                summary_status = f"summary ({elapsed:.1f}s)" if summary else "no summary"
-                print(f"[{i}/{total}] {source_name}:{session_id[:12]}... {summary_status}")
-                processed += 1
+            elapsed = time.monotonic() - start
+            statuses = []
+            if IndexStage.SUMMARY in options.stages:
+                statuses.append("summary" if result.summary_generated else "no summary")
+            if IndexStage.CLEAN_TRANSCRIPT in options.stages:
+                statuses.append("transcript" if result.transcript_path else "no transcript")
+            if IndexStage.SUBAGENT_TRANSCRIPTS in options.stages:
+                statuses.append(f"{result.subagents} subagent(s)")
+            if IndexStage.TOOL_LOG in options.stages:
+                statuses.append("tool log" if result.tool_log_path else "no tool log")
+            status = ", ".join(statuses) if statuses else "metadata"
+            print(f"[{i}/{total}] {source_name}:{session_id[:12]}... {status} ({elapsed:.1f}s)")
+            processed += 1
 
         except Exception as e:
             print(f"[{i}/{total}] {source_name}:{display_id[:12]}... ERROR: {e}")
@@ -601,6 +452,11 @@ def _check_integrity(conn) -> dict:
         db_paths = set()
         cursor = conn.execute(
             "SELECT transcript_path FROM sessions WHERE transcript_path IS NOT NULL"
+        )
+        for row in cursor:
+            db_paths.add(row[0])
+        cursor = conn.execute(
+            "SELECT tool_log_path FROM sessions WHERE tool_log_path IS NOT NULL"
         )
         for row in cursor:
             db_paths.add(row[0])

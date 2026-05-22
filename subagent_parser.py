@@ -28,6 +28,9 @@ class ParsedSubagent:
     messages: list[dict] = field(default_factory=list)
     initial_prompt: str = ""
     tool_calls: list[ParsedToolCall] = field(default_factory=list)
+    source_path: str = ""
+    transcript_path: str = ""
+    artifact_path: str = ""
 
 
 @dataclass
@@ -128,7 +131,7 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
     - Consecutive assistant messages are NOT merged (each is a step)
     - Error results are formatted as separate [ERROR] blocks
     """
-    result = ParsedSubagent()
+    result = ParsedSubagent(source_path=jsonl_path)
     entries: list[dict] = []
 
     try:

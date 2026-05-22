@@ -2,11 +2,13 @@
 
 import argparse
 import os
+import sqlite3
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cli import _print_agent_excerpts, cmd_excerpt, cmd_search
+from cli import _check_integrity, _print_agent_excerpts, cmd_excerpt, cmd_search
+from db import init_db, upsert_session
 
 
 def _write_agent_file(path, messages, header_lines=("# general-purpose — 2026-04-01 14:40", "Parent: test", "---", "")):
@@ -85,6 +87,30 @@ def test_print_agent_excerpts_no_matches_is_silent(tmp_path, capsys):
 class _DummyConn:
     def close(self):
         pass
+
+
+def test_check_integrity_does_not_treat_tool_log_as_orphaned_transcript(monkeypatch, tmp_path):
+    transcript = tmp_path / "s1.md"
+    tool_log = tmp_path / "s1.tools.md"
+    transcript.write_text("transcript")
+    tool_log.write_text("tools")
+    monkeypatch.setattr("cli.TRANSCRIPT_DIR", str(tmp_path))
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    upsert_session(
+        conn,
+        session_id="s1",
+        summary="summary",
+        transcript_path=str(transcript),
+        tool_log_path=str(tool_log),
+    )
+
+    issues = _check_integrity(conn)
+
+    assert issues["orphaned_transcripts"] == []
+    conn.close()
 
 
 def test_cmd_search_prints_tool_log_path(monkeypatch, capsys):

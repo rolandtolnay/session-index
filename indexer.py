@@ -1,12 +1,41 @@
-"""Shared session indexing pipeline for Claude Code and Pi."""
+"""Shared staged session indexing pipeline for Claude Code and Pi."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 
 from parser import ParsedSession, clean_user_messages, parse_jsonl as parse_claude_jsonl
 from pi_parser import parse_pi_jsonl, discover_pi_subagents, parse_pi_subagent_jsonl
 from subagent_parser import discover_subagents, parse_subagent_jsonl, ParsedSubagent, SubagentInfo
+from subagent_runs import ParsedSubagentRun, build_subagent_runs
+
+
+class IndexStage(str, Enum):
+    SESSION_METADATA = "session_metadata"
+    SUMMARY = "summary"
+    CLEAN_TRANSCRIPT = "clean_transcript"
+    SUBAGENT_TRANSCRIPTS = "subagent_transcripts"
+    TOOL_LOG = "tool_log"
+
+
+@dataclass(frozen=True)
+class IndexOptions:
+    stages: frozenset[IndexStage]
+
+
+FAST_INDEX_OPTIONS = IndexOptions(frozenset({IndexStage.SESSION_METADATA}))
+FULL_INDEX_OPTIONS = IndexOptions(frozenset(IndexStage))
+TRANSCRIPTS_ONLY_OPTIONS = IndexOptions(frozenset({
+    IndexStage.SESSION_METADATA,
+    IndexStage.CLEAN_TRANSCRIPT,
+    IndexStage.TOOL_LOG,
+}))
+SUBAGENTS_ONLY_OPTIONS = IndexOptions(frozenset({
+    IndexStage.SESSION_METADATA,
+    IndexStage.SUBAGENT_TRANSCRIPTS,
+    IndexStage.TOOL_LOG,
+}))
 
 
 @dataclass
@@ -16,13 +45,43 @@ class IndexResult:
     assistant_message_count: int = 0
     files_touched: int = 0
     subagents: int = 0
+    subagent_runs: int = 0
     summary_generated: bool = False
     transcript_path: str | None = None
     tool_log_path: str | None = None
     skipped_reason: str = ""
+    stages: frozenset[IndexStage] = field(default_factory=frozenset)
 
 
 SUPPORTED_SOURCES = {"claude", "pi"}
+
+_METADATA_FIELDS = {
+    "source",
+    "native_session_id",
+    "source_path",
+    "slug",
+    "project_path",
+    "project",
+    "branch",
+    "model",
+    "started_at",
+    "ended_at",
+    "duration_seconds",
+    "user_message_count",
+    "user_messages",
+    "files_touched",
+    "tools_used",
+    "parent_session_path",
+    "parent_native_session_id",
+}
+
+_STAGE_FIELDS = {
+    IndexStage.SESSION_METADATA: _METADATA_FIELDS,
+    IndexStage.SUMMARY: {"summary"},
+    IndexStage.CLEAN_TRANSCRIPT: {"transcript_path"},
+    IndexStage.SUBAGENT_TRANSCRIPTS: {"subagent_transcripts"},
+    IndexStage.TOOL_LOG: {"tool_log_path"},
+}
 
 
 def normalize_source(source: str) -> str:
@@ -53,6 +112,13 @@ def parse_session_subagent(source: str, info: SubagentInfo) -> ParsedSubagent:
     return parse_subagent_jsonl(info.jsonl_path, info.meta_path)
 
 
+def _stage_overwrite_fields(stages: frozenset[IndexStage]) -> set[str]:
+    fields: set[str] = set()
+    for stage in stages:
+        fields.update(_STAGE_FIELDS[stage])
+    return fields
+
+
 def upsert_parsed_session(
     conn,
     session: ParsedSession,
@@ -64,6 +130,7 @@ def upsert_parsed_session(
     transcript_path: str | None = None,
     tool_log_path: str | None = None,
     subagent_transcripts: list[str] | None = None,
+    stage_overwrite_fields: set[str] | None = None,
 ) -> None:
     from db import upsert_session
 
@@ -95,71 +162,49 @@ def upsert_parsed_session(
         subagent_transcripts=", ".join(subagent_transcripts) if subagent_transcripts else None,
         parent_session_path=session.parent_session_path or None,
         parent_native_session_id=session.parent_native_session_id or None,
+        overwrite_fields=stage_overwrite_fields,
     )
 
 
-def index_fast(source: str, path: str) -> IndexResult:
-    """Parse and upsert deterministic fields only."""
-    from db import get_connection, init_db
-
-    session = parse_session_file(source, path)
-    result = IndexResult(
-        session_id=session.session_id,
-        user_message_count=session.user_message_count,
-        assistant_message_count=session.assistant_message_count,
-        files_touched=len(session.files_touched),
-    )
-
-    if session.user_message_count < 1 or session.assistant_message_count < 1:
-        result.skipped_reason = f"{session.user_message_count} user, {session.assistant_message_count} assistant msgs"
-        return result
-
-    conn = get_connection()
-    init_db(conn)
-    upsert_parsed_session(conn, session, source=source, source_path=path)
-    conn.close()
-    return result
-
-
-def index_full(source: str, path: str) -> IndexResult:
-    """Parse, summarize, write transcripts, and upsert a complete row."""
-    from db import get_connection, init_db
-    from summarizer import summarize
-    from transcript import SubagentRef, render_transcript, write_subagent_transcript, write_transcript
-    from tool_log import combine_tool_calls, write_tool_log
-
-    session = parse_session_file(source, path)
-    result = IndexResult(
-        session_id=session.session_id,
-        user_message_count=session.user_message_count,
-        assistant_message_count=session.assistant_message_count,
-        files_touched=len(session.files_touched),
-    )
-
-    if session.user_message_count < 1 or session.assistant_message_count < 1:
-        result.skipped_reason = f"{session.user_message_count} user, {session.assistant_message_count} assistant msgs"
-        return result
+def _parse_subagents_for_stages(source: str, path: str, stages: frozenset[IndexStage]) -> list[ParsedSubagent]:
+    needs_subagents = bool(stages & {
+        IndexStage.SUMMARY,
+        IndexStage.CLEAN_TRANSCRIPT,
+        IndexStage.SUBAGENT_TRANSCRIPTS,
+        IndexStage.TOOL_LOG,
+    })
+    if not needs_subagents:
+        return []
 
     parsed_subagents: list[ParsedSubagent] = []
     for info in discover_session_subagents(source, path):
         parsed = parse_session_subagent(source, info)
         if parsed.messages:
             parsed_subagents.append(parsed)
+    return parsed_subagents
 
-    all_files = set(session.files_touched)
-    for sub in parsed_subagents:
-        all_files.update(sub.files_touched)
-    enriched_files = sorted(all_files)
 
-    short_session_threshold = 5
-    last_assistant = None
-    if session.user_message_count <= short_session_threshold and session.assistant_messages:
-        last_assistant = session.assistant_messages[-1]
+def _subagent_refs(parsed_subagents: list[ParsedSubagent]):
+    from transcript import SubagentRef
 
-    subagent_refs = [
+    return [
         SubagentRef(agent_type=sub.agent_type, agent_id=sub.agent_id)
         for sub in parsed_subagents
     ]
+
+
+def _enriched_files(session: ParsedSession, parsed_subagents: list[ParsedSubagent]) -> list[str]:
+    all_files = set(session.files_touched)
+    for sub in parsed_subagents:
+        all_files.update(sub.files_touched)
+    return sorted(all_files)
+
+
+def _summarize_session(session: ParsedSession, enriched_files: list[str], parsed_subagents: list[ParsedSubagent]) -> str | None:
+    from summarizer import summarize
+    from transcript import render_transcript
+
+    subagent_refs = _subagent_refs(parsed_subagents)
     transcript_text = None
     if session.messages:
         transcript_text = render_transcript(
@@ -170,7 +215,12 @@ def index_full(source: str, path: str) -> IndexResult:
             subagents=subagent_refs or None,
         )
 
-    summary = summarize(
+    short_session_threshold = 5
+    last_assistant = None
+    if session.user_message_count <= short_session_threshold and session.assistant_messages:
+        last_assistant = session.assistant_messages[-1]
+
+    return summarize(
         project=session.project,
         branch=session.branch,
         user_messages=clean_user_messages(session.user_messages),
@@ -178,38 +228,124 @@ def index_full(source: str, path: str) -> IndexResult:
         last_assistant_message=last_assistant,
         transcript_text=transcript_text,
     )
-    result.summary_generated = bool(summary)
 
-    transcript_path = None
-    if session.messages:
-        transcript_path = write_transcript(
-            session.session_id,
-            session.messages,
-            project=session.project,
-            branch=session.branch,
-            timestamp=session.started_at,
-            subagents=subagent_refs or None,
-        )
-        result.transcript_path = transcript_path
 
-    subagent_paths: list[str] = []
+def _write_clean_transcript(session: ParsedSession, parsed_subagents: list[ParsedSubagent]) -> str | None:
+    from transcript import write_transcript
+
+    if not session.messages:
+        return None
+    return write_transcript(
+        session.session_id,
+        session.messages,
+        project=session.project,
+        branch=session.branch,
+        timestamp=session.started_at,
+        subagents=_subagent_refs(parsed_subagents) or None,
+    )
+
+
+def _write_subagent_transcripts(session: ParsedSession, parsed_subagents: list[ParsedSubagent]) -> list[str]:
+    from transcript import write_subagent_transcript
+
+    paths: list[str] = []
     for sub in parsed_subagents:
-        subagent_paths.append(write_subagent_transcript(session.session_id, sub))
-    result.subagents = len(subagent_paths)
-    result.files_touched = len(enriched_files)
+        path = write_subagent_transcript(session.session_id, sub)
+        sub.transcript_path = path
+        sub.artifact_path = path
+        paths.append(path)
+    return paths
 
-    tool_log_path = None
+
+def _write_tool_log(session: ParsedSession, parsed_subagents: list[ParsedSubagent], source: str) -> str | None:
+    from tool_log import combine_tool_calls, write_tool_log
+
     try:
-        tool_log_path = write_tool_log(
+        return write_tool_log(
             session.session_id,
             combine_tool_calls(session.tool_calls, parsed_subagents),
             project=session.project,
             source=source,
             started_at=session.started_at,
         )
-        result.tool_log_path = tool_log_path
     except OSError:
-        tool_log_path = None
+        return None
+
+
+def normalize_subagent_runs(
+    session: ParsedSession,
+    *,
+    source: str,
+    parsed_subagents: list[ParsedSubagent] | None = None,
+) -> list[ParsedSubagentRun]:
+    return build_subagent_runs(
+        parent_session_id=session.session_id,
+        source=normalize_source(source),
+        tool_calls=session.tool_calls,
+        subagents=parsed_subagents or [],
+    )
+
+
+def index_source_transcript(
+    source: str,
+    path: str,
+    options: IndexOptions,
+    *,
+    parsed_session: ParsedSession | None = None,
+) -> IndexResult:
+    """Index one provider-owned Source Transcript using explicit stage ownership."""
+    from db import get_connection, init_db
+
+    source = normalize_source(source)
+    stages = frozenset(options.stages)
+    session = parsed_session or parse_session_file(source, path)
+    result = IndexResult(
+        session_id=session.session_id,
+        user_message_count=session.user_message_count,
+        assistant_message_count=session.assistant_message_count,
+        files_touched=len(session.files_touched),
+        stages=stages,
+    )
+
+    if session.user_message_count < 1 or session.assistant_message_count < 1:
+        result.skipped_reason = f"{session.user_message_count} user, {session.assistant_message_count} assistant msgs"
+        return result
+
+    parsed_subagents = _parse_subagents_for_stages(source, path, stages)
+
+    enriched_files = session.files_touched
+    if stages & {IndexStage.SUMMARY, IndexStage.SUBAGENT_TRANSCRIPTS}:
+        enriched_files = _enriched_files(session, parsed_subagents)
+        result.files_touched = len(enriched_files)
+
+    summary = None
+    if IndexStage.SUMMARY in stages:
+        summary = _summarize_session(session, enriched_files, parsed_subagents)
+        result.summary_generated = bool(summary)
+
+    transcript_path = None
+    if IndexStage.CLEAN_TRANSCRIPT in stages:
+        transcript_path = _write_clean_transcript(session, parsed_subagents)
+        result.transcript_path = transcript_path
+
+    subagent_paths: list[str] = []
+    if IndexStage.SUBAGENT_TRANSCRIPTS in stages:
+        subagent_paths = _write_subagent_transcripts(session, parsed_subagents)
+        result.subagents = len(subagent_paths)
+
+    tool_log_path = None
+    if IndexStage.TOOL_LOG in stages:
+        tool_log_path = _write_tool_log(session, parsed_subagents, source)
+        result.tool_log_path = tool_log_path
+
+    subagent_runs = normalize_subagent_runs(session, source=source, parsed_subagents=parsed_subagents)
+    result.subagent_runs = len(subagent_runs)
+
+    stage_overwrite_fields = _stage_overwrite_fields(stages)
+    if IndexStage.SUMMARY in stages and summary is None:
+        # summarizer.summarize() returns None on provider/runtime failure; preserve
+        # existing searchable summaries when the stage produced no replacement.
+        stage_overwrite_fields.discard("summary")
 
     conn = get_connection()
     init_db(conn)
@@ -223,6 +359,17 @@ def index_full(source: str, path: str) -> IndexResult:
         transcript_path=transcript_path,
         tool_log_path=tool_log_path,
         subagent_transcripts=subagent_paths,
+        stage_overwrite_fields=stage_overwrite_fields,
     )
     conn.close()
     return result
+
+
+def index_fast(source: str, path: str) -> IndexResult:
+    """Parse and upsert deterministic fields only."""
+    return index_source_transcript(source, path, FAST_INDEX_OPTIONS)
+
+
+def index_full(source: str, path: str) -> IndexResult:
+    """Parse, summarize, write transcripts, and upsert a complete row."""
+    return index_source_transcript(source, path, FULL_INDEX_OPTIONS)

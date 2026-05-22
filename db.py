@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     summary TEXT,
     transcript_path TEXT,
     tool_log_path TEXT,
+    subagent_transcripts TEXT,
     parent_session_path TEXT,
     parent_native_session_id TEXT
 );
@@ -139,10 +140,41 @@ def upsert_session(
     subagent_transcripts: str | None = None,
     parent_session_path: str | None = None,
     parent_native_session_id: str | None = None,
+    overwrite_fields: set[str] | None = None,
 ) -> None:
-    """Insert or update a session, preserving existing values with COALESCE."""
+    """Insert or update a session, preserving existing values with COALESCE.
+
+    overwrite_fields optionally names columns that should be set to the provided
+    value even when that value is NULL. Existing callers omit it and retain the
+    historical preserve-on-NULL behavior.
+    """
     source = source or "claude"
     native_session_id = native_session_id or session_id
+    params = {
+        "session_id": session_id,
+        "source": source,
+        "native_session_id": native_session_id,
+        "source_path": source_path,
+        "slug": slug,
+        "project_path": project_path,
+        "project": project,
+        "branch": branch,
+        "model": model,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_seconds": duration_seconds,
+        "user_message_count": user_message_count,
+        "user_messages": user_messages,
+        "files_touched": files_touched,
+        "tools_used": tools_used,
+        "summary": summary,
+        "transcript_path": transcript_path,
+        "tool_log_path": tool_log_path,
+        "subagent_transcripts": subagent_transcripts,
+        "parent_session_path": parent_session_path,
+        "parent_native_session_id": parent_native_session_id,
+    }
+
     conn.execute("""
         INSERT INTO sessions (
             session_id, source, native_session_id, source_path,
@@ -179,30 +211,19 @@ def upsert_session(
             subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts),
             parent_session_path = COALESCE(:parent_session_path, parent_session_path),
             parent_native_session_id = COALESCE(:parent_native_session_id, parent_native_session_id)
-    """, {
-        "session_id": session_id,
-        "source": source,
-        "native_session_id": native_session_id,
-        "source_path": source_path,
-        "slug": slug,
-        "project_path": project_path,
-        "project": project,
-        "branch": branch,
-        "model": model,
-        "started_at": started_at,
-        "ended_at": ended_at,
-        "duration_seconds": duration_seconds,
-        "user_message_count": user_message_count,
-        "user_messages": user_messages,
-        "files_touched": files_touched,
-        "tools_used": tools_used,
-        "summary": summary,
-        "transcript_path": transcript_path,
-        "tool_log_path": tool_log_path,
-        "subagent_transcripts": subagent_transcripts,
-        "parent_session_path": parent_session_path,
-        "parent_native_session_id": parent_native_session_id,
-    })
+    """, params)
+
+    if overwrite_fields:
+        allowed = set(params) - {"session_id"}
+        invalid = set(overwrite_fields) - allowed
+        if invalid:
+            raise ValueError(f"Unknown session field(s) for overwrite: {', '.join(sorted(invalid))}")
+        assignments = ", ".join(f"{field} = :{field}" for field in sorted(overwrite_fields))
+        conn.execute(
+            f"UPDATE sessions SET {assignments} WHERE session_id = :session_id",
+            params,
+        )
+
     conn.commit()
 
 

@@ -455,7 +455,7 @@ def discover_pi_subagents(jsonl_path: str) -> list[SubagentInfo]:
 
 def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str = "subagent") -> ParsedSubagent:
     """Parse a Pi nested subagent session into ParsedSubagent."""
-    result = ParsedSubagent(agent_id=agent_id, agent_type=agent_type or "subagent")
+    result = ParsedSubagent(agent_id=agent_id, agent_type=agent_type or "subagent", source_path=jsonl_path)
 
     try:
         parsed = _select_active_branch(_load_jsonl(jsonl_path))
