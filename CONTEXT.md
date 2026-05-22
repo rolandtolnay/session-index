@@ -28,6 +28,14 @@ _Avoid_: Clean transcript, source transcript
 A provider-specific Pi branch identifier inside a session tree.
 _Avoid_: Session ID, transcript ID
 
+**Subagent Run**:
+A child agent execution requested from a parent session.
+_Avoid_: Agent transcript, subagent artifact
+
+**Requested Agent Type**:
+The agent name requested by the parent session for a Subagent Run, used as the canonical query label.
+_Avoid_: Observed child type, artifact title
+
 ## Relationships
 
 - A **Current Session** has exactly one **Canonical Session ID**.
@@ -35,6 +43,9 @@ _Avoid_: Session ID, transcript ID
 - A **Current Session** has one deterministic **Clean Transcript** path, even before that file exists.
 - A **Current Session** has one deterministic **Tool Log** path, even before that file exists.
 - A **Current Session** may expose a **Leaf ID** when the provider has branch-level identity.
+- A session may request zero or more **Subagent Runs**.
+- A **Subagent Run** has one **Requested Agent Type** when the parent session records the request.
+- A **Subagent Run** may be known from the parent request even when its child Source Transcript or generated artifacts are missing.
 
 ## Example dialogue
 
