@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Mapping
 
 import tool_log
@@ -50,6 +51,8 @@ class CurrentSession:
     transcript_exists: bool
     tool_log_exists: bool
     source_path_exists: bool
+    transcript_written_at: str | None = None
+    tool_log_written_at: str | None = None
     resolution_method: str = RESOLUTION_METHOD
     leaf_id: str | None = None
 
@@ -67,6 +70,10 @@ class CurrentSession:
             "tool_log_exists": self.tool_log_exists,
             "resolution_method": self.resolution_method,
         }
+        if self.transcript_written_at:
+            data["transcript_written_at"] = self.transcript_written_at
+        if self.tool_log_written_at:
+            data["tool_log_written_at"] = self.tool_log_written_at
         if self.leaf_id:
             data["leaf_id"] = self.leaf_id
         return data
@@ -85,6 +92,16 @@ def _required_value(env: Mapping[str, str], name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value.strip()
+
+
+def _artifact_written_at(path: str) -> str | None:
+    if not os.path.isfile(path):
+        return None
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    return datetime.fromtimestamp(mtime, timezone.utc).isoformat()
 
 
 def _first_required_value(env: Mapping[str, str], names: tuple[str, ...]) -> str | None:
@@ -215,5 +232,7 @@ def resolve_current_session(env: Mapping[str, str] | None = None) -> CurrentSess
         source_path_exists=os.path.exists(source_path),
         transcript_exists=os.path.exists(transcript_path),
         tool_log_exists=os.path.exists(tool_log_path),
+        transcript_written_at=_artifact_written_at(transcript_path),
+        tool_log_written_at=_artifact_written_at(tool_log_path),
         leaf_id=leaf_id if source == "pi" else None,
     )

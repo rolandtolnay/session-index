@@ -20,6 +20,7 @@ Pi extension
     │
     ├─ before_agent_start ─► pi_context.py ──► inject recent context into system prompt
     ├─ agent_end ──────────► pi_index.py --mode fast
+    ├─ /current-session Ctrl+R ─► pi_index.py --mode full for the focused current snapshot
     └─ session_shutdown ───► pi_index.py --mode full
 
 Shared full pass:
@@ -31,7 +32,12 @@ Search path (skill invocation):
 
 Current-session lookup:
     active runtime env ──► current_session.py ──► cli.py current ──► Canonical Session ID / artifact paths
+                         ├─► optional generated-artifact last-written timestamps
                          └─► no DB, latest-session, terminal, or registry fallback
+
+Manual Current Session Indexing:
+    /current-session focused display Ctrl+R ─► refresh exact Pi runtime env ─► pi_index.py --mode full --session-file <Source Transcript>
+                                             └─► refresh current --json for factual artifact statuses when the display remains open
 ```
 
 ## File Map
@@ -158,6 +164,8 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - `source_path` is the raw provider Source Transcript, `transcript_path` is the generated Clean Transcript artifact, and `tool_log_path` is the generated Tool Log artifact.
 - The Clean Transcript and Tool Log paths are derived from the Canonical Session ID under `~/.session-index/transcripts/`; a database row is not required.
 - `current --path` prints the deterministic Clean Transcript path on stdout and warns on stderr if that file does not exist yet. For machine-readable checks, use `current --json` and inspect `transcript_exists`.
+- In Pi, `/current-session` is user-only and model-invisible. Press `Ctrl+R` while the display is focused to run the full Pi indexing pass for the current snapshot; the child keeps running if the display is closed or the UI wait times out.
+- `current --json` includes `transcript_written_at` and `tool_log_written_at` only for existing generated artifacts. The raw Source Transcript mtime is not exposed as an indexing timestamp.
 - Missing or inconsistent runtime identity exits non-zero by design. v1 does not fall back to the latest session, focused terminal, registry state, or the database.
 - Subagent transcript paths are not returned by `current` in v1.
 

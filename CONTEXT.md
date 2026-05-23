@@ -12,6 +12,10 @@ _Avoid_: Latest session, current terminal session, current project session
 A user-visible presentation of Current Session identity and artifact locations for copying or inspection.
 _Avoid_: Chat message, model context, transcript lookup
 
+**Manual Current Session Indexing**:
+An explicit user request from a Current Session Display to run the full indexing pass for the active Current Session before session shutdown.
+_Avoid_: Refresh, backfill, transcript generation
+
 **Canonical Session ID**:
 The Session Index identifier for a session, including any provider namespace prefix required for uniqueness.
 _Avoid_: Native ID, raw provider ID
@@ -48,6 +52,7 @@ _Avoid_: Observed child type, artifact title
 - A **Current Session** has one deterministic **Tool Log** path, even before that file exists.
 - A **Current Session** may expose a **Leaf ID** when the provider has branch-level identity.
 - A **Current Session Display** presents metadata about exactly one **Current Session**.
+- A **Current Session Display** may initiate **Manual Current Session Indexing** for its active **Current Session**.
 - A session may request zero or more **Subagent Runs**.
 - A **Subagent Run** has one **Requested Agent Type** when the parent session records the request.
 - A **Subagent Run** may be known from the parent request even when its child Source Transcript or generated artifacts are missing.

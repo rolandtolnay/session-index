@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from datetime import datetime
 
 import pytest
 
@@ -92,6 +93,9 @@ def test_current_json_prints_structured_metadata(monkeypatch, current_cli_setup,
     _run_cli(monkeypatch, ["current", "--json"])
 
     data = json.loads(capsys.readouterr().out)
+    assert "transcript_written_at" in data
+    assert "tool_log_written_at" not in data
+    datetime.fromisoformat(data.pop("transcript_written_at"))
     assert data == {
         "session_id": "pi:019pi-session",
         "native_session_id": "019pi-session",

@@ -112,6 +112,8 @@ uv run cli.py current --native # provider-native session ID
 uv run cli.py current --json   # full current-session metadata
 ```
 
+In Pi TUI, use `/current-session` to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `Ctrl+R` explicitly runs Manual Current Session Indexing: the same full Pi indexing pass used on session shutdown for the current snapshot, then refreshes artifact statuses if the display remains open. The CLI remains the terminal/API-oriented interface.
+
 `current --json` uses Session Index terminology:
 
 - `session_id` — Canonical Session ID. Pi sessions use the `pi:<uuid>` namespace; Claude sessions use the native UUID.
@@ -121,7 +123,8 @@ uv run cli.py current --json   # full current-session metadata
 - `transcript_path` — generated Clean Transcript Markdown artifact path.
 - `tool_log_path` — generated Tool Log Markdown artifact path.
 - `source_path_exists`, `transcript_exists`, `tool_log_exists` — whether those paths exist at command time.
-- `resolution_method` — current v1 resolver, `session_index_env`.
+- `transcript_written_at`, `tool_log_written_at` — optional UTC filesystem last-written timestamps for generated artifacts when the Clean Transcript or Tool Log file exists; Source Transcript mtimes are not exposed as indexing timestamps.
+- `resolution_method` — current resolver, `session_index_env`.
 - `leaf_id` — optional Pi leaf metadata when available; it traces the active Pi branch but does not affect session-level artifact paths.
 
 The Session Index-owned runtime environment contract is:

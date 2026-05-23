@@ -2,6 +2,7 @@
 
 import os
 import sys
+from datetime import datetime, timezone
 
 import pytest
 
@@ -35,9 +36,13 @@ def _env(session_id="session-1", native_session_id="session-1", source="claude",
     return data
 
 
-def test_resolve_pi_env_normalizes_ids_and_derives_artifact_paths(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def artifact_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
     monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
+
+
+def test_resolve_pi_env_normalizes_ids_and_derives_artifact_paths(tmp_path, monkeypatch):
     source = tmp_path / "source.jsonl"
     source.write_text("{}\n")
     transcript_path = tmp_path / "pi:019pi-session.md"
@@ -65,8 +70,6 @@ def test_resolve_pi_env_normalizes_ids_and_derives_artifact_paths(tmp_path, monk
 
 
 def test_resolve_pi_env_adds_canonical_prefix_and_strips_native_prefix(tmp_path, monkeypatch):
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
 
     current = resolve_current_session(_env(
         session_id="019pi-session",
@@ -82,8 +85,6 @@ def test_resolve_pi_env_adds_canonical_prefix_and_strips_native_prefix(tmp_path,
 
 
 def test_resolve_claude_env_keeps_canonical_and_native_equal(tmp_path, monkeypatch):
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
     tool_log_path = tmp_path / "claude-session.tools.md"
     tool_log_path.write_text("tools")
 
@@ -103,9 +104,25 @@ def test_resolve_claude_env_keeps_canonical_and_native_equal(tmp_path, monkeypat
     assert current.leaf_id is None
 
 
+def test_resolve_json_dict_includes_tool_log_timestamp_only_when_artifact_exists(tmp_path, monkeypatch):
+    tool_log_path = tmp_path / "claude-session.tools.md"
+    tool_log_path.write_text("tools")
+
+    current = resolve_current_session(_env(
+        session_id="claude-session",
+        native_session_id="claude-session",
+        source="claude",
+        source_path=str(tmp_path / "missing.jsonl"),
+    ))
+
+    data = current.to_json_dict()
+    parsed = datetime.fromisoformat(data["tool_log_written_at"])
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+    assert "transcript_written_at" not in data
+
+
 def test_resolve_json_dict_includes_public_fields_and_pi_leaf(tmp_path, monkeypatch):
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
 
     current = resolve_current_session(_env(
         session_id="pi:abc",
@@ -130,9 +147,29 @@ def test_resolve_json_dict_includes_public_fields_and_pi_leaf(tmp_path, monkeypa
     }
 
 
+def test_resolve_json_dict_includes_clean_transcript_timestamp_only_when_artifact_exists(tmp_path, monkeypatch):
+    source = tmp_path / "source.jsonl"
+    source.write_text("{}\n")
+    transcript_path = tmp_path / "pi:abc.md"
+    transcript_path.write_text("transcript")
+
+    current = resolve_current_session(_env(
+        session_id="pi:abc",
+        native_session_id="abc",
+        source="pi",
+        source_path=str(source),
+    ))
+
+    data = current.to_json_dict()
+    parsed = datetime.fromisoformat(data["transcript_written_at"])
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+    assert "tool_log_written_at" not in data
+    assert "source_written_at" not in data
+    assert "source_path_modified_at" not in data
+
+
 def test_resolve_claude_compat_env_matches_public_contract(tmp_path, monkeypatch):
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
     source = tmp_path / "source-transcript.jsonl"
     source.write_text("{}\n")
 
@@ -156,8 +193,6 @@ def test_resolve_claude_compat_env_matches_public_contract(tmp_path, monkeypatch
 
 
 def test_resolve_claude_compat_accepts_alternate_transcript_path_env(tmp_path, monkeypatch):
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
     source = tmp_path / "claude-alt.jsonl"
 
     current = resolve_current_session({
@@ -171,8 +206,6 @@ def test_resolve_claude_compat_accepts_alternate_transcript_path_env(tmp_path, m
 
 
 def test_optional_session_index_leaf_does_not_block_claude_compat(tmp_path, monkeypatch):
-    monkeypatch.setattr("current_session.transcript.TRANSCRIPT_DIR", str(tmp_path))
-    monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
     source = tmp_path / "claude-source.jsonl"
 
     current = resolve_current_session({
