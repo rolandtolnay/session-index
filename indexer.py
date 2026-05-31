@@ -125,6 +125,7 @@ def upsert_parsed_session(
     tool_log_path: str | None = None,
     subagent_transcripts: list[str] | None = None,
     stage_overwrite_fields: set[str] | None = None,
+    commit: bool = True,
 ) -> None:
     from db import upsert_session
 
@@ -157,6 +158,7 @@ def upsert_parsed_session(
         parent_session_path=session.parent_session_path or None,
         parent_native_session_id=session.parent_native_session_id or None,
         overwrite_fields=stage_overwrite_fields,
+        commit=commit,
     )
 
 
@@ -342,21 +344,28 @@ def index_source_transcript(
         stage_overwrite_fields.discard("summary")
 
     conn = get_connection()
-    init_db(conn)
-    upsert_parsed_session(
-        conn,
-        session,
-        source=source,
-        source_path=path,
-        files_touched=enriched_files,
-        summary=summary,
-        transcript_path=transcript_path,
-        tool_log_path=tool_log_path,
-        subagent_transcripts=subagent_paths,
-        stage_overwrite_fields=stage_overwrite_fields,
-    )
-    _persist_facts(conn, session, source, stages, subagent_runs, parsed_subagents)
-    conn.close()
+    try:
+        init_db(conn)
+        upsert_parsed_session(
+            conn,
+            session,
+            source=source,
+            source_path=path,
+            files_touched=enriched_files,
+            summary=summary,
+            transcript_path=transcript_path,
+            tool_log_path=tool_log_path,
+            subagent_transcripts=subagent_paths,
+            stage_overwrite_fields=stage_overwrite_fields,
+            commit=False,
+        )
+        _persist_facts(conn, session, source, stages, subagent_runs, parsed_subagents)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     return result
 
 
@@ -376,11 +385,11 @@ def _persist_facts(
 
     if IndexStage.TOOL_LOG in stages:
         combined = combine_tool_calls(session.tool_calls, parsed_subagents)
-        replace_tool_calls(conn, session.session_id, build_tool_call_rows(session.session_id, source, combined))
-        replace_question_answers(conn, session.session_id, build_question_rows(session.session_id, source, combined))
+        replace_tool_calls(conn, session.session_id, build_tool_call_rows(session.session_id, source, combined), commit=False)
+        replace_question_answers(conn, session.session_id, build_question_rows(session.session_id, source, combined), commit=False)
 
     if stages & {IndexStage.TOOL_LOG, IndexStage.SUBAGENT_TRANSCRIPTS}:
-        replace_subagent_runs(conn, session.session_id, build_subagent_run_rows(subagent_runs))
+        replace_subagent_runs(conn, session.session_id, build_subagent_run_rows(subagent_runs), commit=False)
 
 
 def index_fast(source: str, path: str) -> IndexResult:

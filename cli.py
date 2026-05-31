@@ -18,14 +18,15 @@ import time
 from current_session import CurrentSessionError, resolve_current_session
 from db import (
     get_connection,
-    get_readonly_connection,
     init_db,
     search_flexible,
     get_session,
     get_stats,
     rebuild_fts,
-    run_select,
-    fact_table_schemas,
+    run_readonly_select,
+    fact_table_schema_reference,
+    session_columns,
+    delete_sessions,
     DB_PATH,
 )
 from logger import log
@@ -295,18 +296,13 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 
     # Prune noise sessions before processing
     if args.prune:
-        pruned = conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL "
+        prune_rows = conn.execute(
+            "SELECT session_id FROM sessions WHERE summary IS NOT NULL "
             "AND (summary LIKE '%no coding%' OR summary LIKE '%no changes%' "
             "OR summary LIKE '%no active%')"
-        ).fetchone()[0]
+        ).fetchall()
+        pruned = delete_sessions(conn, [row[0] for row in prune_rows])
         if pruned:
-            conn.execute(
-                "DELETE FROM sessions WHERE summary IS NOT NULL "
-                "AND (summary LIKE '%no coding%' OR summary LIKE '%no changes%' "
-                "OR summary LIKE '%no active%')"
-            )
-            conn.commit()
             print(f"Pruned {pruned} noise session(s)")
 
     options = _backfill_options(args)
@@ -383,9 +379,10 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 _QUERY_LIMIT_CAP = 1000
 
 EXAMPLE_QUERIES = """\
--- 1. Sessions with the most subagent (Agent) calls
+-- 1. Sessions with the most direct subagent-request tool calls
 SELECT session_id, COUNT(*) n FROM tool_calls
-WHERE tool='agent' AND scope='main' GROUP BY session_id ORDER BY n DESC LIMIT 10;
+WHERE tool IN ('agent', 'subagent', 'subagent_run') AND scope='main'
+GROUP BY session_id ORDER BY n DESC LIMIT 10;
 
 -- 2. How often I picked the recommended answer (Claude + recovered Pi)
 SELECT was_recommended, COUNT(*) FROM question_answers
@@ -437,14 +434,9 @@ def _print_query_table(columns: list[str], rows: list[list]) -> None:
 def cmd_query(args: argparse.Namespace) -> None:
     """Run a guarded read-only SELECT against the session index."""
     if args.schema:
-        conn = get_connection()
-        init_db(conn)
-        schemas = fact_table_schemas(conn)
-        session_columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)")]
-        conn.close()
-        print(schemas)
+        print(fact_table_schema_reference())
         print("\n-- sessions columns --")
-        print(", ".join(session_columns))
+        print(", ".join(session_columns()))
         print("\n-- example queries --")
         print(EXAMPLE_QUERIES)
         return
@@ -459,16 +451,13 @@ def cmd_query(args: argparse.Namespace) -> None:
 
     limit = max(1, min(args.limit, _QUERY_LIMIT_CAP))
     start = time.monotonic()
-    conn = get_readonly_connection()
     try:
-        columns, rows, truncated = run_select(conn, args.sql, limit)
+        columns, rows, truncated = run_readonly_select(args.sql, limit)
     except Exception as e:
-        conn.close()
         _log_query(args.sql, 0, False, int((time.monotonic() - start) * 1000), error=str(e))
         # Print verbatim so the caller can self-correct.
         print(f"Query error: {e}", file=sys.stderr)
         raise SystemExit(1)
-    conn.close()
 
     _log_query(args.sql, len(rows), truncated, int((time.monotonic() - start) * 1000))
 

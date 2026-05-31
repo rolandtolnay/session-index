@@ -168,12 +168,13 @@ def _isolate_db(tmp_path, monkeypatch):
     return db_path
 
 
-def test_cmd_query_schema_prints_tables_and_examples(tmp_path, monkeypatch, capsys):
-    _isolate_db(tmp_path, monkeypatch)
+def test_cmd_query_schema_prints_tables_and_examples_without_creating_db(tmp_path, monkeypatch, capsys):
+    db_path = _isolate_db(tmp_path, monkeypatch)
     cmd_query(argparse.Namespace(sql=None, json=False, limit=50, schema=True))
     out = capsys.readouterr().out
-    assert "CREATE TABLE tool_calls" in out
+    assert "CREATE TABLE IF NOT EXISTS tool_calls" in out
     assert "example queries" in out
+    assert not os.path.exists(db_path)
 
 
 def test_cmd_query_runs_select(tmp_path, monkeypatch, capsys):

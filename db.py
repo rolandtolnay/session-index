@@ -66,12 +66,12 @@ CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
 END;
 
 -- ── Structured fact tables ────────────────────────────────────────────────
--- All keyed by session id and rebuilt with delete-then-insert (idempotent).
+-- Owned by sessions and rebuilt with delete-then-insert (idempotent).
 -- Coverage tracks the tool-log indexing stage; older rows are populated by
 -- `cli.py backfill --no-summary --force`.
 
--- One row per tool call (main + subagent scope). `tool` is provider-normalized
--- (namespace-stripped, lowercased) so Claude PascalCase and Pi lowercase unify.
+-- One row per tool call (main + subagent scope). `tool` is lexically normalized
+-- (namespace-stripped, lowercased); raw provider names remain in `tool_name`.
 CREATE TABLE IF NOT EXISTS tool_calls (
     session_id TEXT NOT NULL,
     source TEXT,
@@ -131,6 +131,30 @@ CREATE INDEX IF NOT EXISTS idx_question_answers_recommended ON question_answers(
 """
 
 _FACT_TABLES = ("tool_calls", "subagent_runs", "question_answers")
+_SESSION_COLUMNS = (
+    "session_id",
+    "source",
+    "native_session_id",
+    "source_path",
+    "slug",
+    "project_path",
+    "project",
+    "branch",
+    "model",
+    "started_at",
+    "ended_at",
+    "duration_seconds",
+    "user_message_count",
+    "user_messages",
+    "files_touched",
+    "tools_used",
+    "summary",
+    "transcript_path",
+    "tool_log_path",
+    "subagent_transcripts",
+    "parent_session_path",
+    "parent_native_session_id",
+)
 
 
 def get_connection() -> sqlite3.Connection:
@@ -207,6 +231,7 @@ def upsert_session(
     parent_session_path: str | None = None,
     parent_native_session_id: str | None = None,
     overwrite_fields: set[str] | None = None,
+    commit: bool = True,
 ) -> None:
     """Insert or update a session, preserving existing values with COALESCE.
 
@@ -290,7 +315,8 @@ def upsert_session(
             params,
         )
 
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
@@ -478,7 +504,15 @@ def rebuild_fts(conn: sqlite3.Connection) -> None:
 
 # ── Structured fact persistence ────────────────────────────────────────────
 
-def _replace_rows(conn: sqlite3.Connection, table: str, key_column: str, session_id: str, rows: list[dict[str, Any]]) -> None:
+def _replace_rows(
+    conn: sqlite3.Connection,
+    table: str,
+    key_column: str,
+    session_id: str,
+    rows: list[dict[str, Any]],
+    *,
+    commit: bool = True,
+) -> None:
     """Delete-then-insert all rows for one session. Idempotent re-index."""
     conn.execute(f"DELETE FROM {table} WHERE {key_column} = ?", (session_id,))
     if rows:
@@ -488,45 +522,59 @@ def _replace_rows(conn: sqlite3.Connection, table: str, key_column: str, session
             f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
             rows,
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def replace_tool_calls(conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]]) -> None:
-    _replace_rows(conn, "tool_calls", "session_id", session_id, rows)
+def replace_tool_calls(
+    conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]], *, commit: bool = True,
+) -> None:
+    _replace_rows(conn, "tool_calls", "session_id", session_id, rows, commit=commit)
 
 
-def replace_subagent_runs(conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]]) -> None:
-    _replace_rows(conn, "subagent_runs", "parent_session_id", session_id, rows)
+def replace_subagent_runs(
+    conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]], *, commit: bool = True,
+) -> None:
+    _replace_rows(conn, "subagent_runs", "parent_session_id", session_id, rows, commit=commit)
 
 
-def replace_question_answers(conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]]) -> None:
-    _replace_rows(conn, "question_answers", "session_id", session_id, rows)
+def replace_question_answers(
+    conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]], *, commit: bool = True,
+) -> None:
+    _replace_rows(conn, "question_answers", "session_id", session_id, rows, commit=commit)
+
+
+def delete_sessions(conn: sqlite3.Connection, session_ids: list[str], *, commit: bool = True) -> int:
+    """Delete sessions and all owned fact rows for those session ids."""
+    ids = [sid for sid in session_ids if sid]
+    if not ids:
+        return 0
+    placeholders = ", ".join("?" for _ in ids)
+    conn.execute(f"DELETE FROM tool_calls WHERE session_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM question_answers WHERE session_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM subagent_runs WHERE parent_session_id IN ({placeholders})", ids)
+    cursor = conn.execute(f"DELETE FROM sessions WHERE session_id IN ({placeholders})", ids)
+    if commit:
+        conn.commit()
+    return cursor.rowcount
 
 
 # ── Read-only SQL escape hatch ─────────────────────────────────────────────
 
-def get_readonly_connection() -> sqlite3.Connection:
-    """A query_only connection for the guarded SQL escape hatch.
-
-    Uses PRAGMA query_only=ON (defense in depth alongside run_select's
-    statement validation). WAL-compatible: hooks can still write concurrently.
-    """
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+def _get_readonly_connection(db_path: str | None = None) -> sqlite3.Connection:
+    """Open the database in SQLite read-only mode with query_only enabled."""
+    path = db_path or DB_PATH
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA query_only=ON")
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def run_select(
+def _run_select(
     conn: sqlite3.Connection, sql: str, max_rows: int = 50,
 ) -> tuple[list[str], list[list[Any]], bool]:
-    """Validate and execute a single read-only statement.
-
-    Accepts one statement starting with SELECT or WITH, with no embedded ';'.
-    Fetches max_rows+1 to flag truncation. Returns (columns, rows, truncated).
-    Raises ValueError for disallowed input; sqlite3 errors propagate verbatim.
-    """
+    """Validate and execute one SELECT/WITH statement on an already read-only connection."""
     stripped = (sql or "").strip()
     while stripped.endswith(";"):
         stripped = stripped[:-1].strip()
@@ -546,11 +594,30 @@ def run_select(
     return columns, rows, truncated
 
 
-def fact_table_schemas(conn: sqlite3.Connection) -> str:
-    """Return the CREATE DDL for the structured fact tables (for `query --schema`)."""
-    placeholders = ", ".join("?" for _ in _FACT_TABLES)
-    rows = conn.execute(
-        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name IN ({placeholders}) ORDER BY name",
-        _FACT_TABLES,
-    ).fetchall()
-    return "\n\n".join(row[0] for row in rows if row and row[0])
+def run_readonly_select(sql: str, max_rows: int = 50) -> tuple[list[str], list[list[Any]], bool]:
+    """Run one guarded read-only SELECT/WITH against the session index.
+
+    This owns the full query boundary: SQLite read-only open, query_only defense,
+    statement validation, execution, and close. SQL errors propagate verbatim so
+    callers can self-correct.
+    """
+    conn = _get_readonly_connection()
+    try:
+        return _run_select(conn, sql, max_rows)
+    finally:
+        conn.close()
+
+
+def fact_table_schema_reference() -> str:
+    """Return fact-table CREATE DDL from the static schema without opening SQLite."""
+    statements: list[str] = []
+    for raw_statement in SCHEMA.split(";"):
+        statement = raw_statement.strip()
+        if any(f"CREATE TABLE IF NOT EXISTS {table}" in statement for table in _FACT_TABLES):
+            statements.append(statement + ";")
+    return "\n\n".join(statements)
+
+
+def session_columns() -> list[str]:
+    """Return sessions table columns from the static schema contract."""
+    return list(_SESSION_COLUMNS)

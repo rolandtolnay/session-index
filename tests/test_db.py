@@ -16,11 +16,12 @@ from db import (
     get_stats,
     rebuild_fts,
     _build_fts_query,
-    run_select,
+    run_readonly_select,
     replace_tool_calls,
     replace_subagent_runs,
     replace_question_answers,
-    fact_table_schemas,
+    delete_sessions,
+    fact_table_schema_reference,
 )
 
 
@@ -400,83 +401,122 @@ def test_replace_question_answers_and_subagent_runs_roundtrip():
     conn.close()
 
 
-def test_fact_table_schemas_lists_tables():
+def test_delete_sessions_removes_owned_fact_rows():
     conn = _make_conn()
-    ddl = fact_table_schemas(conn)
-    assert "CREATE TABLE tool_calls" in ddl
-    assert "CREATE TABLE subagent_runs" in ddl
-    assert "CREATE TABLE question_answers" in ddl
+    upsert_session(conn, session_id="owned-1", project="p")
+    replace_tool_calls(conn, "owned-1", [{
+        "session_id": "owned-1", "source": "claude", "scope": "main", "sequence": 1,
+        "timestamp": None, "tool_name": "Read", "tool": "read", "is_error": 0,
+        "skill_name": None,
+    }])
+    replace_question_answers(conn, "owned-1", [{
+        "session_id": "owned-1", "source": "claude", "sequence": 1, "question_index": 0,
+        "header": "H", "question": "Q", "selected_label": "A", "was_recommended": 1,
+        "is_other": 0, "option_count": 2, "multi_select": 0,
+    }])
+    replace_subagent_runs(conn, "owned-1", [{
+        "parent_session_id": "owned-1", "source": "claude", "requested_agent_type": "Explore",
+        "observed_agent_type": None, "call_tool": "Agent", "call_sequence": 1, "call_tool_id": "t",
+        "child_index": None, "agent_id": None, "status": None, "started_at": None, "ended_at": None,
+        "duration_seconds": None, "tool_call_count": None, "transcript_path": None,
+        "task_preview": None, "match_confidence": "request_only",
+    }])
+
+    assert delete_sessions(conn, ["owned-1"]) == 1
+    assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id='owned-1'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='owned-1'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM question_answers WHERE session_id='owned-1'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id='owned-1'").fetchone()[0] == 0
     conn.close()
 
 
-# ── run_select (read-only escape hatch) ─────────────────────────────────────
+def test_fact_table_schema_reference_lists_tables_without_db_connection():
+    ddl = fact_table_schema_reference()
+    assert "CREATE TABLE IF NOT EXISTS tool_calls" in ddl
+    assert "CREATE TABLE IF NOT EXISTS subagent_runs" in ddl
+    assert "CREATE TABLE IF NOT EXISTS question_answers" in ddl
 
 
-def test_run_select_basic():
-    conn = _make_conn()
-    upsert_session(conn, session_id="q1", project="p", summary="hello")
-    cols, rows, truncated = run_select(conn, "SELECT session_id, project FROM sessions")
-    assert cols == ["session_id", "project"]
-    assert rows == [["q1", "p"]]
-    assert truncated is False
-    conn.close()
+# ── run_readonly_select (read-only escape hatch) ────────────────────────────
 
 
-def test_run_select_truncation_flag():
-    conn = _make_conn()
-    for i in range(5):
-        upsert_session(conn, session_id=f"t{i}", project="p")
-    cols, rows, truncated = run_select(conn, "SELECT session_id FROM sessions", max_rows=3)
-    assert len(rows) == 3
-    assert truncated is True
-    conn.close()
-
-
-def test_run_select_allows_with_cte_and_strips_semicolon():
-    conn = _make_conn()
-    upsert_session(conn, session_id="w1", project="p")
-    cols, rows, _ = run_select(conn, "WITH x AS (SELECT session_id FROM sessions) SELECT * FROM x;  ")
-    assert rows == [["w1"]]
-    conn.close()
-
-
-def test_run_select_rejects_non_select():
-    conn = _make_conn()
-    for bad in ["DELETE FROM sessions", "UPDATE sessions SET summary='x'",
-                "INSERT INTO sessions(session_id) VALUES('z')", "DROP TABLE sessions", ""]:
-        try:
-            run_select(conn, bad)
-            assert False, f"expected rejection for {bad!r}"
-        except ValueError:
-            pass
-    conn.close()
-
-
-def test_run_select_rejects_multi_statement():
-    conn = _make_conn()
-    try:
-        run_select(conn, "SELECT 1; SELECT 2")
-        assert False, "expected multi-statement rejection"
-    except ValueError:
-        pass
-    conn.close()
-
-
-def test_get_readonly_connection_blocks_writes(tmp_path, monkeypatch):
+def _make_file_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "sessions.db"))
     conn = db.get_connection()
     init_db(conn)
+    return conn
+
+
+def test_run_readonly_select_basic(tmp_path, monkeypatch):
+    conn = _make_file_db(tmp_path, monkeypatch)
+    upsert_session(conn, session_id="q1", project="p", summary="hello")
+    conn.close()
+
+    cols, rows, truncated = run_readonly_select("SELECT session_id, project FROM sessions")
+
+    assert cols == ["session_id", "project"]
+    assert rows == [["q1", "p"]]
+    assert truncated is False
+
+
+def test_run_readonly_select_truncation_flag(tmp_path, monkeypatch):
+    conn = _make_file_db(tmp_path, monkeypatch)
+    for i in range(5):
+        upsert_session(conn, session_id=f"t{i}", project="p")
+    conn.close()
+
+    _cols, rows, truncated = run_readonly_select("SELECT session_id FROM sessions", max_rows=3)
+
+    assert len(rows) == 3
+    assert truncated is True
+
+
+def test_run_readonly_select_allows_with_cte_and_strips_semicolon(tmp_path, monkeypatch):
+    conn = _make_file_db(tmp_path, monkeypatch)
+    upsert_session(conn, session_id="w1", project="p")
+    conn.close()
+
+    _cols, rows, _ = run_readonly_select("WITH x AS (SELECT session_id FROM sessions) SELECT * FROM x;  ")
+
+    assert rows == [["w1"]]
+
+
+def test_run_readonly_select_rejects_non_select(tmp_path, monkeypatch):
+    conn = _make_file_db(tmp_path, monkeypatch)
+    conn.close()
+
+    for bad in ["DELETE FROM sessions", "UPDATE sessions SET summary='x'",
+                "INSERT INTO sessions(session_id) VALUES('z')", "DROP TABLE sessions", ""]:
+        try:
+            run_readonly_select(bad)
+            assert False, f"expected rejection for {bad!r}"
+        except ValueError:
+            pass
+
+
+def test_run_readonly_select_rejects_multi_statement(tmp_path, monkeypatch):
+    conn = _make_file_db(tmp_path, monkeypatch)
+    conn.close()
+
+    try:
+        run_readonly_select("SELECT 1; SELECT 2")
+        assert False, "expected multi-statement rejection"
+    except ValueError:
+        pass
+
+
+def test_run_readonly_select_blocks_writes_even_if_lexically_select(tmp_path, monkeypatch):
+    conn = _make_file_db(tmp_path, monkeypatch)
     upsert_session(conn, session_id="ro1", project="p")
     conn.close()
 
-    ro = db.get_readonly_connection()
-    assert ro.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
-    raised = False
     try:
-        ro.execute("INSERT INTO sessions(session_id) VALUES('x')")
-        ro.commit()
-    except sqlite3.OperationalError:
-        raised = True
-    assert raised
-    ro.close()
+        run_readonly_select("WITH x AS (INSERT INTO sessions(session_id) VALUES('x') RETURNING session_id) SELECT * FROM x")
+        assert False, "expected SQLite to reject write through read-only connection"
+    except sqlite3.Error:
+        pass
+
+    conn = db.get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    conn.close()

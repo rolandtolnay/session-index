@@ -4,6 +4,8 @@ import shutil
 import sqlite3
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
@@ -107,6 +109,27 @@ def test_full_index_populates_fact_tables_idempotently(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (sid,)).fetchone()[0] == 7
     assert conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id=?", (sid,)).fetchone()[0] == 1
     conn.close()
+
+
+def test_index_db_write_rolls_back_session_when_fact_persistence_fails(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path)
+
+    def fail_replace_tool_calls(*args, **kwargs):
+        raise RuntimeError("fact write failed")
+
+    monkeypatch.setattr(db, "replace_tool_calls", fail_replace_tool_calls)
+
+    with pytest.raises(RuntimeError, match="fact write failed"):
+        indexer.index_source_transcript("claude", str(parent), indexer.NO_SUMMARY_INDEX_OPTIONS)
+
+    parsed = indexer.parse_session_file("claude", str(parent))
+    conn = db.get_connection()
+    row = conn.execute("SELECT session_id FROM sessions WHERE session_id=?", (parsed.session_id,)).fetchone()
+    facts = conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (parsed.session_id,)).fetchone()[0]
+    conn.close()
+    assert row is None
+    assert facts == 0
 
 
 def test_metadata_only_index_does_not_write_fact_tables(tmp_path, monkeypatch):

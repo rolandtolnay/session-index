@@ -82,8 +82,9 @@ you can correct and retry. **Run `--schema` first** to see exact columns + examp
 
 - `tool_calls` — one row per tool call. Columns: `session_id, source, scope`
   (`main` or `agent-<id>`), `sequence, timestamp, tool_name` (raw), `tool`
-  (provider-normalized: namespace-stripped + lowercased — `Agent`/`agent`, `AskUserQuestion`/`question`),
-  `is_error, skill_name` (set only for `skill`/`Skill` calls).
+  (lexically normalized: namespace-stripped + lowercased, e.g. `Agent` -> `agent`),
+  `is_error, skill_name` (set only for `skill`/`Skill` calls). Semantic domains are
+  queryable through dedicated tables (`question_answers`, `subagent_runs`).
 - `subagent_runs` — one row per subagent run. Columns: `parent_session_id, source,
   requested_agent_type` (the canonical query label), `observed_agent_type, call_tool,
   call_sequence, call_tool_id, child_index, agent_id, status, started_at, ended_at,
@@ -96,9 +97,10 @@ Join to `sessions` on `tool_calls.session_id = sessions.session_id` (or
 `subagent_runs.parent_session_id`) for project/date/summary context.
 
 ```sql
--- 1. Sessions with the most subagent (Agent) calls
+-- 1. Sessions with the most direct subagent-request tool calls
 SELECT session_id, COUNT(*) n FROM tool_calls
-WHERE tool='agent' AND scope='main' GROUP BY session_id ORDER BY n DESC LIMIT 10;
+WHERE tool IN ('agent', 'subagent', 'subagent_run') AND scope='main'
+GROUP BY session_id ORDER BY n DESC LIMIT 10;
 
 -- 2. How often I picked the recommended answer (Claude + recovered Pi)
 SELECT was_recommended, COUNT(*) FROM question_answers
