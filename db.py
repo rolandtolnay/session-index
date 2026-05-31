@@ -337,7 +337,7 @@ def upsert_session(
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 
 
-def _build_fts_query(query: str, use_or: bool = False) -> str:
+def build_fts_query(query: str, use_or: bool = False) -> str:
     """Build an FTS5 query string, quoting terms but preserving operators.
 
     - Quotes each non-operator term with "term" for special char safety
@@ -357,6 +357,11 @@ def _build_fts_query(query: str, use_or: bool = False) -> str:
     if use_or and not has_operators:
         return " OR ".join(parts)
     return " ".join(parts)
+
+
+def _build_fts_query(query: str, use_or: bool = False) -> str:
+    """Compatibility wrapper for existing tests/imports."""
+    return build_fts_query(query, use_or=use_or)
 
 
 def search_flexible(
@@ -396,7 +401,7 @@ def search_flexible(
         params["session"] = session
 
     if query and query.strip():
-        params["query"] = _build_fts_query(query, use_or=use_or)
+        params["query"] = build_fts_query(query, use_or=use_or)
 
         where = "WHERE sessions_fts MATCH :query"
         if clauses:

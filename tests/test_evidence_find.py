@@ -7,55 +7,12 @@ import pytest
 
 import db
 from evidence_find import find_candidates
-
-
-def _conn(tmp_path):
-    conn = db.sqlite3.connect(":memory:")
-    conn.row_factory = db.sqlite3.Row
-    db.init_db(conn)
-    return conn
-
-
-def _seed(conn, tmp_path):
-    transcript = str(tmp_path / "pi:abc.md")
-    tool_log = str(tmp_path / "pi:abc.tools.md")
-    db.upsert_session(
-        conn,
-        session_id="pi:abc",
-        source="pi",
-        project="session-index",
-        started_at="2026-05-31T10:00:00Z",
-        summary="Worked on session index evidence retrieval.",
-        user_messages="Find session index evidence workflow",
-        transcript_path=transcript,
-        tool_log_path=tool_log,
-        subagent_transcripts=str(tmp_path / "pi:abc" / "agent-child.md"),
-    )
-    db.replace_tool_calls(conn, "pi:abc", [
-        {"session_id": "pi:abc", "source": "pi", "scope": "main", "sequence": 12, "timestamp": "2026-05-31T10:01:00Z", "tool_name": "edit", "tool": "edit", "is_error": 0, "skill_name": None},
-        {"session_id": "pi:abc", "source": "pi", "scope": "main", "sequence": 13, "timestamp": "2026-05-31T10:02:00Z", "tool_name": "Skill", "tool": "skill", "is_error": 0, "skill_name": "review"},
-    ])
-    db.replace_file_mutations(conn, "pi:abc", [{
-        "session_id": "pi:abc", "source": "pi", "scope": "main", "sequence": 12,
-        "timestamp": "2026-05-31T10:01:00Z", "tool_name": "edit", "tool": "edit", "path": "etc/prd/example.md",
-    }])
-    db.replace_question_answers(conn, "pi:abc", [{
-        "session_id": "pi:abc", "source": "pi", "sequence": 14, "question_index": 0,
-        "header": "Choice", "question": "Which approach?", "selected_label": "A (Recommended)",
-        "was_recommended": 1, "is_other": 0, "option_count": 2, "multi_select": 0,
-    }])
-    db.replace_subagent_runs(conn, "pi:abc", [{
-        "parent_session_id": "pi:abc", "source": "pi", "requested_agent_type": "scout", "observed_agent_type": "scout",
-        "call_tool": "subagent_run", "call_sequence": 15, "call_tool_id": "call-1", "child_index": 0,
-        "agent_id": "child", "status": "ok", "started_at": "2026-05-31T10:03:00Z", "ended_at": None,
-        "duration_seconds": 10, "tool_call_count": 2, "transcript_path": str(tmp_path / "pi:abc" / "agent-child.md"),
-        "task_preview": "Inspect evidence flow", "match_confidence": "high",
-    }])
+from tests.evidence_helpers import make_memory_conn, seed_evidence_graph
 
 
 def test_find_topic_returns_compact_session_refs_without_evidence_text(tmp_path):
-    conn = _conn(tmp_path)
-    _seed(conn, tmp_path)
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
 
     data = find_candidates(conn, topic="session index", limit=2)
 
@@ -70,8 +27,8 @@ def test_find_topic_returns_compact_session_refs_without_evidence_text(tmp_path)
 
 
 def test_find_tool_returns_event_level_tool_ref(tmp_path):
-    conn = _conn(tmp_path)
-    _seed(conn, tmp_path)
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
 
     result = find_candidates(conn, tool="edit")["results"][0]
 
@@ -81,8 +38,8 @@ def test_find_tool_returns_event_level_tool_ref(tmp_path):
 
 
 def test_find_skill_mutation_question_and_subagent_candidates(tmp_path):
-    conn = _conn(tmp_path)
-    _seed(conn, tmp_path)
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
 
     skill = find_candidates(conn, skill="review")["results"][0]
     mutation = find_candidates(conn, mutated="prd/example")["results"][0]
@@ -102,8 +59,8 @@ def test_find_skill_mutation_question_and_subagent_candidates(tmp_path):
 
 
 def test_find_event_filters_compose_or_fail_clearly(tmp_path):
-    conn = _conn(tmp_path)
-    _seed(conn, tmp_path)
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
 
     assert find_candidates(conn, mutated="example.md", tool="edit")["results"][0]["match"]["tool"] == "edit"
     assert find_candidates(conn, mutated="example.md", tool="bash")["results"] == []
@@ -114,16 +71,16 @@ def test_find_event_filters_compose_or_fail_clearly(tmp_path):
 
 
 def test_find_filters_compose(tmp_path):
-    conn = _conn(tmp_path)
-    _seed(conn, tmp_path)
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
 
     assert find_candidates(conn, tool="edit", project="session", since="2026-05-01", until="2026-05-31", session="pi:abc")["results"]
     assert find_candidates(conn, tool="edit", project="other")["results"] == []
 
 
 def test_find_session_filters_are_not_topic_matches(tmp_path):
-    conn = _conn(tmp_path)
-    _seed(conn, tmp_path)
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
 
     result = find_candidates(conn, project="session", since="2026-05-01", until="2026-05-31", session="pi:abc")["results"][0]
 
@@ -137,8 +94,32 @@ def test_find_session_filters_are_not_topic_matches(tmp_path):
     }
 
 
+def test_find_topic_event_filters_use_scoped_sessions(tmp_path):
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
+    db.upsert_session(
+        conn,
+        session_id="pi:other",
+        source="pi",
+        project="session-index",
+        started_at="2026-05-31T11:00:00Z",
+        summary="Unrelated work.",
+        user_messages="Different topic",
+        transcript_path=str(tmp_path / "other.md"),
+        tool_log_path=str(tmp_path / "other.tools.md"),
+    )
+    db.replace_tool_calls(conn, "pi:other", [{
+        "session_id": "pi:other", "source": "pi", "scope": "main", "sequence": 1,
+        "timestamp": None, "tool_name": "edit", "tool": "edit", "is_error": 0, "skill_name": None,
+    }])
+
+    data = find_candidates(conn, topic="evidence workflow", tool="edit", limit=5)
+
+    assert [result["ref"] for result in data["results"]] == ["tool/pi:abc/12"]
+
+
 def test_find_topic_session_scope_applies_before_limit(tmp_path):
-    conn = _conn(tmp_path)
+    conn = make_memory_conn()
     db.upsert_session(
         conn,
         session_id="pi:distractor",

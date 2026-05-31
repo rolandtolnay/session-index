@@ -14,8 +14,7 @@ import cli
 import db
 from cli import _check_integrity, _print_agent_excerpts, cmd_excerpt, cmd_find, cmd_inspect, cmd_query, cmd_search
 from db import init_db, upsert_session
-from parser import ParsedToolCall
-from tool_log import write_tool_log
+from tests.evidence_helpers import seed_evidence_graph
 
 
 def _write_agent_file(path, messages, header_lines=("# general-purpose — 2026-04-01 14:40", "Parent: test", "---", "")):
@@ -205,28 +204,7 @@ def _seed_evidence_cli_db(tmp_path, monkeypatch):
     monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
     conn = db.get_connection()
     init_db(conn)
-    transcript = tmp_path / "pi:abc.md"
-    transcript.write_text("proj | main | 2026-05-31\n---\n\n[user] ────────────────────────────────────────\nsession index evidence\n\n[assistant] ──────────────────────────────────\nScoped evidence text.\n")
-    tool_log = write_tool_log("pi:abc", [ParsedToolCall(sequence=12, tool_name="edit", arguments={"path": "etc/prd/example.md"}, result="changed")])
-    upsert_session(
-        conn,
-        session_id="pi:abc",
-        source="pi",
-        project="session-index",
-        started_at="2026-05-31T10:00:00Z",
-        summary="Worked on session index evidence retrieval.",
-        user_messages="session index evidence",
-        transcript_path=str(transcript),
-        tool_log_path=tool_log,
-    )
-    db.replace_tool_calls(conn, "pi:abc", [{
-        "session_id": "pi:abc", "source": "pi", "scope": "main", "sequence": 12,
-        "timestamp": None, "tool_name": "edit", "tool": "edit", "is_error": 0, "skill_name": None,
-    }])
-    db.replace_file_mutations(conn, "pi:abc", [{
-        "session_id": "pi:abc", "source": "pi", "scope": "main", "sequence": 12,
-        "timestamp": None, "tool_name": "edit", "tool": "edit", "path": "etc/prd/example.md",
-    }])
+    seed_evidence_graph(conn, tmp_path, write_artifacts=True)
     conn.close()
 
 
