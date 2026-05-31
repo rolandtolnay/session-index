@@ -19,6 +19,7 @@ REQUIRED_ENV_KEYS = [
 ]
 
 CLAUDE_COMPAT_ENV_KEYS = [
+    "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_SESSION_ID",
     "CLAUDE_TRANSCRIPT_PATH",
     "CLAUDE_CODE_TRANSCRIPT_PATH",
@@ -170,7 +171,7 @@ def test_resolve_json_dict_includes_clean_transcript_timestamp_only_when_artifac
 
 
 def test_resolve_claude_compat_env_matches_public_contract(tmp_path, monkeypatch):
-    source = tmp_path / "source-transcript.jsonl"
+    source = tmp_path / "claude-compat.jsonl"
     source.write_text("{}\n")
 
     compat = resolve_current_session({
@@ -206,7 +207,7 @@ def test_resolve_claude_compat_accepts_alternate_transcript_path_env(tmp_path, m
 
 
 def test_optional_session_index_leaf_does_not_block_claude_compat(tmp_path, monkeypatch):
-    source = tmp_path / "claude-source.jsonl"
+    source = tmp_path / "claude-with-stale-leaf.jsonl"
 
     current = resolve_current_session({
         "SESSION_INDEX_LEAF_ID": "stale-pi-leaf",
@@ -222,7 +223,7 @@ def test_optional_session_index_leaf_does_not_block_claude_compat(tmp_path, monk
 
 
 def test_resolve_claude_compat_recognizes_claude_code_session_id(tmp_path):
-    source = tmp_path / "cc.jsonl"
+    source = tmp_path / "cc-1.jsonl"
 
     current = resolve_current_session({
         "CLAUDE_CODE_SESSION_ID": "cc-1",
@@ -267,6 +268,78 @@ def test_session_id_only_without_locatable_jsonl_fails_clearly(monkeypatch):
     assert "current only works inside an active agent runtime exposing Session Index env" in message
     assert "could not locate the source transcript" in message
     assert "claude-only" in message
+    assert "CLAUDE_TRANSCRIPT_PATH" in message
+
+
+def test_conflicting_claude_session_aliases_fail_clearly(tmp_path):
+    source = tmp_path / "cc-1.jsonl"
+
+    with pytest.raises(CurrentSessionError) as exc:
+        resolve_current_session({
+            "CLAUDE_CODE_SESSION_ID": "cc-1",
+            "CLAUDE_SESSION_ID": "legacy-2",
+            "CLAUDE_TRANSCRIPT_PATH": str(source),
+        })
+
+    message = str(exc.value)
+    assert "conflicting claude session id env values" in message
+    assert "CLAUDE_CODE_SESSION_ID='cc-1'" in message
+    assert "CLAUDE_SESSION_ID='legacy-2'" in message
+
+
+def test_conflicting_claude_transcript_path_aliases_fail_clearly(tmp_path):
+    first = tmp_path / "cc-1.jsonl"
+    second = tmp_path / "other" / "cc-1.jsonl"
+
+    with pytest.raises(CurrentSessionError) as exc:
+        resolve_current_session({
+            "CLAUDE_CODE_SESSION_ID": "cc-1",
+            "CLAUDE_TRANSCRIPT_PATH": str(first),
+            "CLAUDE_CODE_TRANSCRIPT_PATH": str(second),
+        })
+
+    message = str(exc.value)
+    assert "conflicting claude transcript path env values" in message
+    assert str(first) in message
+    assert str(second) in message
+
+
+def test_explicit_claude_transcript_path_must_match_session_id(tmp_path):
+    source = tmp_path / "wrong-session.jsonl"
+
+    with pytest.raises(CurrentSessionError) as exc:
+        resolve_current_session({
+            "CLAUDE_CODE_SESSION_ID": "cc-1",
+            "CLAUDE_TRANSCRIPT_PATH": str(source),
+        })
+
+    message = str(exc.value)
+    assert "does not match session id" in message
+    assert "wrong-session.jsonl" in message
+    assert "cc-1" in message
+
+
+def test_session_id_only_with_duplicate_jsonl_matches_fails_clearly(tmp_path, monkeypatch):
+    from sources import SourceSessionFile
+
+    first = tmp_path / "one" / "dup.jsonl"
+    second = tmp_path / "two" / "dup.jsonl"
+    monkeypatch.setattr(
+        "sources.discover_claude_sessions",
+        lambda session_id: [
+            SourceSessionFile("claude", str(first)),
+            SourceSessionFile("claude", str(second)),
+        ],
+    )
+
+    with pytest.raises(CurrentSessionError) as exc:
+        resolve_current_session({"CLAUDE_CODE_SESSION_ID": "dup"})
+
+    message = str(exc.value)
+    assert "multiple source transcripts matched" in message
+    assert "dup" in message
+    assert str(first) in message
+    assert str(second) in message
     assert "CLAUDE_TRANSCRIPT_PATH" in message
 
 

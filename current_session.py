@@ -121,6 +121,21 @@ def _first_required_value(env: Mapping[str, str], names: tuple[str, ...]) -> str
     return None
 
 
+def _resolve_alias_value(env: Mapping[str, str], names: tuple[str, ...], label: str) -> str | None:
+    values: list[tuple[str, str]] = []
+    for name in names:
+        value = _required_value(env, name)
+        if value is not None:
+            values.append((name, value))
+    if not values:
+        return None
+    unique = {value for _name, value in values}
+    if len(unique) > 1:
+        rendered = ", ".join(f"{name}={value!r}" for name, value in values)
+        raise _fail(f"conflicting claude {label} env values: {rendered}")
+    return values[0][1]
+
+
 def _fail(detail: str) -> CurrentSessionError:
     return CurrentSessionError(f"{_ERROR_PREFIX}: {detail}")
 
@@ -182,17 +197,33 @@ def _locate_claude_source_path(session_id: str) -> str | None:
 
     Deterministic resolution of a *known* id's file — the same
     ~/.claude/projects/*/<id>.jsonl glob sources.discover_claude_sessions uses,
-    not a latest/most-recent guess — so it cannot resolve a different parallel
-    session. Used when Claude Code exposes the session id but no transcript path.
+    not a latest/most-recent guess. If the id is missing or duplicated, resolution
+    fails instead of choosing a filesystem winner.
     """
     from sources import discover_claude_sessions
 
     matches = discover_claude_sessions(session_id)
-    return matches[0].path if matches else None
+    if not matches:
+        return None
+    if len(matches) > 1:
+        paths = ", ".join(match.path for match in matches)
+        raise _fail(
+            f"multiple source transcripts matched claude session {session_id!r}: "
+            f"{paths}; set {' or '.join(CLAUDE_ENV_SOURCE_PATHS)} explicitly"
+        )
+    return matches[0].path
+
+
+def _validate_claude_source_path(session_id: str, source_path: str) -> None:
+    stem = os.path.splitext(os.path.basename(source_path))[0]
+    if stem != session_id:
+        raise _fail(
+            f"claude transcript path {source_path!r} does not match session id {session_id!r}"
+        )
 
 
 def _resolve_claude_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, str, None]:
-    session_id = _first_required_value(env, CLAUDE_ENV_SESSION_IDS)
+    session_id = _resolve_alias_value(env, CLAUDE_ENV_SESSION_IDS, "session id")
     if session_id is None:
         raise _fail(
             "insufficient claude compatibility env: missing "
@@ -201,9 +232,11 @@ def _resolve_claude_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, s
 
     # Prefer an explicit source-transcript path; otherwise locate the raw JSONL
     # for this exact session id.
-    source_path = _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS)
+    source_path = _resolve_alias_value(env, CLAUDE_ENV_SOURCE_PATHS, "transcript path")
     if source_path is None:
         source_path = _locate_claude_source_path(session_id)
+    else:
+        _validate_claude_source_path(session_id, source_path)
     if source_path is None:
         raise _fail(
             f"could not locate the source transcript for claude session {session_id!r}: "
@@ -245,7 +278,8 @@ def resolve_current_session(env: Mapping[str, str] | None = None) -> CurrentSess
     native env is accepted via CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID; the
     source transcript path is taken from CLAUDE_(CODE_)TRANSCRIPT_PATH when set,
     otherwise located by the *exact* session id (~/.claude/projects/*/<id>.jsonl),
-    which is deterministic for a known id and so cannot resolve a different session.
+    requiring one unique match so duplicate files fail clearly instead of being
+    guessed.
     """
     env = os.environ if env is None else env
 
