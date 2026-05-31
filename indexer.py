@@ -332,7 +332,7 @@ def index_source_transcript(
     combined_tool_calls: list[ParsedToolCall] = []
     tool_log_path = None
     if IndexStage.TOOL_LOG in stages:
-        from tool_log import combine_tool_calls
+        from tool_events import combine_tool_calls
 
         combined_tool_calls = combine_tool_calls(session.tool_calls, parsed_subagents)
         tool_log_path = _write_tool_log(session, combined_tool_calls, source)

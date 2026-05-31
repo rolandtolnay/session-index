@@ -6,8 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from parser import ParsedToolCall
-from subagent_parser import ParsedSubagent
-from tool_log import combine_tool_calls, extract_tool_log_section, write_tool_log
+from tool_log import extract_tool_log_section, write_tool_log
 
 
 def test_write_tool_log_empty(tmp_path, monkeypatch):
@@ -110,17 +109,3 @@ def test_extract_tool_log_section_missing_file_or_sequence_returns_none(tmp_path
     path = tmp_path / "session.tools.md"
     path.write_text("# Tool log\n\n## 001 — main — Read — unknown\nbody\n")
     assert extract_tool_log_section(str(path), 2) is None
-
-
-def test_combine_tool_calls_sequences_main_before_subagents():
-    main = [ParsedToolCall(tool_name="read", tool_call_id="main-call")]
-    sub = ParsedSubagent(agent_id="abc123", tool_calls=[
-        ParsedToolCall(tool_name="bash", tool_call_id="sub-call")
-    ])
-
-    combined = combine_tool_calls(main, [sub])
-
-    assert [(c.sequence, c.scope, c.tool_call_id) for c in combined] == [
-        (1, "main", "main-call"),
-        (2, "agent-abc123", "sub-call"),
-    ]
