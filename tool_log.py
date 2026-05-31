@@ -83,7 +83,13 @@ def combine_tool_calls(
     return [replace(call, sequence=i) for i, call in enumerate(combined, 1)]
 
 
-def _heading_sequence(line: str) -> int | None:
+def _format_tool_heading(call: ParsedToolCall) -> str:
+    """Return the canonical generated Tool Log section heading."""
+    seq = f"{call.sequence:03d}" if call.sequence < 1000 else str(call.sequence)
+    return f"## {seq} — {call.scope or 'main'} — {call.tool_name or 'tool'} — {_format_time(call.timestamp)}"
+
+
+def _parse_tool_heading(line: str) -> int | None:
     """Return the numeric sequence from a generated Tool Log heading."""
     match = _TOOL_HEADING_RE.match(line.rstrip("\n"))
     if not match:
@@ -101,7 +107,7 @@ def _tool_headings(lines: list[str]) -> list[tuple[int, int]]:
             continue
         if in_fence:
             continue
-        sequence = _heading_sequence(line)
+        sequence = _parse_tool_heading(line)
         if sequence is not None:
             headings.append((idx, sequence))
     return headings
@@ -173,9 +179,8 @@ def write_tool_log(
     ]
 
     for call in tool_calls:
-        seq = f"{call.sequence:03d}" if call.sequence < 1000 else str(call.sequence)
         lines.extend([
-            f"## {seq} — {call.scope or 'main'} — {call.tool_name or 'tool'} — {_format_time(call.timestamp)}",
+            _format_tool_heading(call),
             "",
             f"Status: {'error' if call.is_error else 'ok'}",
             f"Tool call ID: {call.tool_call_id or 'unknown'}",
