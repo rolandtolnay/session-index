@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from parser import ParsedSession, clean_user_messages, parse_jsonl as parse_claude_jsonl
+from parser import ParsedSession, ParsedToolCall, clean_user_messages, parse_jsonl as parse_claude_jsonl
 from pi_parser import parse_pi_jsonl, discover_pi_subagents, parse_pi_subagent_jsonl
 from subagent_parser import discover_subagents, parse_subagent_jsonl, ParsedSubagent, SubagentInfo
 from subagent_runs import ParsedSubagentRun, build_subagent_runs
@@ -253,13 +253,13 @@ def _write_subagent_transcripts(session: ParsedSession, parsed_subagents: list[P
     return paths
 
 
-def _write_tool_log(session: ParsedSession, parsed_subagents: list[ParsedSubagent], source: str) -> str | None:
-    from tool_log import combine_tool_calls, write_tool_log
+def _write_tool_log(session: ParsedSession, combined_tool_calls: list[ParsedToolCall], source: str) -> str | None:
+    from tool_log import write_tool_log
 
     try:
         return write_tool_log(
             session.session_id,
-            combine_tool_calls(session.tool_calls, parsed_subagents),
+            combined_tool_calls,
             project=session.project,
             source=source,
             started_at=session.started_at,
@@ -329,9 +329,13 @@ def index_source_transcript(
         subagent_paths = _write_subagent_transcripts(session, parsed_subagents)
         result.subagents = len(subagent_paths)
 
+    combined_tool_calls: list[ParsedToolCall] = []
     tool_log_path = None
     if IndexStage.TOOL_LOG in stages:
-        tool_log_path = _write_tool_log(session, parsed_subagents, source)
+        from tool_log import combine_tool_calls
+
+        combined_tool_calls = combine_tool_calls(session.tool_calls, parsed_subagents)
+        tool_log_path = _write_tool_log(session, combined_tool_calls, source)
         result.tool_log_path = tool_log_path
 
     subagent_runs = normalize_subagent_runs(session, source=source, parsed_subagents=parsed_subagents)
@@ -359,7 +363,7 @@ def index_source_transcript(
             stage_overwrite_fields=stage_overwrite_fields,
             commit=False,
         )
-        _persist_facts(conn, session, source, stages, subagent_runs, parsed_subagents)
+        _persist_facts(conn, session, source, stages, subagent_runs, combined_tool_calls)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -375,24 +379,22 @@ def _persist_facts(
     source: str,
     stages: frozenset[IndexStage],
     subagent_runs: list[ParsedSubagentRun],
-    parsed_subagents: list[ParsedSubagent],
+    combined_tool_calls: list[ParsedToolCall],
 ) -> None:
     """Persist the structured fact tables. Coverage tracks the tool-log stage;
     idempotent via delete-then-insert. No FTS interaction."""
     from db import replace_file_mutations, replace_question_answers, replace_subagent_runs, replace_tool_calls
     from tool_facts import build_file_mutation_rows, build_question_rows, build_subagent_run_rows, build_tool_call_rows
-    from tool_log import combine_tool_calls
 
     if IndexStage.TOOL_LOG in stages:
         session_id = session.session_id
-        combined = combine_tool_calls(session.tool_calls, parsed_subagents)
         fact_builders = (
             (replace_tool_calls, build_tool_call_rows),
             (replace_question_answers, build_question_rows),
             (replace_file_mutations, build_file_mutation_rows),
         )
         for replace_rows, build_rows in fact_builders:
-            replace_rows(conn, session_id, build_rows(session_id, source, combined), commit=False)
+            replace_rows(conn, session_id, build_rows(session_id, source, combined_tool_calls), commit=False)
 
     if stages & {IndexStage.TOOL_LOG, IndexStage.SUBAGENT_TRANSCRIPTS}:
         replace_subagent_runs(conn, session.session_id, build_subagent_run_rows(subagent_runs), commit=False)
