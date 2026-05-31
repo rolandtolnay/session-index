@@ -50,7 +50,7 @@ The harness (`tests/benchmark.py`) supports two modes:
 uv run tests/benchmark.py \
   --sessions b6752ab6,b4dcf951,97df64cc,138cd1ed,f2d5afac,f3502323,29b37e3b,edddf940,533998b1,62279197,dc72bdfd,15b6c537,b8a5f3fe,040e3def,9a52498e,83aa1ebd,41673df3,91a78691,324ce4be \
   --prompts A,B,C,D,E,F \
-  --model gemma4:e4b \
+  --model gemma4:e2b \
   --output tests/eval_results/my_results.json
 ```
 
@@ -80,7 +80,7 @@ Use `--select-sessions` to list available sessions by bucket.
 - See `tests/eval_results/LEARNINGS.md`, `pi_gpt_benchmark_report.md`, and `pi_gpt_prompt_benchmark_report.md` for findings.
 
 ### Constraint: Ollama single-model
-Ollama still serves one model at a time for local fallback/tab-title workflows. Production summarization bypasses Ollama by default through Pi, so do not optimize summary quality by swapping local models.
+Ollama still serves one model at a time for local fallback/tab-title workflows. `gemma4:e2b` is the only supported local fallback model. Production summarization bypasses Ollama by default through Pi, so do not optimize summary quality by swapping local models.
 
 ## Summarization context
 See [SUMMARIZATION.md](SUMMARIZATION.md) for constraints, quality baselines, and next steps.

@@ -2,11 +2,11 @@
 
 ## Ollama Single-Model Constraint
 
-Ollama serves one model at a time. Gemma 4 E4B is loaded for tab-title generation (local-llm project) where it's 2.8x faster than Qwen with equal quality. Swapping models adds ~10-15s latency per call, making dual-model usage impractical for hooks.
+Ollama serves one model at a time. `gemma4:e2b` is the only supported local Ollama model for fallback/tab-title workflows. Swapping models adds latency and, with `keep_alive: -1`, can leave multiple model runners resident in RAM.
 
-Tab titles run more frequently than summaries, so the model that wins on tab titles stays hot. Summarization accepts the quality trade-off.
+Tab titles and Pi Bash Summary run frequently, so E2B stays hot. Session summarization accepts the local fallback quality trade-off because production summaries bypass Ollama by default.
 
-Any new summarization approach must either use gemma4:e4b or bypass Ollama entirely (e.g., Pi-based approach). Never assume a second local model can be loaded without latency penalty.
+Any new summarization approach must either use `gemma4:e2b` or bypass Ollama entirely (e.g., Pi-based approach). Never assume a second local model can be loaded without latency or RAM penalty.
 
 ## Current Quality
 
@@ -21,9 +21,9 @@ Historical baselines:
 
 ## Decision: Decouple Summarization from Ollama
 
-Gemma 4 E4B stays loaded for tab-title generation (local-llm project). Summarization bypasses Ollama entirely by default, avoiding the single-model constraint and the quality regression vs Qwen.
+Gemma 4 E2B stays loaded for local hook workflows. Summarization bypasses Ollama entirely by default, avoiding the single-model constraint and local-model quality trade-offs.
 
-If Pi is unavailable or disabled via `SESSION_INDEX_DISABLE_PI_SUMMARIZER`, the code falls back to the legacy Gemini/local path.
+If Pi is unavailable or disabled via `SESSION_INDEX_DISABLE_PI_SUMMARIZER`, the code falls back to the legacy Gemini/local path; that local path uses `gemma4:e2b`.
 
 Relevant benchmark artifacts:
 - `tests/eval_results/pi_gpt_benchmark_report.md`

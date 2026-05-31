@@ -10,7 +10,7 @@ Supports two benchmark modes:
   2. Prompt mode (--prompts): Tests system prompt variants with fixed Config D
      settings. Used in Round 2+ to optimize prompt wording.
 
-The --model flag selects the Ollama model (default: gemma4:e4b).
+The --model flag selects the Ollama model (default: gemma4:e2b).
 
 Usage:
     uv run tests/benchmark.py --select-sessions
@@ -31,7 +31,7 @@ OLLAMA_URL = "http://localhost:11434/api/chat"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 
-DEFAULT_MODEL = "gemma4:e4b"
+DEFAULT_MODEL = "gemma4:e2b"
 FIRST_MSG_BUDGET = 2000
 
 # ── System prompts ────────────────────────────────────────────────────
