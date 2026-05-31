@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Excerpt wrapper — resolves repo root via symlink, runs CLI excerpt."""
+"""Legacy excerpt wrapper.
+
+Kept temporarily for compatibility; primary workflow is find -> inspect, with
+query for aggregates/custom SQL. This wrapper is not documented by the skill.
+"""
 import argparse
 import os
 import sys

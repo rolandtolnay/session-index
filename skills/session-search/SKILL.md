@@ -1,198 +1,134 @@
 ---
 name: session-search
-description: Search past Claude Code and Pi conversations by topic, file, project, or decision
+description: Search past Claude Code and Pi conversations by topic, file, project, decision, tool use, skill use, subagent runs, questions, and File Mutations
 user_invocable: true
 arguments:
   - name: query
-    description: Search terms, project filter, date range, or combination
+    description: Search terms, project filter, date range, or deterministic evidence criteria
     required: false
 ---
 
 # Session Search
 
-Search and extract content from past Claude Code and Pi conversations indexed in `~/.session-index`.
+Search and inspect past Claude Code and Pi conversations indexed in `~/.session-index`.
+
+## Decision tree
+
+1. Use `current` for the active conversation only.
+2. Use `query` for counts, rankings, aggregates, custom grouping, and raw SQL.
+3. Use `find` for compact past-session/event candidates with Inspection References.
+4. Use `inspect` only on selected refs copied from `find` to retrieve bounded evidence text.
+5. Prefer generated Clean Transcripts, Tool Logs, and Subagent Run transcripts over raw JSONL.
+
+Most audit questions should be `find` first, then `inspect` one or two selected refs. Do not read raw JSONL unless the generated artifacts are insufficient.
 
 ## Commands
 
-### search — Find sessions
-
-```bash
-uv run ~/.pi/agent/skills/session-search/scripts/search.py [query] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--no-any] [--limit N]
-```
-
-If you are running from Claude Code and only have the Claude skill installed, the same script is available at:
-
-```bash
-uv run ~/.claude/skills/session-search/scripts/search.py [query]
-```
-
-Returns session summaries: session_id, project, date, branch, summary, files touched, and a `tool log:` path when detailed tool-call artifacts exist.
-
-- **query** -- FTS keywords (optional if filters given). Default: OR matching (any term matches)
-- **--project** -- prefix match (e.g., `--project session` matches session-index)
-- **--since / --until** -- date range filter (ISO dates)
-- **--no-any** -- require ALL terms to match (AND). Default is OR
-- **--limit** -- max results (default 20)
-- Flags combine freely: `search.py "auth token" --project dashboard --since 2026-03-01`
-
-### excerpt — Extract transcript passages
-
-```bash
-uv run ~/.pi/agent/skills/session-search/scripts/excerpt.py <session> [<session> ...] -q "keywords"
-```
-
-Claude Code path, if needed:
-
-```bash
-uv run ~/.claude/skills/session-search/scripts/excerpt.py <session> -q "keywords"
-```
-
-Returns focused transcript blocks from specific sessions (max 3 per call). When available, it also prints `Tool log available:` for detailed tool-call debugging.
-
-- **session** -- session ID (or 8+ char prefix). Pi rows are stored as `pi:<uuid>` but raw UUID prefixes also resolve.
-- **-q / --query** -- keywords to focus extraction (required)
-- Example: `excerpt.py 07983a7f -q "auth token refresh"`
-- Example: `excerpt.py 019dde8f -q "pi transcript parser"`
-
-### query — Read-only SQL over structured fact tables
-
-```bash
-uv run ~/.pi/agent/skills/session-search/scripts/query.py "SELECT ..." [--json] [--limit N]
-uv run ~/.pi/agent/skills/session-search/scripts/query.py --schema
-```
-
-Claude Code path, if needed:
-
-```bash
-uv run ~/.claude/skills/session-search/scripts/query.py "SELECT ..."
-```
-
-The escape hatch for "find/aggregate X" questions that FTS can't answer: *most X tool
-calls*, *how often I picked the recommended answer*, *sessions that used skill/subagent X*,
-or *which files were successfully written or edited by a session*.
-Runs a single read-only `SELECT`/`WITH` statement (no writes, no multi-statement) against
-the structured fact tables, row-capped (default 50, max 1000). SQL errors print verbatim so
-you can correct and retry. **Run `--schema` first** to see exact columns + example queries.
-
-- **sql** — one `SELECT` or `WITH` statement (omit when using `--schema`)
-- **--schema** — print fact-table DDL, `sessions` columns, and the example queries; exit
-- **--json** — rows as a JSON array (default is an aligned text table)
-- **--limit** — max rows (default 50, cap 1000)
-
-**Tables** (all keyed by session id):
-
-- `tool_calls` — one row per tool call. Columns: `session_id, source, scope`
-  (`main` or `agent-<id>`), `sequence, timestamp, tool_name` (raw), `tool`
-  (lexically normalized: namespace-stripped + lowercased, e.g. `Agent` -> `agent`),
-  `is_error, skill_name` (set only for `skill`/`Skill` calls). Semantic domains are
-  queryable through dedicated tables (`question_answers`, `subagent_runs`, `file_mutations`).
-- `file_mutations` — one row per successful File Mutation (a write/edit target path),
-  excluding failed mutations, reads, searches, lists, and bash. Use this for precise
-  write/edit file lists; `sessions.files_touched` remains broad search metadata. Columns:
-  `session_id, source, scope, sequence, timestamp, tool_name, tool, path`.
-- `subagent_runs` — one row per subagent run. Columns: `parent_session_id, source,
-  requested_agent_type` (the canonical query label), `observed_agent_type, call_tool,
-  call_sequence, call_tool_id, child_index, agent_id, status, started_at, ended_at,
-  duration_seconds, tool_call_count, transcript_path, task_preview, match_confidence`.
-- `question_answers` — one row per asked question. Columns: `session_id, source, sequence,
-  question_index, header, question, selected_label, was_recommended` (1/0/NULL),
-  `is_other, option_count, multi_select`.
-
-Join to `sessions` on `tool_calls.session_id = sessions.session_id`,
-`file_mutations.session_id = sessions.session_id` (or `subagent_runs.parent_session_id`)
-for project/date/summary context.
-
-```sql
--- 1. Sessions with the most direct subagent-request tool calls
-SELECT session_id, COUNT(*) n FROM tool_calls
-WHERE tool IN ('agent', 'subagent', 'subagent_run') AND scope='main'
-GROUP BY session_id ORDER BY n DESC LIMIT 10;
-
--- 2. How often I picked the recommended answer (Claude + recovered Pi)
-SELECT was_recommended, COUNT(*) FROM question_answers
-WHERE was_recommended IS NOT NULL AND multi_select=0 GROUP BY was_recommended;
-
--- 3. Sessions that used a given skill
-SELECT DISTINCT t.session_id, s.project, s.started_at
-FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id
-WHERE t.skill_name='update-config' ORDER BY s.started_at DESC;
-
--- 4. Sessions that used a given subagent type
-SELECT parent_session_id, COUNT(*) runs FROM subagent_runs
-WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;
-
--- 5. Files successfully written or edited in one session
-SELECT DISTINCT path FROM file_mutations
-WHERE session_id='SESSION_ID' ORDER BY path;
-
--- 6. File Mutation event trail for one session
-SELECT scope, sequence, tool_name, path FROM file_mutations
-WHERE session_id='SESSION_ID' ORDER BY sequence, path;
-```
-
-**Limitations:**
-
-- Fact tables cover sessions indexed with the tool-log stage; older rows are populated by a
-  one-time `uv run cli.py backfill --no-summary --force` (in the repo). If a query returns
-  surprisingly few rows, the corpus may not be fully backfilled yet. Historical
-  `file_mutations` coverage requires source-transcript backfill and cannot be reconstructed
-  from deleted raw logs by this feature.
-- `was_recommended` is NULL when the question had no `(Recommended)` option, was unanswered
-  (cancelled), or is multi-select. Filter `WHERE was_recommended IS NOT NULL AND multi_select=0`
-  for "picked the recommended" aggregations.
-- Multi-select answers store joined labels in `selected_label` with `was_recommended=NULL`.
-- Read-only: `SELECT`/`WITH` only, single statement, row-capped.
-
-### current — Identify this active session
+### current — identify this active session
 
 ```bash
 uv run ~/.pi/agent/skills/session-search/scripts/current.py          # Canonical Session ID
-uv run ~/.pi/agent/skills/session-search/scripts/current.py --path   # cleaned transcript path; warns if missing
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --path   # Clean Transcript path; warns if missing
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --native # provider-native session ID
-uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured IDs, source path, artifact paths, existence flags
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured IDs and artifact paths
 ```
 
 Claude Code path, if needed:
 
 ```bash
-uv run ~/.claude/skills/session-search/scripts/current.py --path
+uv run ~/.claude/skills/session-search/scripts/current.py --json
 ```
 
-Use `current --path` when you need the deterministic cleaned transcript path for the conversation you are currently in. It prints the path on stdout and warns on stderr if the cleaned transcript file has not been written yet; use `current --json` for machine-readable existence flags. It works from exact runtime identity exposed via Session Index env and does not guess from latest sessions, terminals, or the database. If the active runtime does not expose that identity, it exits non-zero instead of returning a potentially wrong session.
+Use `current --path` or `current --json` only for the exact active runtime session. It does not guess from latest sessions or the database.
 
-## Workflow
+### query — read-only SQL over structured fact tables
 
-1. **For this active conversation, use `current --path`.** This gives the exact cleaned transcript path without searching, with a stderr warning if the file does not exist yet.
-2. **For past conversations, search first.** Run `search` to find relevant sessions by topic.
-3. **Extract if needed.** Copy session ID(s) from search results, pass to `excerpt` with keywords.
-4. **Fall back to reading the cleaned transcript directly** if `excerpt` returns off-topic blocks after one query refinement, or when the footer reports more agent-transcript matches you want to see.
-5. **For counting/aggregation questions** (most X tool calls, recommended-answer rate, which sessions used skill/subagent X), use `query` instead of FTS — run `query --schema` first to see the columns.
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/query.py --schema
+uv run ~/.pi/agent/skills/session-search/scripts/query.py "SELECT ..." [--json] [--limit N]
+```
 
-Most questions are answered by summaries alone. Use `excerpt` only when you need the actual conversation content -- specific decisions, code explanations, or implementation details.
+Use `query` for aggregate questions: most tool calls, counts by project/date, recommended-answer rates, exact File Mutation lists, custom joins, and schema discovery. It runs one read-only `SELECT`/`WITH` statement, row-capped (default 50, max 1000). SQL errors print verbatim so you can correct and retry.
+
+Key tables:
+
+- `tool_calls` — one row per tool call: `session_id, source, scope, sequence, timestamp, tool_name, tool, is_error, skill_name`.
+- `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and aggregates; `sessions.files_touched` is broad metadata.
+- `subagent_runs` — one row per Subagent Run: `parent_session_id, requested_agent_type, observed_agent_type, call_sequence, child_index, agent_id, transcript_path, task_preview, match_confidence`, etc.
+- `question_answers` — one row per asked question: `session_id, sequence, question_index, question, selected_label, was_recommended, is_other, option_count, multi_select`.
+
+Run `query --schema` for exact DDL and examples. If you need evidence text after a SQL result, select or construct refs such as `tool/<session_id>/<sequence>` and pass them to `inspect`.
+
+### find — compact Evidence Find candidates
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/find.py [criteria] [filters]
+```
+
+Criteria:
+
+- `--topic TEXT` — session-level topic candidates with `session/<session_id>` refs.
+- `--tool NAME` — Tool Call event candidates with `tool/<session_id>/<sequence>` refs.
+- `--skill NAME` — skill invocation candidates with `tool/<session_id>/<sequence>` refs.
+- `--mutated PATH_FRAGMENT` — File Mutation candidates from `file_mutations` with `tool/<session_id>/<sequence>` refs.
+- `--subagent NAME` — Subagent Run candidates with `subagent/<session_id>/<child_index>` refs and parent-call refs when available.
+- `--tool question --question-recommended true|false` — question-answer candidates with `question/<session_id>/<sequence>/<question_index>` refs.
+
+Filters compose with the criteria:
+
+- `--project NAME` — project prefix filter.
+- `--since YYYY-MM-DD` / `--until YYYY-MM-DD` — date range.
+- `--session ID` — canonical session id.
+- `--limit N` — result cap.
+
+`find` emits JSON only. It includes compact session summaries, match metadata, artifact paths, and `inspect_refs`; it never includes Clean Transcript, Tool Log, or subagent transcript evidence text.
+
+Examples:
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/find.py --topic "session index" --limit 5
+uv run ~/.pi/agent/skills/session-search/scripts/find.py --tool edit --project session-index
+uv run ~/.pi/agent/skills/session-search/scripts/find.py --skill review
+uv run ~/.pi/agent/skills/session-search/scripts/find.py --mutated "etc/prd" --since 2026-05-01
+uv run ~/.pi/agent/skills/session-search/scripts/find.py --subagent scout
+uv run ~/.pi/agent/skills/session-search/scripts/find.py --tool question --question-recommended false
+```
+
+### inspect — scoped Evidence Inspect packets
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref REF [--q TEXT] [--max-snippets N]
+```
+
+Use refs copied unchanged from `find`:
+
+- `session/<session_id>` — requires `--q TEXT`; returns bounded Clean Transcript excerpts.
+- `tool/<session_id>/<sequence>` — returns the matching Tool Log section plus associated File Mutation paths.
+- `question/<session_id>/<sequence>/<question_index>` — returns question-answer metadata plus the Tool Log section.
+- `subagent/<session_id>/<child_index>` — returns task/prompt-area evidence by default; with `--q`, returns query-focused subagent transcript excerpts.
+
+`inspect` emits JSON Evidence Packets with artifact path, locator metadata, and bounded evidence text. Invalid refs, missing sessions, stale refs, and missing artifacts return JSON errors and a non-zero exit status.
+
+Examples:
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref session/pi:abc --q "session index"
+uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref tool/pi:abc/12
+uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref subagent/pi:abc/0 --q "task result"
+```
 
 ## Transcript storage
 
-`excerpt` auto-scans subagent transcripts and reports additional matches in a footer. When you need to read more than the top hit, go to the files directly:
+Generated artifacts are the normal evidence path:
 
-- `~/.session-index/transcripts/<session-id>.md` -- main session transcript (user + assistant turns)
-- `~/.session-index/transcripts/<session-id>.tools.md` -- ordered tool calls, arguments, status, and capped result text; read this when debugging past tool behavior
-- `~/.session-index/transcripts/<session-id>/agent-*.md` -- one file per spawned subagent, when available
+- `~/.session-index/transcripts/<session-id>.md` — Clean Transcript.
+- `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, and capped result text.
+- `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
 
-These are cleaned/generated markdown, much more compact than raw JSONL at `~/.claude/projects/` or `~/.pi/agent/sessions/`. Prefer them as the fallback — do NOT read raw JSONL unless the cleaned transcript and tool log are insufficient.
+These are more compact than raw JSONL at `~/.claude/projects/` or `~/.pi/agent/sessions/`. Prefer them as fallback when `inspect` is insufficient.
 
-## Query Tips
+## When to use this skill
 
-- Use 1-3 specific terms, not full sentences
-- For decisions, use the *topic* not the *action*: `"transcript format"` not `"implemented transcript writer"`
-- Browse with `--project` (no query) to orient, then query to narrow
+Invoke this skill when the user references past work, asks about prior decisions, wants to audit tool/skill/subagent/question/File Mutation behavior, asks for PR summaries/changelogs from recent work, or needs counts/aggregates across sessions.
 
-## When to Use
-
-Invoke this skill when the user:
-- References past work in another project
-- Asks about a prior decision or discussion
-- Wants to find or resume a previous conversation
-- Asks to generate PR summaries or changelogs from recent work
-- Asks to count or aggregate across sessions (tool usage, recommended-answer rate, which sessions used a given skill or subagent) — use `query`
-
-Note: Recent same-project sessions are already injected automatically when the relevant Claude hook or Pi extension is installed. Use this skill for older sessions, other projects, or specific topic lookups.
+Recent same-project sessions may already be injected automatically. Use this skill for older sessions, other projects, specific topic lookups, structured audits, and aggregate questions.

@@ -9,7 +9,7 @@ Automatic indexing, summarization, and search for Claude Code and Pi conversatio
 - **Unified DB** — stores both sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
-- **CLI** — search, backfill, status, and excerpts from the terminal
+- **CLI** — `find`, `inspect`, `query`, backfill, status, and current-session lookup from the terminal
 - **Skill** — `session-search` skill for Claude Code and Pi
 
 ## Prerequisites
@@ -75,31 +75,28 @@ uv run cli.py backfill --source claude
 uv run cli.py backfill --source pi
 ```
 
-Progress is per-session and idempotent — safe to interrupt and resume. Pi rows are stored with `pi:<uuid>` DB IDs; raw Pi UUID prefixes also resolve in `excerpt`.
+Progress is per-session and idempotent — safe to interrupt and resume. Pi rows are stored with `pi:<uuid>` DB IDs.
 
-## Search
+## Evidence retrieval
 
-From Pi, invoke the skill with:
+Use the installed `session-search` skill when asking an agent to look up past work. The deterministic CLI workflow is:
 
-```text
-/skill:session-search token refresh
-```
+1. `query` for counts, rankings, aggregates, and custom SQL.
+2. `find` for compact JSON candidates with Inspection References.
+3. `inspect` for scoped evidence text from selected refs.
 
-From Claude Code, use the installed skill command:
-
-```text
-/session-search token refresh
-/session-search --project synapto --since 2026-03-01
-```
-
-Or from the terminal:
+From the terminal:
 
 ```bash
-uv run cli.py search "token refresh"
-uv run cli.py search --project session-index --since 2026-03-01
-uv run cli.py excerpt 019dde8f -q "pi transcript parser"
+uv run cli.py find --topic "token refresh" --limit 5
+uv run cli.py find --mutated "etc/prd" --project session-index
+uv run cli.py inspect --ref session/pi:abc --q "token refresh"
+uv run cli.py inspect --ref tool/pi:abc/12
+uv run cli.py query --schema
 uv run cli.py status
 ```
+
+`find` returns compact JSON and does not include Clean Transcript, Tool Log, or subagent transcript evidence text. Copy a `ref` or `inspect_refs.primary` value unchanged into `inspect` to retrieve bounded Evidence Packets with artifact paths, locators, and text.
 
 ## Current session lookup
 
@@ -165,13 +162,13 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | Command | Description |
 |---------|-------------|
 | `current [--path\|--native\|--json]` | Show the exact active runtime session from Session Index env |
-| `search [query] [--project NAME] [--since DATE] [--until DATE]` | Full-text search with optional project prefix and date range |
-| `excerpt <session>... -q QUERY` | Extract focused transcript passages |
-| `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL over the structured fact tables (`tool_calls`, `file_mutations`, `subagent_runs`, `question_answers`); `--schema` prints the columns + examples |
+| `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping over `tool_calls`, `file_mutations`, `subagent_runs`, and `question_answers`; `--schema` prints columns + examples |
+| `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References and no evidence text |
+| `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with scoped Clean Transcript, Tool Log, or Subagent Run transcript evidence text |
 | `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--no-summary]` | Process JSONL files; `--no-summary` skips the LLM summary (regenerates transcripts, tool logs, and fact tables only) |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
-`files_touched` remains broad search metadata and may include reads/searches. For the precise files successfully written or edited by a session, query `file_mutations`, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`.
+`find --mutated` uses `file_mutations` for evidence candidates. Raw SQL over `file_mutations` remains the path for exact lists and aggregates, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.
 
 ## Data locations
 
