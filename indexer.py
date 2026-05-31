@@ -26,16 +26,10 @@ class IndexOptions:
 
 FAST_INDEX_OPTIONS = IndexOptions(frozenset({IndexStage.SESSION_METADATA}))
 FULL_INDEX_OPTIONS = IndexOptions(frozenset(IndexStage))
-TRANSCRIPTS_ONLY_OPTIONS = IndexOptions(frozenset({
-    IndexStage.SESSION_METADATA,
-    IndexStage.CLEAN_TRANSCRIPT,
-    IndexStage.TOOL_LOG,
-}))
-SUBAGENTS_ONLY_OPTIONS = IndexOptions(frozenset({
-    IndexStage.SESSION_METADATA,
-    IndexStage.SUBAGENT_TRANSCRIPTS,
-    IndexStage.TOOL_LOG,
-}))
+# Everything except the expensive, non-deterministic LLM summary: the complete
+# deterministic pass (metadata, clean transcript, subagent transcripts, tool log,
+# and the structured fact tables that ride along with the tool-log stage).
+NO_SUMMARY_INDEX_OPTIONS = IndexOptions(frozenset(IndexStage) - {IndexStage.SUMMARY})
 
 
 @dataclass
@@ -361,8 +355,32 @@ def index_source_transcript(
         subagent_transcripts=subagent_paths,
         stage_overwrite_fields=stage_overwrite_fields,
     )
+    _persist_facts(conn, session, source, stages, subagent_runs, parsed_subagents)
     conn.close()
     return result
+
+
+def _persist_facts(
+    conn,
+    session: ParsedSession,
+    source: str,
+    stages: frozenset[IndexStage],
+    subagent_runs: list[ParsedSubagentRun],
+    parsed_subagents: list[ParsedSubagent],
+) -> None:
+    """Persist the structured fact tables. Coverage tracks the tool-log stage;
+    idempotent via delete-then-insert. No FTS interaction."""
+    from db import replace_question_answers, replace_subagent_runs, replace_tool_calls
+    from tool_facts import build_question_rows, build_subagent_run_rows, build_tool_call_rows
+    from tool_log import combine_tool_calls
+
+    if IndexStage.TOOL_LOG in stages:
+        combined = combine_tool_calls(session.tool_calls, parsed_subagents)
+        replace_tool_calls(conn, session.session_id, build_tool_call_rows(session.session_id, source, combined))
+        replace_question_answers(conn, session.session_id, build_question_rows(session.session_id, source, combined))
+
+    if stages & {IndexStage.TOOL_LOG, IndexStage.SUBAGENT_TRANSCRIPTS}:
+        replace_subagent_runs(conn, session.session_id, build_subagent_run_rows(subagent_runs))
 
 
 def index_fast(source: str, path: str) -> IndexResult:

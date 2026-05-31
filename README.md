@@ -167,7 +167,8 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `current [--path\|--native\|--json]` | Show the exact active runtime session from Session Index env |
 | `search [query] [--project NAME] [--since DATE] [--until DATE]` | Full-text search with optional project prefix and date range |
 | `excerpt <session>... -q QUERY` | Extract focused transcript passages |
-| `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--transcripts-only]` | Process JSONL files; `--transcripts-only` skips LLM summaries |
+| `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL over the structured fact tables (`tool_calls`, `subagent_runs`, `question_answers`); `--schema` prints the columns + examples |
+| `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--no-summary]` | Process JSONL files; `--no-summary` skips the LLM summary (regenerates transcripts, tool logs, and fact tables only) |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
 ## Data locations

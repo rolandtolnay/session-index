@@ -64,7 +64,73 @@ CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
     INSERT INTO sessions_fts(rowid, user_messages, summary, files_touched, project)
     VALUES (new.rowid, new.user_messages, new.summary, new.files_touched, new.project);
 END;
+
+-- ── Structured fact tables ────────────────────────────────────────────────
+-- All keyed by session id and rebuilt with delete-then-insert (idempotent).
+-- Coverage tracks the tool-log indexing stage; older rows are populated by
+-- `cli.py backfill --no-summary --force`.
+
+-- One row per tool call (main + subagent scope). `tool` is provider-normalized
+-- (namespace-stripped, lowercased) so Claude PascalCase and Pi lowercase unify.
+CREATE TABLE IF NOT EXISTS tool_calls (
+    session_id TEXT NOT NULL,
+    source TEXT,
+    scope TEXT,
+    sequence INTEGER,
+    timestamp TEXT,
+    tool_name TEXT,
+    tool TEXT,
+    is_error INTEGER,
+    skill_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_skill ON tool_calls(skill_name);
+
+-- One row per normalized subagent run (persisted ParsedSubagentRun facts).
+CREATE TABLE IF NOT EXISTS subagent_runs (
+    parent_session_id TEXT NOT NULL,
+    source TEXT,
+    requested_agent_type TEXT,
+    observed_agent_type TEXT,
+    call_tool TEXT,
+    call_sequence INTEGER,
+    call_tool_id TEXT,
+    child_index INTEGER,
+    agent_id TEXT,
+    status TEXT,
+    started_at TEXT,
+    ended_at TEXT,
+    duration_seconds INTEGER,
+    tool_call_count INTEGER,
+    transcript_path TEXT,
+    task_preview TEXT,
+    match_confidence TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_subagent_runs_type ON subagent_runs(requested_agent_type);
+
+-- One row per asked question. selected_label/was_recommended are NULL when the
+-- question was not answered (cancelled). multi_select=1 rows store joined labels
+-- with was_recommended=NULL (ambiguous by design).
+CREATE TABLE IF NOT EXISTS question_answers (
+    session_id TEXT NOT NULL,
+    source TEXT,
+    sequence INTEGER,
+    question_index INTEGER,
+    header TEXT,
+    question TEXT,
+    selected_label TEXT,
+    was_recommended INTEGER,
+    is_other INTEGER,
+    option_count INTEGER,
+    multi_select INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_question_answers_session ON question_answers(session_id);
+CREATE INDEX IF NOT EXISTS idx_question_answers_recommended ON question_answers(was_recommended);
 """
+
+_FACT_TABLES = ("tool_calls", "subagent_runs", "question_answers")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -408,3 +474,83 @@ def rebuild_fts(conn: sqlite3.Connection) -> None:
     """Rebuild the FTS index from scratch."""
     conn.execute("INSERT INTO sessions_fts(sessions_fts) VALUES('rebuild')")
     conn.commit()
+
+
+# ── Structured fact persistence ────────────────────────────────────────────
+
+def _replace_rows(conn: sqlite3.Connection, table: str, key_column: str, session_id: str, rows: list[dict[str, Any]]) -> None:
+    """Delete-then-insert all rows for one session. Idempotent re-index."""
+    conn.execute(f"DELETE FROM {table} WHERE {key_column} = ?", (session_id,))
+    if rows:
+        columns = list(rows[0].keys())
+        placeholders = ", ".join(f":{c}" for c in columns)
+        conn.executemany(
+            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+            rows,
+        )
+    conn.commit()
+
+
+def replace_tool_calls(conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]]) -> None:
+    _replace_rows(conn, "tool_calls", "session_id", session_id, rows)
+
+
+def replace_subagent_runs(conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]]) -> None:
+    _replace_rows(conn, "subagent_runs", "parent_session_id", session_id, rows)
+
+
+def replace_question_answers(conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]]) -> None:
+    _replace_rows(conn, "question_answers", "session_id", session_id, rows)
+
+
+# ── Read-only SQL escape hatch ─────────────────────────────────────────────
+
+def get_readonly_connection() -> sqlite3.Connection:
+    """A query_only connection for the guarded SQL escape hatch.
+
+    Uses PRAGMA query_only=ON (defense in depth alongside run_select's
+    statement validation). WAL-compatible: hooks can still write concurrently.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA query_only=ON")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def run_select(
+    conn: sqlite3.Connection, sql: str, max_rows: int = 50,
+) -> tuple[list[str], list[list[Any]], bool]:
+    """Validate and execute a single read-only statement.
+
+    Accepts one statement starting with SELECT or WITH, with no embedded ';'.
+    Fetches max_rows+1 to flag truncation. Returns (columns, rows, truncated).
+    Raises ValueError for disallowed input; sqlite3 errors propagate verbatim.
+    """
+    stripped = (sql or "").strip()
+    while stripped.endswith(";"):
+        stripped = stripped[:-1].strip()
+    if not stripped:
+        raise ValueError("Empty query")
+    if ";" in stripped:
+        raise ValueError("Only a single statement is allowed (no ';')")
+    lowered = stripped.lstrip("( \t\r\n").lower()
+    if not (lowered.startswith("select") or lowered.startswith("with")):
+        raise ValueError("Only SELECT / WITH queries are allowed")
+
+    cursor = conn.execute(stripped)
+    columns = [d[0] for d in cursor.description] if cursor.description else []
+    fetched = cursor.fetchmany(max_rows + 1)
+    truncated = len(fetched) > max_rows
+    rows = [list(r) for r in fetched[:max_rows]]
+    return columns, rows, truncated
+
+
+def fact_table_schemas(conn: sqlite3.Connection) -> str:
+    """Return the CREATE DDL for the structured fact tables (for `query --schema`)."""
+    placeholders = ", ".join("?" for _ in _FACT_TABLES)
+    rows = conn.execute(
+        f"SELECT sql FROM sqlite_master WHERE type = 'table' AND name IN ({placeholders}) ORDER BY name",
+        _FACT_TABLES,
+    ).fetchall()
+    return "\n\n".join(row[0] for row in rows if row and row[0])

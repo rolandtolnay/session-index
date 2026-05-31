@@ -54,6 +54,77 @@ Returns focused transcript blocks from specific sessions (max 3 per call). When 
 - Example: `excerpt.py 07983a7f -q "auth token refresh"`
 - Example: `excerpt.py 019dde8f -q "pi transcript parser"`
 
+### query — Read-only SQL over structured fact tables
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/query.py "SELECT ..." [--json] [--limit N]
+uv run ~/.pi/agent/skills/session-search/scripts/query.py --schema
+```
+
+Claude Code path, if needed:
+
+```bash
+uv run ~/.claude/skills/session-search/scripts/query.py "SELECT ..."
+```
+
+The escape hatch for "find/aggregate X" questions that FTS can't answer: *most X tool
+calls*, *how often I picked the recommended answer*, *sessions that used skill/subagent X*.
+Runs a single read-only `SELECT`/`WITH` statement (no writes, no multi-statement) against
+the structured fact tables, row-capped (default 50, max 1000). SQL errors print verbatim so
+you can correct and retry. **Run `--schema` first** to see exact columns + example queries.
+
+- **sql** — one `SELECT` or `WITH` statement (omit when using `--schema`)
+- **--schema** — print fact-table DDL, `sessions` columns, and the example queries; exit
+- **--json** — rows as a JSON array (default is an aligned text table)
+- **--limit** — max rows (default 50, cap 1000)
+
+**Tables** (all keyed by session id):
+
+- `tool_calls` — one row per tool call. Columns: `session_id, source, scope`
+  (`main` or `agent-<id>`), `sequence, timestamp, tool_name` (raw), `tool`
+  (provider-normalized: namespace-stripped + lowercased — `Agent`/`agent`, `AskUserQuestion`/`question`),
+  `is_error, skill_name` (set only for `skill`/`Skill` calls).
+- `subagent_runs` — one row per subagent run. Columns: `parent_session_id, source,
+  requested_agent_type` (the canonical query label), `observed_agent_type, call_tool,
+  call_sequence, call_tool_id, child_index, agent_id, status, started_at, ended_at,
+  duration_seconds, tool_call_count, transcript_path, task_preview, match_confidence`.
+- `question_answers` — one row per asked question. Columns: `session_id, source, sequence,
+  question_index, header, question, selected_label, was_recommended` (1/0/NULL),
+  `is_other, option_count, multi_select`.
+
+Join to `sessions` on `tool_calls.session_id = sessions.session_id` (or
+`subagent_runs.parent_session_id`) for project/date/summary context.
+
+```sql
+-- 1. Sessions with the most subagent (Agent) calls
+SELECT session_id, COUNT(*) n FROM tool_calls
+WHERE tool='agent' AND scope='main' GROUP BY session_id ORDER BY n DESC LIMIT 10;
+
+-- 2. How often I picked the recommended answer (Claude + recovered Pi)
+SELECT was_recommended, COUNT(*) FROM question_answers
+WHERE was_recommended IS NOT NULL AND multi_select=0 GROUP BY was_recommended;
+
+-- 3. Sessions that used a given skill
+SELECT DISTINCT t.session_id, s.project, s.started_at
+FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id
+WHERE t.skill_name='update-config' ORDER BY s.started_at DESC;
+
+-- 4. Sessions that used a given subagent type
+SELECT parent_session_id, COUNT(*) runs FROM subagent_runs
+WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;
+```
+
+**Limitations:**
+
+- Fact tables cover sessions indexed with the tool-log stage; older rows are populated by a
+  one-time `uv run cli.py backfill --no-summary --force` (in the repo). If a query returns
+  surprisingly few rows, the corpus may not be fully backfilled yet.
+- `was_recommended` is NULL when the question had no `(Recommended)` option, was unanswered
+  (cancelled), or is multi-select. Filter `WHERE was_recommended IS NOT NULL AND multi_select=0`
+  for "picked the recommended" aggregations.
+- Multi-select answers store joined labels in `selected_label` with `was_recommended=NULL`.
+- Read-only: `SELECT`/`WITH` only, single statement, row-capped.
+
 ### current — Identify this active session
 
 ```bash
@@ -77,6 +148,7 @@ Use `current --path` when you need the deterministic cleaned transcript path for
 2. **For past conversations, search first.** Run `search` to find relevant sessions by topic.
 3. **Extract if needed.** Copy session ID(s) from search results, pass to `excerpt` with keywords.
 4. **Fall back to reading the cleaned transcript directly** if `excerpt` returns off-topic blocks after one query refinement, or when the footer reports more agent-transcript matches you want to see.
+5. **For counting/aggregation questions** (most X tool calls, recommended-answer rate, which sessions used skill/subagent X), use `query` instead of FTS — run `query --schema` first to see the columns.
 
 Most questions are answered by summaries alone. Use `excerpt` only when you need the actual conversation content -- specific decisions, code explanations, or implementation details.
 
@@ -103,5 +175,6 @@ Invoke this skill when the user:
 - Asks about a prior decision or discussion
 - Wants to find or resume a previous conversation
 - Asks to generate PR summaries or changelogs from recent work
+- Asks to count or aggregate across sessions (tool usage, recommended-answer rate, which sessions used a given skill or subagent) — use `query`
 
 Note: Recent same-project sessions are already injected automatically when the relevant Claude hook or Pi extension is installed. Use this skill for older sessions, other projects, or specific topic lookups.

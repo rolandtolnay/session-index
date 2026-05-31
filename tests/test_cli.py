@@ -5,9 +5,13 @@ import os
 import sqlite3
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cli import _check_integrity, _print_agent_excerpts, cmd_excerpt, cmd_search
+import cli
+import db
+from cli import _check_integrity, _print_agent_excerpts, cmd_excerpt, cmd_query, cmd_search
 from db import init_db, upsert_session
 
 
@@ -150,3 +154,52 @@ def test_cmd_excerpt_prints_tool_log_path(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
 
     assert "Tool log available: /tmp/s1.tools.md" in out
+
+
+# ── query (read-only escape hatch) ─────────────────────────────────────────
+
+
+def _isolate_db(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "sessions.db")
+    monkeypatch.setattr(db, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    monkeypatch.setattr(cli, "DB_PATH", db_path)
+    monkeypatch.setattr(cli, "_log_query", lambda *a, **k: None)
+    return db_path
+
+
+def test_cmd_query_schema_prints_tables_and_examples(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    cmd_query(argparse.Namespace(sql=None, json=False, limit=50, schema=True))
+    out = capsys.readouterr().out
+    assert "CREATE TABLE tool_calls" in out
+    assert "example queries" in out
+
+
+def test_cmd_query_runs_select(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    conn = db.get_connection()
+    init_db(conn)
+    upsert_session(conn, session_id="s1", project="proj")
+    db.replace_tool_calls(conn, "s1", [{
+        "session_id": "s1", "source": "claude", "scope": "main", "sequence": 1,
+        "timestamp": None, "tool_name": "Bash", "tool": "bash", "is_error": 0, "skill_name": None,
+    }])
+    conn.close()
+
+    cmd_query(argparse.Namespace(
+        sql="SELECT tool, COUNT(*) n FROM tool_calls GROUP BY tool", json=False, limit=50, schema=False,
+    ))
+    out = capsys.readouterr().out
+    assert "bash" in out
+
+
+def test_cmd_query_rejects_write(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    conn = db.get_connection()
+    init_db(conn)
+    conn.close()
+
+    with pytest.raises(SystemExit):
+        cmd_query(argparse.Namespace(sql="DELETE FROM sessions", json=False, limit=50, schema=False))
+    assert "Only SELECT" in capsys.readouterr().err

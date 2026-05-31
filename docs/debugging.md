@@ -233,7 +233,7 @@ Each search call exists in up to three places with different detail levels:
 
 ### Known audit limitations
 
-- **Log ↔ transcript reconciliation**: Both the log and the cleaned transcript include timestamps (`HH:MM:SS` format). Match a search log entry's timestamp to the nearest `[user]` or `[assistant]` timestamp in the transcript to locate the surrounding conversation context. Transcripts generated before per-message timestamps were added (pre-2026-04) lack these markers — re-run `backfill --transcripts-only --force` to regenerate them.
+- **Log ↔ transcript reconciliation**: Both the log and the cleaned transcript include timestamps (`HH:MM:SS` format). Match a search log entry's timestamp to the nearest `[user]` or `[assistant]` timestamp in the transcript to locate the surrounding conversation context. Transcripts generated before per-message timestamps were added (pre-2026-04) lack these markers — re-run `backfill --no-summary --force` to regenerate them.
 - **Tool-log truncation**: Tool result text is capped at 20,000 characters per call, preserving the beginning and end with a truncation marker.
 - **JSONL expiry**: Provider-native raw logs can still disappear, but indexed sessions keep DB rows, cleaned transcripts, and generated tool logs.
 - **Cross-session queries**: The `[sid]` in the log is the session that *ran* the search, not the sessions that were *found*. To audit result quality, inspect the found sessions' transcripts/tool logs.

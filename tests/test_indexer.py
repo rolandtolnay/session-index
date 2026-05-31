@@ -80,22 +80,84 @@ def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_pa
     assert row["subagent_transcripts"] and "agent-a5f64306c4e829331.md" in row["subagent_transcripts"]
 
 
-def test_cli_backfill_presets_map_to_expected_stages():
+def test_full_index_populates_fact_tables_idempotently(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "summary text")
+    parent = _copy_parent(tmp_path)
+    _add_subagent(parent)
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS)
+    sid = result.session_id
+
+    conn = db.get_connection()
+    tool_calls = conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (sid,)).fetchone()[0]
+    scopes = {r[0] for r in conn.execute("SELECT DISTINCT scope FROM tool_calls WHERE session_id=?", (sid,))}
+    runs = conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id=?", (sid,)).fetchone()[0]
+    conn.close()
+
+    # 4 parent (Bash, Edit, Edit, Read) + 3 subagent (Bash, Grep, Read)
+    assert tool_calls == 7
+    assert "main" in scopes
+    assert any(s.startswith("agent-") for s in scopes)
+    assert runs == 1  # one discovered subagent artifact (no Agent request in parent)
+
+    # Re-index must not duplicate (delete-then-insert).
+    indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS)
+    conn = db.get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (sid,)).fetchone()[0] == 7
+    assert conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id=?", (sid,)).fetchone()[0] == 1
+    conn.close()
+
+
+def test_metadata_only_index_does_not_write_fact_tables(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path)
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.FAST_INDEX_OPTIONS)
+
+    conn = db.get_connection()
+    n = conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (result.session_id,)).fetchone()[0]
+    conn.close()
+    assert n == 0  # fact tables track the tool-log stage, absent here
+
+
+def test_pi_question_answer_recovered_into_fact_table(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr("pi_parser._git_branch", lambda cwd: "main")
+    fixture = os.path.join(FIXTURES, "pi_question.jsonl")
+
+    result = indexer.index_source_transcript("pi", fixture, indexer.NO_SUMMARY_INDEX_OPTIONS)
+
+    conn = db.get_connection()
+    row = conn.execute(
+        "SELECT selected_label, was_recommended, is_other, multi_select, option_count "
+        "FROM question_answers WHERE session_id=?",
+        (result.session_id,),
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row["selected_label"] == "Future + existing"
+    assert row["was_recommended"] == 0  # recommended option was "Future only (Recommended)"
+    assert row["is_other"] == 0
+    assert row["multi_select"] == 0
+    assert row["option_count"] == 2
+
+
+def test_cli_backfill_options_select_pass():
     from cli import _backfill_options
 
-    transcripts = _backfill_options(argparse.Namespace(subagents=False, transcripts_only=True))
-    assert transcripts.stages == indexer.TRANSCRIPTS_ONLY_OPTIONS.stages
+    full = _backfill_options(argparse.Namespace(no_summary=False))
+    assert full.stages == indexer.FULL_INDEX_OPTIONS.stages
+    assert indexer.IndexStage.SUMMARY in full.stages
 
-    subagents = _backfill_options(argparse.Namespace(subagents=True, transcripts_only=False))
-    assert subagents.stages == indexer.SUBAGENTS_ONLY_OPTIONS.stages
-
-    combined = _backfill_options(argparse.Namespace(subagents=True, transcripts_only=True))
-    assert combined.stages == frozenset({
-        indexer.IndexStage.SESSION_METADATA,
-        indexer.IndexStage.CLEAN_TRANSCRIPT,
-        indexer.IndexStage.SUBAGENT_TRANSCRIPTS,
-        indexer.IndexStage.TOOL_LOG,
-    })
+    no_summary = _backfill_options(argparse.Namespace(no_summary=True))
+    assert no_summary.stages == indexer.NO_SUMMARY_INDEX_OPTIONS.stages
+    # Drops only the LLM summary; deterministic artifacts + fact tables remain.
+    assert indexer.IndexStage.SUMMARY not in no_summary.stages
+    assert indexer.IndexStage.CLEAN_TRANSCRIPT in no_summary.stages
+    assert indexer.IndexStage.SUBAGENT_TRANSCRIPTS in no_summary.stages
+    assert indexer.IndexStage.TOOL_LOG in no_summary.stages
 
 
 def test_summary_stage_preserves_old_summary_when_generation_fails(tmp_path, monkeypatch):
@@ -133,7 +195,7 @@ def test_requested_artifact_stage_can_clear_old_owned_field(tmp_path, monkeypatc
     )
     conn.close()
 
-    result = indexer.index_source_transcript("claude", str(parent), indexer.SUBAGENTS_ONLY_OPTIONS)
+    result = indexer.index_source_transcript("claude", str(parent), indexer.NO_SUMMARY_INDEX_OPTIONS)
 
     assert result.subagents == 0
     conn = db.get_connection()

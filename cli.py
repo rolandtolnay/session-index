@@ -16,7 +16,18 @@ import sys
 import time
 
 from current_session import CurrentSessionError, resolve_current_session
-from db import get_connection, init_db, search_flexible, get_session, get_stats, rebuild_fts, DB_PATH
+from db import (
+    get_connection,
+    get_readonly_connection,
+    init_db,
+    search_flexible,
+    get_session,
+    get_stats,
+    rebuild_fts,
+    run_select,
+    fact_table_schemas,
+    DB_PATH,
+)
 from logger import log
 from transcript import extract_excerpts, TRANSCRIPT_DIR
 
@@ -249,27 +260,10 @@ def cmd_excerpt(args: argparse.Namespace) -> None:
 
 
 def _backfill_options(args: argparse.Namespace):
-    """Map CLI mode flags to staged indexing options."""
-    from indexer import (
-        FULL_INDEX_OPTIONS,
-        TRANSCRIPTS_ONLY_OPTIONS,
-        SUBAGENTS_ONLY_OPTIONS,
-        IndexOptions,
-        IndexStage,
-    )
+    """Pick the indexing pass: deterministic-only (--no-summary) or full (+ LLM summary)."""
+    from indexer import FULL_INDEX_OPTIONS, NO_SUMMARY_INDEX_OPTIONS
 
-    if args.subagents and args.transcripts_only:
-        return IndexOptions(frozenset({
-            IndexStage.SESSION_METADATA,
-            IndexStage.CLEAN_TRANSCRIPT,
-            IndexStage.SUBAGENT_TRANSCRIPTS,
-            IndexStage.TOOL_LOG,
-        }))
-    if args.subagents:
-        return SUBAGENTS_ONLY_OPTIONS
-    if args.transcripts_only:
-        return TRANSCRIPTS_ONLY_OPTIONS
-    return FULL_INDEX_OPTIONS
+    return NO_SUMMARY_INDEX_OPTIONS if args.no_summary else FULL_INDEX_OPTIONS
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
@@ -317,21 +311,17 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 
     options = _backfill_options(args)
 
+    # Skip sessions already complete for the requested pass (--force re-does all).
+    # The tool-log clause keeps re-indexing sessions that still lack tool logs /
+    # fact tables (no tools at all, or never got a tool log) so they get caught up.
     existing = set()
-    if not args.force and not args.transcripts_only and not args.subagents:
+    if not args.force:
+        done_column = "transcript_path" if args.no_summary else "summary"
         cursor = conn.execute(
-            "SELECT session_id FROM sessions WHERE summary IS NOT NULL "
+            f"SELECT session_id FROM sessions WHERE {done_column} IS NOT NULL "
             "AND (tools_used IS NULL OR tools_used = '' OR tool_log_path IS NOT NULL)"
         )
         existing = {row[0] for row in cursor.fetchall()}
-
-    existing_subagents = set()
-    if args.subagents and not args.force:
-        cursor = conn.execute(
-            "SELECT session_id FROM sessions WHERE subagent_transcripts IS NOT NULL "
-            "AND tool_log_path IS NOT NULL"
-        )
-        existing_subagents = {row[0] for row in cursor.fetchall()}
 
     total = len(source_files)
     processed = 0
@@ -352,11 +342,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 skipped += 1
                 continue
 
-            if not args.subagents and session.session_id in existing:
-                skipped += 1
-                continue
-
-            if args.subagents and not args.transcripts_only and session.session_id in existing_subagents:
+            if session.session_id in existing:
                 skipped += 1
                 continue
 
@@ -390,6 +376,113 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 
     conn.close()
     print(f"\nDone: {processed} processed, {skipped} skipped, {errors} errors (of {total} total)")
+
+
+# ── Query (read-only SQL escape hatch) ─────────────────────────────────────────
+
+_QUERY_LIMIT_CAP = 1000
+
+EXAMPLE_QUERIES = """\
+-- 1. Sessions with the most subagent (Agent) calls
+SELECT session_id, COUNT(*) n FROM tool_calls
+WHERE tool='agent' AND scope='main' GROUP BY session_id ORDER BY n DESC LIMIT 10;
+
+-- 2. How often I picked the recommended answer (Claude + recovered Pi)
+SELECT was_recommended, COUNT(*) FROM question_answers
+WHERE was_recommended IS NOT NULL AND multi_select=0 GROUP BY was_recommended;
+
+-- 3. Sessions that used a given skill
+SELECT DISTINCT t.session_id, s.project, s.started_at
+FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id
+WHERE t.skill_name='update-config' ORDER BY s.started_at DESC;
+
+-- 4. Sessions that used a given subagent type
+SELECT parent_session_id, COUNT(*) runs FROM subagent_runs
+WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;"""
+
+
+def _log_query(sql: str, count: int, truncated: bool, elapsed_ms: int, error: str | None = None) -> None:
+    """Log query call for auditing (mirrors _log_search)."""
+    session_id = os.environ.get("SESSION_INDEX_CALLER_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID", "")
+    one_line = " ".join((sql or "").split())[:200]
+    if error:
+        log(session_id, "query", f'sql="{one_line}" -> ERROR: {error} ({elapsed_ms}ms)')
+    else:
+        suffix = "+truncated" if truncated else ""
+        log(session_id, "query", f'sql="{one_line}" -> {count} rows{suffix} ({elapsed_ms}ms)')
+
+
+def _print_query_table(columns: list[str], rows: list[list]) -> None:
+    """Print an aligned text table (columns capped at 60 chars)."""
+    if not columns:
+        print("(query returned no columns)")
+        return
+
+    str_rows = [["" if v is None else str(v) for v in row] for row in rows]
+    widths = [min(60, len(c)) for c in columns]
+    for row in str_rows:
+        for i, cell in enumerate(row):
+            widths[i] = min(60, max(widths[i], len(cell)))
+
+    def fmt(cells: list[str]) -> str:
+        return "  ".join(cell[:widths[i]].ljust(widths[i]) for i, cell in enumerate(cells))
+
+    print(fmt(columns))
+    print("  ".join("-" * w for w in widths))
+    for row in str_rows:
+        print(fmt(row))
+    print(f"\n{len(rows)} row(s)")
+
+
+def cmd_query(args: argparse.Namespace) -> None:
+    """Run a guarded read-only SELECT against the session index."""
+    if args.schema:
+        conn = get_connection()
+        init_db(conn)
+        schemas = fact_table_schemas(conn)
+        session_columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)")]
+        conn.close()
+        print(schemas)
+        print("\n-- sessions columns --")
+        print(", ".join(session_columns))
+        print("\n-- example queries --")
+        print(EXAMPLE_QUERIES)
+        return
+
+    if not args.sql:
+        print("Provide a SQL query, or use --schema to see the tables and examples.", file=sys.stderr)
+        raise SystemExit(2)
+
+    if not os.path.exists(DB_PATH):
+        print("No database found. Run `backfill` to create one.", file=sys.stderr)
+        raise SystemExit(1)
+
+    limit = max(1, min(args.limit, _QUERY_LIMIT_CAP))
+    start = time.monotonic()
+    conn = get_readonly_connection()
+    try:
+        columns, rows, truncated = run_select(conn, args.sql, limit)
+    except Exception as e:
+        conn.close()
+        _log_query(args.sql, 0, False, int((time.monotonic() - start) * 1000), error=str(e))
+        # Print verbatim so the caller can self-correct.
+        print(f"Query error: {e}", file=sys.stderr)
+        raise SystemExit(1)
+    conn.close()
+
+    _log_query(args.sql, len(rows), truncated, int((time.monotonic() - start) * 1000))
+
+    if args.json:
+        print(json.dumps([dict(zip(columns, row)) for row in rows], default=str))
+    else:
+        _print_query_table(columns, rows)
+
+    if truncated:
+        print(
+            f"\n[truncated at {limit} rows — raise --limit (max {_QUERY_LIMIT_CAP}) "
+            f"or add LIMIT / aggregation to the query]",
+            file=sys.stderr,
+        )
 
 
 # ── Status / Doctor ──────────────────────────────────────────────────────────
@@ -549,7 +642,7 @@ def cmd_status(args: argparse.Namespace) -> None:
             unrecoverable = len(issues["missing_transcript"]) - recoverable
             parts = []
             if recoverable:
-                parts.append(f"{recoverable} recoverable via `backfill --transcripts-only --force`")
+                parts.append(f"{recoverable} recoverable via `backfill --no-summary --force`")
             if unrecoverable:
                 parts.append(f"{unrecoverable} unrecoverable (JSONL deleted)")
             print(f"  Missing transcript: {len(issues['missing_transcript'])} ({', '.join(parts)})")
@@ -654,17 +747,24 @@ def main() -> None:
 
     # backfill
     sp_backfill = subparsers.add_parser("backfill", help="Process all JSONL files")
-    sp_backfill.add_argument("--force", action="store_true", help="Re-process sessions with existing summaries")
+    sp_backfill.add_argument("--force", action="store_true", help="Re-process sessions already indexed (skip the skip-if-done check)")
     sp_backfill.add_argument("--prune", action="store_true", help="Delete noise sessions before processing")
     sp_backfill.add_argument("--source", choices=("claude", "pi", "all"), default="all", help="Conversation source to process (default: all)")
     sp_backfill.add_argument("--pi-session-dir", help="Override Pi session directory")
     sp_backfill.add_argument("--project", help="Only process sessions for this project name")
     sp_backfill.add_argument("--session", help="Only process this specific session ID")
-    sp_backfill.add_argument("--transcripts-only", action="store_true",
-                             help="Only regenerate transcripts (skip summary generation)")
-    sp_backfill.add_argument("--subagents", action="store_true",
-                             help="Process subagent transcripts for sessions")
+    sp_backfill.add_argument("--no-summary", action="store_true",
+                             help="Skip the LLM summary; regenerate transcripts, tool logs, "
+                                  "subagent transcripts, and fact tables only (fast, no network)")
     sp_backfill.set_defaults(func=cmd_backfill)
+
+    # query
+    sp_query = subparsers.add_parser("query", help="Run a read-only SELECT against the fact tables")
+    sp_query.add_argument("sql", nargs="?", default=None, help="A single SELECT / WITH statement")
+    sp_query.add_argument("--json", action="store_true", help="Output rows as JSON")
+    sp_query.add_argument("--limit", type=int, default=50, help=f"Max rows (default 50, cap {_QUERY_LIMIT_CAP})")
+    sp_query.add_argument("--schema", action="store_true", help="Print fact-table schema + examples and exit")
+    sp_query.set_defaults(func=cmd_query)
 
     # status
     sp_status = subparsers.add_parser("status", help="Index statistics and integrity check")
