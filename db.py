@@ -367,6 +367,7 @@ def search_flexible(
     until: str | None = None,
     limit: int = 20,
     use_or: bool = False,
+    session: str | None = None,
 ) -> list[dict[str, Any]]:
     """Flexible search: FTS5 text + optional project prefix, date range filters.
 
@@ -390,6 +391,9 @@ def search_flexible(
             until = f"{until}T23:59:59.999999"
         clauses.append("s.started_at <= :until")
         params["until"] = until
+    if session:
+        clauses.append("s.session_id = :session")
+        params["session"] = session
 
     if query and query.strip():
         params["query"] = _build_fts_query(query, use_or=use_or)

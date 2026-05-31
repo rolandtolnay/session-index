@@ -119,3 +119,49 @@ def test_find_filters_compose(tmp_path):
 
     assert find_candidates(conn, tool="edit", project="session", since="2026-05-01", until="2026-05-31", session="pi:abc")["results"]
     assert find_candidates(conn, tool="edit", project="other")["results"] == []
+
+
+def test_find_session_filters_are_not_topic_matches(tmp_path):
+    conn = _conn(tmp_path)
+    _seed(conn, tmp_path)
+
+    result = find_candidates(conn, project="session", since="2026-05-01", until="2026-05-31", session="pi:abc")["results"][0]
+
+    assert result["ref"] == "session/pi:abc"
+    assert result["match"] == {
+        "kind": "session_filter",
+        "project": "session",
+        "since": "2026-05-01",
+        "until": "2026-05-31",
+        "session": "pi:abc",
+    }
+
+
+def test_find_topic_session_scope_applies_before_limit(tmp_path):
+    conn = _conn(tmp_path)
+    db.upsert_session(
+        conn,
+        session_id="pi:distractor",
+        source="pi",
+        project="session-index",
+        started_at="2026-05-31T11:00:00Z",
+        summary="Common evidence workflow distractor.",
+        user_messages="common evidence workflow",
+        transcript_path=str(tmp_path / "distractor.md"),
+        tool_log_path=str(tmp_path / "distractor.tools.md"),
+    )
+    db.upsert_session(
+        conn,
+        session_id="pi:target",
+        source="pi",
+        project="session-index",
+        started_at="2026-05-31T10:00:00Z",
+        summary="Common evidence workflow target.",
+        user_messages="common evidence workflow",
+        transcript_path=str(tmp_path / "target.md"),
+        tool_log_path=str(tmp_path / "target.tools.md"),
+    )
+
+    data = find_candidates(conn, topic="common evidence", session="pi:target", limit=1)
+
+    assert [result["ref"] for result in data["results"]] == ["session/pi:target"]

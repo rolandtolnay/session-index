@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from dataclasses import asdict
 from typing import Any
 
 from db import get_session
-from inspect_refs import InspectionRef, InspectionRefError, format_ref, parse_ref
+from evidence_model import (
+    excerpt_payload,
+    question_answer_match,
+    session_packet,
+    session_query_match,
+    subagent_run_match,
+    tool_call_match,
+    tool_log_payload,
+)
+from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SubagentRef, ToolRef, format_ref, parse_ref
 from tool_log import extract_tool_log_section
-from transcript import TranscriptExcerpt, extract_excerpt_objects
+from transcript import extract_excerpt_objects
 
 
 class EvidenceInspectError(Exception):
@@ -27,35 +35,6 @@ class EvidenceInspectError(Exception):
         if self.ref:
             payload["error"]["ref"] = self.ref
         return payload
-
-
-def _session_packet(session: dict[str, Any], include_summary: bool = False) -> dict[str, Any]:
-    packet = {
-        "session_id": session["session_id"],
-        "project": session.get("project"),
-        "started_at": session.get("started_at"),
-    }
-    if include_summary:
-        packet["summary"] = session.get("summary")
-    return packet
-
-
-def _excerpt_payload(excerpt: TranscriptExcerpt) -> dict[str, Any]:
-    return asdict(excerpt)
-
-
-def _tool_log_payload(section) -> dict[str, Any]:
-    return {
-        "artifact": "tool_log",
-        "path": section.path,
-        "locator": {
-            "sequence": section.sequence,
-            "heading": section.heading,
-            "line_start": section.line_start,
-            "line_end": section.line_end,
-        },
-        "text": section.text,
-    }
 
 
 def _require_session(conn: sqlite3.Connection, session_id: str, raw_ref: str) -> dict[str, Any]:
@@ -77,7 +56,7 @@ def _require_tool_log_section(session: dict[str, Any], sequence: int, raw_ref: s
     return section
 
 
-def _inspect_session(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef, q: str | None, max_snippets: int) -> dict[str, Any]:
+def _inspect_session(conn: sqlite3.Connection, raw_ref: str, ref: SessionRef, q: str | None, max_snippets: int) -> dict[str, Any]:
     session = _require_session(conn, ref.session_id, raw_ref)
     if not q:
         raise EvidenceInspectError("Session inspection requires --q TEXT", code="missing_query", ref=raw_ref)
@@ -89,9 +68,9 @@ def _inspect_session(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef,
     excerpts = extract_excerpt_objects(path, q.split(), max_blocks=max_snippets, max_lines=200)
     return {
         "ref": raw_ref,
-        "session": _session_packet(session),
-        "match": {"kind": "session", "query": q},
-        "evidence": [_excerpt_payload(excerpt) for excerpt in excerpts],
+        "session": session_packet(session),
+        "match": session_query_match(q),
+        "evidence": [excerpt_payload(excerpt) for excerpt in excerpts],
     }
 
 
@@ -111,8 +90,7 @@ def _mutation_paths(conn: sqlite3.Connection, session_id: str, sequence: int) ->
     return [row["path"] for row in rows]
 
 
-def _inspect_tool(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef) -> dict[str, Any]:
-    assert ref.sequence is not None
+def _inspect_tool(conn: sqlite3.Connection, raw_ref: str, ref: ToolRef) -> dict[str, Any]:
     session = _require_session(conn, ref.session_id, raw_ref)
     tool = _tool_row(conn, ref.session_id, ref.sequence)
     if not tool:
@@ -121,23 +99,13 @@ def _inspect_tool(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef) ->
     paths = _mutation_paths(conn, ref.session_id, ref.sequence)
     return {
         "ref": raw_ref,
-        "session": _session_packet(session),
-        "match": {
-            "kind": "tool_call",
-            "sequence": tool["sequence"],
-            "tool": tool["tool"],
-            "tool_name": tool["tool_name"],
-            "scope": tool["scope"],
-            "is_error": bool(tool["is_error"]),
-            "skill_name": tool["skill_name"],
-            "file_mutations": paths,
-        },
-        "evidence": [_tool_log_payload(section)],
+        "session": session_packet(session),
+        "match": tool_call_match(tool, file_mutations=paths),
+        "evidence": [tool_log_payload(section)],
     }
 
 
-def _inspect_question(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef) -> dict[str, Any]:
-    assert ref.sequence is not None and ref.question_index is not None
+def _inspect_question(conn: sqlite3.Connection, raw_ref: str, ref: QuestionRef) -> dict[str, Any]:
     session = _require_session(conn, ref.session_id, raw_ref)
     row = conn.execute(
         """
@@ -152,20 +120,9 @@ def _inspect_question(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef
     section = _require_tool_log_section(session, ref.sequence, raw_ref)
     return {
         "ref": raw_ref,
-        "session": _session_packet(session),
-        "match": {
-            "kind": "question_answer",
-            "sequence": qrow["sequence"],
-            "question_index": qrow["question_index"],
-            "header": qrow["header"],
-            "question": qrow["question"],
-            "selected_label": qrow["selected_label"],
-            "was_recommended": None if qrow["was_recommended"] is None else bool(qrow["was_recommended"]),
-            "is_other": bool(qrow["is_other"]),
-            "option_count": qrow["option_count"],
-            "multi_select": bool(qrow["multi_select"]),
-        },
-        "evidence": [_tool_log_payload(section)],
+        "session": session_packet(session),
+        "match": question_answer_match(qrow),
+        "evidence": [tool_log_payload(section)],
     }
 
 
@@ -176,8 +133,7 @@ def _read_first_lines(path: str, max_lines: int) -> tuple[str, int]:
     return "".join(selected).rstrip("\n"), len(selected)
 
 
-def _inspect_subagent(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef, q: str | None, max_snippets: int) -> dict[str, Any]:
-    assert ref.child_index is not None
+def _inspect_subagent(conn: sqlite3.Connection, raw_ref: str, ref: SubagentRef, q: str | None, max_snippets: int) -> dict[str, Any]:
     session = _require_session(conn, ref.session_id, raw_ref)
     row = conn.execute(
         "SELECT * FROM subagent_runs WHERE parent_session_id = ? AND child_index = ?",
@@ -193,7 +149,7 @@ def _inspect_subagent(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef
         raise EvidenceInspectError(f"Subagent transcript artifact is missing: {path}", code="missing_artifact", ref=raw_ref)
 
     if q:
-        evidence = [_excerpt_payload(excerpt) for excerpt in extract_excerpt_objects(
+        evidence = [excerpt_payload(excerpt) for excerpt in extract_excerpt_objects(
             path,
             q.split(),
             artifact="subagent_transcript",
@@ -211,20 +167,8 @@ def _inspect_subagent(conn: sqlite3.Connection, raw_ref: str, ref: InspectionRef
 
     return {
         "ref": raw_ref,
-        "session": _session_packet(session),
-        "match": {
-            "kind": "subagent_run",
-            "requested_agent_type": run["requested_agent_type"],
-            "observed_agent_type": run["observed_agent_type"],
-            "child_index": run["child_index"],
-            "agent_id": run["agent_id"],
-            "status": run["status"],
-            "call_tool": run["call_tool"],
-            "call_sequence": run["call_sequence"],
-            "task_preview": run["task_preview"],
-            "match_confidence": run["match_confidence"],
-            "transcript_path": path,
-        },
+        "session": session_packet(session),
+        "match": subagent_run_match(run),
         "evidence": evidence,
     }
 
@@ -243,12 +187,12 @@ def inspect_ref(
         raise EvidenceInspectError(str(e), code="invalid_ref", ref=raw_ref) from e
 
     canonical = format_ref(ref)
-    if ref.kind == "session":
+    if isinstance(ref, SessionRef):
         return _inspect_session(conn, canonical, ref, q, max_snippets)
-    if ref.kind == "tool":
+    if isinstance(ref, ToolRef):
         return _inspect_tool(conn, canonical, ref)
-    if ref.kind == "question":
+    if isinstance(ref, QuestionRef):
         return _inspect_question(conn, canonical, ref)
-    if ref.kind == "subagent":
+    if isinstance(ref, SubagentRef):
         return _inspect_subagent(conn, canonical, ref, q, max_snippets)
-    raise EvidenceInspectError(f"Unsupported inspection ref kind: {ref.kind}", code="invalid_ref", ref=raw_ref)
+    raise EvidenceInspectError(f"Unsupported inspection ref type: {type(ref).__name__}", code="invalid_ref", ref=raw_ref)

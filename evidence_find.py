@@ -6,44 +6,19 @@ import sqlite3
 from typing import Any
 
 from db import search_flexible
-from inspect_refs import InspectionRef, format_ref
-
-
-def _session_summary(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    return {
-        "session_id": row["session_id"],
-        "project": row["project"],
-        "started_at": row["started_at"],
-        "summary": row["summary"],
-    }
-
-
-def _artifacts(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    return {
-        "transcript_path": row["transcript_path"],
-        "tool_log_path": row["tool_log_path"],
-        "subagent_transcripts": row["subagent_transcripts"],
-    }
-
-
-def _candidate(
-    ref: str,
-    session: dict[str, Any],
-    match: dict[str, Any],
-    artifacts: dict[str, Any],
-    *,
-    inspect_refs: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    refs = {"primary": ref, "context": format_ref(InspectionRef(kind="session", session_id=session["session_id"]))}
-    if inspect_refs:
-        refs.update(inspect_refs)
-    return {
-        "ref": ref,
-        "inspect_refs": refs,
-        "session": session,
-        "match": match,
-        "artifacts": artifacts,
-    }
+from evidence_model import (
+    artifacts,
+    candidate,
+    file_mutation_match,
+    question_answer_match,
+    session_filter_match,
+    session_summary,
+    skill_invocation_match,
+    subagent_run_match,
+    tool_call_match,
+    topic_match,
+)
+from inspect_refs import QuestionRef, SessionRef, SubagentRef, ToolRef, format_ref
 
 
 def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = "s") -> list[str]:
@@ -88,11 +63,9 @@ def _topic_session_ids(conn: sqlite3.Connection, args: dict[str, Any]) -> set[st
         since=args.get("since"),
         until=args.get("until"),
         limit=1000,
+        session=args.get("session"),
     )
-    ids = {row["session_id"] for row in rows}
-    if args.get("session"):
-        ids &= {args["session"]}
-    return ids
+    return {row["session_id"] for row in rows}
 
 
 def _query(conn: sqlite3.Connection, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -113,16 +86,8 @@ def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dic
     """, params)
     out = []
     for row in rows:
-        ref = format_ref(InspectionRef(kind="tool", session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(_candidate(ref, _session_summary(row), {
-            "kind": "tool_call",
-            "sequence": row["sequence"],
-            "tool": row["tool"],
-            "tool_name": row["tool_name"],
-            "scope": row["scope"],
-            "is_error": bool(row["is_error"]),
-            "skill_name": row["skill_name"],
-        }, _artifacts(row)))
+        ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
+        out.append(candidate(ref, session_summary(row), tool_call_match(row), artifacts(row)))
     return out
 
 
@@ -142,15 +107,8 @@ def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
     """, params)
     out = []
     for row in rows:
-        ref = format_ref(InspectionRef(kind="tool", session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(_candidate(ref, _session_summary(row), {
-            "kind": "skill_invocation",
-            "sequence": row["sequence"],
-            "tool": row["tool"],
-            "tool_name": row["tool_name"],
-            "scope": row["scope"],
-            "skill_name": row["skill_name"],
-        }, _artifacts(row)))
+        ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
+        out.append(candidate(ref, session_summary(row), skill_invocation_match(row), artifacts(row)))
     return out
 
 
@@ -170,15 +128,8 @@ def _mutation_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
     """, params)
     out = []
     for row in rows:
-        ref = format_ref(InspectionRef(kind="tool", session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(_candidate(ref, _session_summary(row), {
-            "kind": "file_mutation",
-            "sequence": row["sequence"],
-            "tool": row["tool"],
-            "tool_name": row["tool_name"],
-            "scope": row["scope"],
-            "path": row["path"],
-        }, _artifacts(row)))
+        ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
+        out.append(candidate(ref, session_summary(row), file_mutation_match(row), artifacts(row)))
     return out
 
 
@@ -198,25 +149,13 @@ def _question_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
     """, params)
     out = []
     for row in rows:
-        ref = format_ref(InspectionRef(
-            kind="question",
+        ref = format_ref(QuestionRef(
             session_id=row["session_id"],
             sequence=row["sequence"],
             question_index=row["question_index"],
         ))
-        tool_ref = format_ref(InspectionRef(kind="tool", session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(_candidate(ref, _session_summary(row), {
-            "kind": "question_answer",
-            "sequence": row["sequence"],
-            "question_index": row["question_index"],
-            "header": row["header"],
-            "question": row["question"],
-            "selected_label": row["selected_label"],
-            "was_recommended": None if row["was_recommended"] is None else bool(row["was_recommended"]),
-            "is_other": bool(row["is_other"]),
-            "option_count": row["option_count"],
-            "multi_select": bool(row["multi_select"]),
-        }, _artifacts(row), inspect_refs={"tool": tool_ref}))
+        tool_ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
+        out.append(candidate(ref, session_summary(row), question_answer_match(row), artifacts(row), inspect_refs={"tool": tool_ref}))
     return out
 
 
@@ -238,24 +177,12 @@ def _subagent_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
     """, params)
     out = []
     for row in rows:
-        ref = format_ref(InspectionRef(kind="subagent", session_id=row["session_id"], child_index=row["child_index"]))
+        ref = format_ref(SubagentRef(session_id=row["session_id"], child_index=row["child_index"]))
         refs: dict[str, str] = {}
         if row["call_sequence"] is not None:
-            refs["parent_call"] = format_ref(InspectionRef(kind="tool", session_id=row["session_id"], sequence=row["call_sequence"]))
-        out.append(_candidate(ref, _session_summary(row), {
-            "kind": "subagent_run",
-            "requested_agent_type": row["requested_agent_type"],
-            "observed_agent_type": row["observed_agent_type"],
-            "child_index": row["child_index"],
-            "agent_id": row["agent_id"],
-            "status": row["status"],
-            "call_tool": row["call_tool"],
-            "call_sequence": row["call_sequence"],
-            "task_preview": row["task_preview"],
-            "match_confidence": row["match_confidence"],
-            "tool_call_count": row["tool_call_count"],
-            "transcript_path": row["run_transcript_path"],
-        }, _artifacts(row), inspect_refs=refs))
+            refs["parent_call"] = format_ref(ToolRef(session_id=row["session_id"], sequence=row["call_sequence"]))
+        match_row = {**row, "transcript_path": row["run_transcript_path"]}
+        out.append(candidate(ref, session_summary(row), subagent_run_match(match_row), artifacts(row), inspect_refs=refs))
     return out
 
 
@@ -267,13 +194,19 @@ def _topic_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
         since=args.get("since"),
         until=args.get("until"),
         limit=args["limit"],
+        session=args.get("session"),
     )
-    if args.get("session"):
-        rows = [row for row in rows if row["session_id"] == args["session"]]
     out = []
+    match = topic_match(args["topic"]) if args.get("topic") else session_filter_match(
+        project=args.get("project"),
+        since=args.get("since"),
+        until=args.get("until"),
+        session=args.get("session"),
+    )
     for row in rows[:args["limit"]]:
-        ref = format_ref(InspectionRef(kind="session", session_id=row["session_id"]))
-        out.append(_candidate(ref, _session_summary(row), {"kind": "topic", "topic": args.get("topic")}, _artifacts(row)))
+        row_dict = dict(row)
+        ref = format_ref(SessionRef(session_id=row_dict["session_id"]))
+        out.append(candidate(ref, session_summary(row_dict), match, artifacts(row_dict)))
     return out
 
 
