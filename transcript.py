@@ -329,12 +329,8 @@ def extract_excerpt_objects(
     strategy: str = STRATEGY_HYBRID,
     qa_pair: bool = True,
 ) -> list[TranscriptExcerpt]:
-    """Return JSON-ready transcript excerpts with artifact metadata.
-
-    This preserves the existing excerpt-selection behavior and wraps the selected
-    text in a structured object for Evidence Inspect callers.
-    """
-    text = extract_excerpts(
+    """Return JSON-ready transcript excerpts with artifact metadata."""
+    text = _select_excerpt_text(
         transcript_path,
         keywords,
         max_blocks=max_blocks,
@@ -366,7 +362,28 @@ def extract_excerpts(
     strategy: str = STRATEGY_HYBRID,
     qa_pair: bool = True,
 ) -> str | None:
-    """Extract the most relevant message blocks from a transcript.
+    """Compatibility shim returning text from the canonical structured excerpt."""
+    excerpts = extract_excerpt_objects(
+        transcript_path,
+        keywords,
+        max_blocks=max_blocks,
+        max_lines=max_lines,
+        strategy=strategy,
+        qa_pair=qa_pair,
+    )
+    return excerpts[0].text if excerpts else None
+
+
+def _select_excerpt_text(
+    transcript_path: str,
+    keywords: list[str],
+    *,
+    max_blocks: int = 5,
+    max_lines: int = 200,
+    strategy: str = STRATEGY_HYBRID,
+    qa_pair: bool = True,
+) -> str | None:
+    """Select excerpt text shared by structured and legacy callers.
 
     Strategies:
       - first_n: first matching blocks chronologically (original behavior)
