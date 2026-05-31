@@ -27,6 +27,9 @@ class ParsedToolCall:
     arguments: dict[str, Any] = field(default_factory=dict)
     result: str = ""
     is_error: bool = False
+    # Structured tool-result payload (e.g. Pi `question` `message.details`); the
+    # authoritative source for question outcomes when present.
+    result_details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

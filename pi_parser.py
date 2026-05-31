@@ -242,6 +242,52 @@ def _collect_tool_result_text(message: dict[str, Any]) -> str:
     return _extract_text_blocks(message.get("content", ""), include_image_markers=False)
 
 
+_QUESTION_TOOL_NAMES = {"question", "askuserquestion"}
+
+
+def _is_question_tool(name: str) -> bool:
+    return (name or "").rsplit(".", 1)[-1].lower() in _QUESTION_TOOL_NAMES
+
+
+def _synthesize_question_result(details: dict[str, Any]) -> str:
+    """Build a readable answer string from question `details` (mirrors Pi's own
+    `User answered questions:` form).
+
+    Returns "" for cancelled prompts or when no concrete answer is present — it
+    never fabricates an answer for an aborted/cancelled question. Used only when
+    the standard tool-result `content` is empty (legacy Pi format), so the tool
+    log no longer shows `[empty result]` for a genuinely answered question.
+    """
+    if not isinstance(details, dict) or details.get("cancelled"):
+        return ""
+
+    lines: list[str] = []
+    selections = details.get("selections")
+    if isinstance(selections, list):
+        for sel in selections:
+            if not isinstance(sel, dict):
+                continue
+            question = sel.get("question")
+            answer = sel.get("answer")
+            if not (isinstance(answer, str) and answer.strip()):
+                opts = sel.get("selectedOptions")
+                if isinstance(opts, list) and opts:
+                    answer = ", ".join(str(o) for o in opts)
+            if isinstance(question, str) and isinstance(answer, str) and answer.strip():
+                lines.append(f"- {question} -> {answer}")
+
+    if not lines:
+        answers = details.get("answers")
+        if isinstance(answers, dict):
+            for question, answer in answers.items():
+                if isinstance(question, str) and isinstance(answer, str) and answer.strip():
+                    lines.append(f"- {question} -> {answer}")
+
+    if not lines:
+        return ""
+    return "User answered questions:\n" + "\n".join(lines)
+
+
 def parse_pi_jsonl(path: str) -> ParsedSession:
     """Parse a Pi JSONL session file into a ParsedSession."""
     session = ParsedSession()
@@ -325,10 +371,19 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
             elif role == "toolResult":
                 tool_call_id = msg.get("toolCallId", "")
                 if isinstance(tool_call_id, str) and tool_call_id:
+                    details = msg.get("details")
+                    details = details if isinstance(details, dict) else {}
+                    content_text = _collect_tool_result_text(msg)
+                    tool_name = msg.get("toolName", "")
+                    # Older Pi question results left `content` empty; recover a
+                    # readable answer from `details` (authoritative structured form).
+                    if not content_text and _is_question_tool(tool_name):
+                        content_text = _synthesize_question_result(details)
                     tool_results[tool_call_id] = {
-                        "content": _collect_tool_result_text(msg),
+                        "content": content_text,
                         "is_error": bool(msg.get("isError", False)),
-                        "tool_name": msg.get("toolName", ""),
+                        "tool_name": tool_name,
+                        "details": details,
                     }
 
     session.files_touched = sorted(files_set)
@@ -348,6 +403,7 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
             arguments=call.arguments,
             result=tr.get("content", ""),
             is_error=bool(tr.get("is_error", False)),
+            result_details=tr.get("details") or {},
         ))
 
     # Second pass: cleaned transcript/search messages.

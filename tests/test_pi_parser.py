@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pi_parser import parse_pi_jsonl
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "pi_sample.jsonl")
+QUESTION_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "pi_question.jsonl")
 
 
 def test_parse_pi_metadata(monkeypatch):
@@ -67,3 +68,21 @@ def test_parse_pi_messages_skip_thinking_and_tool_results():
     assert "<file content omitted>" not in all_content
     assert "Applied the safer parser change" in all_content
     assert "Done." in all_content
+
+
+def test_parse_pi_captures_question_details_and_synthesizes_result(monkeypatch):
+    monkeypatch.setattr("pi_parser._git_branch", lambda cwd: "main")
+    session = parse_pi_jsonl(QUESTION_FIXTURE)
+
+    q_calls = [c for c in session.tool_calls if c.tool_name == "question"]
+    assert len(q_calls) == 1
+    call = q_calls[0]
+
+    # `details` preserved as the authoritative structured form.
+    assert call.result_details.get("selections")
+    assert call.result_details["selections"][0]["answer"] == "Future + existing"
+
+    # Empty standard `content` is synthesized into a readable answer string,
+    # so the tool log no longer shows [empty result] for an answered question.
+    assert "User answered questions:" in call.result
+    assert "Future + existing" in call.result
