@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Current-session wrapper — resolves repo root via symlink, runs CLI current."""
-import argparse
-import os
-import sys
+from _bootstrap import repo_root
 
-# Resolve symlink chain: scripts/ -> session-search/ -> skills/ -> repo_root
-here = os.path.dirname(os.path.realpath(__file__))
-repo_root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
-sys.path.insert(0, repo_root)
+repo_root()
+
+import argparse
 
 from cli import cmd_current
 
