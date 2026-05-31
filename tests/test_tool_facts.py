@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from parser import ParsedToolCall
+from parser import ParsedQuestionSelection, ParsedToolCall
 from subagent_runs import ParsedSubagentRun
 from tool_facts import (
     build_question_rows,
@@ -18,7 +18,7 @@ from tool_facts import (
 
 # ── normalize_tool_name / extract_skill_name ────────────────────────────────
 
-def test_normalize_tool_name_unifies_providers():
+def test_normalize_tool_name_strips_namespace_and_lowercases():
     assert normalize_tool_name("Agent") == "agent"
     assert normalize_tool_name("AskUserQuestion") == "askuserquestion"
     assert normalize_tool_name("bash") == "bash"
@@ -124,7 +124,7 @@ def test_no_recommended_option_yields_null():
     assert rows[0]["is_other"] == 0
 
 
-def test_pi_answer_resolved_from_details():
+def test_pi_answer_resolved_from_parser_normalized_question_selection():
     options = [
         {"label": "Future only (Recommended)", "description": "later"},
         {"label": "Future + existing", "description": "now"},
@@ -134,12 +134,8 @@ def test_pi_answer_resolved_from_details():
         sequence=4,
         tool_name="question",
         arguments={"questions": [{"question": question, "header": "Scope", "multiSelect": False, "options": options}]},
-        result="",  # legacy empty content — resolve from details
-        result_details={
-            "selections": [{"question": question, "selectedOptions": ["Future + existing"], "answer": "Future + existing"}],
-            "answers": {question: "Future + existing"},
-            "cancelled": False,
-        },
+        result="",  # legacy empty content — resolve from parser-normalized outcome
+        question_selections=[ParsedQuestionSelection(question=question, selected_labels=["Future + existing"])],
     )
     rows = build_question_rows("pi:s", "pi", [call])
 
@@ -156,7 +152,7 @@ def test_cancelled_question_stored_unanswered():
         tool_name="question",
         arguments={"questions": [{"question": question, "header": "H", "multiSelect": False, "options": options}]},
         result="The question was cancelled.",
-        result_details={"cancelled": True},
+        question_cancelled=True,
     )
     rows = build_question_rows("pi:s", "pi", [call])
 
@@ -184,7 +180,7 @@ def test_multiselect_stores_joined_labels_with_null_recommended():
     call = ParsedToolCall(
         tool_name="question",
         arguments={"questions": [{"question": question, "header": "H", "multiSelect": True, "options": options}]},
-        result_details={"selections": [{"question": question, "selectedOptions": ["Tags", "Titles"], "answer": "Tags, Titles"}]},
+        question_selections=[ParsedQuestionSelection(question=question, selected_labels=["Tags", "Titles"])],
     )
     rows = build_question_rows("pi:s", "pi", [call])
 

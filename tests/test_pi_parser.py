@@ -1,11 +1,12 @@
 """Tests for Pi JSONL parser."""
 
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pi_parser import parse_pi_jsonl
+from pi_parser import parse_pi_jsonl, parse_pi_subagent_jsonl
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "pi_sample.jsonl")
 QUESTION_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "pi_question.jsonl")
@@ -70,7 +71,7 @@ def test_parse_pi_messages_skip_thinking_and_tool_results():
     assert "Done." in all_content
 
 
-def test_parse_pi_captures_question_details_and_synthesizes_result(monkeypatch):
+def test_parse_pi_normalizes_question_selection_and_synthesizes_result(monkeypatch):
     monkeypatch.setattr("pi_parser._git_branch", lambda cwd: "main")
     session = parse_pi_jsonl(QUESTION_FIXTURE)
 
@@ -78,11 +79,31 @@ def test_parse_pi_captures_question_details_and_synthesizes_result(monkeypatch):
     assert len(q_calls) == 1
     call = q_calls[0]
 
-    # `details` preserved as the authoritative structured form.
-    assert call.result_details.get("selections")
-    assert call.result_details["selections"][0]["answer"] == "Future + existing"
+    # Pi `details` decoded at the parser boundary into provider-neutral selections.
+    assert call.question_selections
+    assert call.question_selections[0].selected_labels == ["Future + existing"]
 
     # Empty standard `content` is synthesized into a readable answer string,
     # so the tool log no longer shows [empty result] for an answered question.
     assert "User answered questions:" in call.result
     assert "Future + existing" in call.result
+
+
+def test_parse_pi_subagent_normalizes_question_selection_and_synthesizes_result(tmp_path):
+    fixture = tmp_path / "session.jsonl"
+    entries = [
+        {"type": "session", "version": 3, "id": "sub-1", "timestamp": "2026-04-02T10:00:00.000Z", "cwd": "/tmp/project"},
+        {"type": "message", "id": "u1", "parentId": None, "timestamp": "2026-04-02T10:00:01.000Z", "message": {"role": "user", "content": "Review this change", "timestamp": 1775124001000}},
+        {"type": "message", "id": "a1", "parentId": "u1", "timestamp": "2026-04-02T10:00:02.000Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "call-q", "name": "question", "arguments": {"questions": [{"header": "Scope", "question": "Which scope?", "multiSelect": False, "options": [{"label": "Narrow (Recommended)", "description": "Keep it small"}, {"label": "Broad", "description": "Expand"}]}]}}], "timestamp": 1775124002000}},
+        {"type": "message", "id": "tr-q", "parentId": "a1", "timestamp": "2026-04-02T10:00:03.000Z", "message": {"role": "toolResult", "toolCallId": "call-q", "toolName": "question", "content": [], "details": {"answers": {"Which scope?": "Broad"}, "selections": [{"question": "Which scope?", "header": "Scope", "multiSelect": False, "selectedOptions": ["Broad"], "answer": "Broad"}], "cancelled": False}, "isError": False, "timestamp": 1775124003000}},
+    ]
+    fixture.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    subagent = parse_pi_subagent_jsonl(str(fixture), agent_id="agent-1", agent_type="reviewer")
+
+    q_calls = [c for c in subagent.tool_calls if c.tool_name == "question"]
+    assert len(q_calls) == 1
+    call = q_calls[0]
+    assert call.question_selections[0].selected_labels == ["Broad"]
+    assert "User answered questions:" in call.result
+    assert "Which scope? -> Broad" in call.result

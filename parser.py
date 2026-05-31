@@ -18,6 +18,14 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 
 
 @dataclass
+class ParsedQuestionSelection:
+    """Provider-neutral answer selected for one question-tool prompt."""
+
+    question: str
+    selected_labels: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ParsedToolCall:
     scope: str = "main"
     sequence: int = 0
@@ -27,9 +35,8 @@ class ParsedToolCall:
     arguments: dict[str, Any] = field(default_factory=dict)
     result: str = ""
     is_error: bool = False
-    # Structured tool-result payload (e.g. Pi `question` `message.details`); the
-    # authoritative source for question outcomes when present.
-    result_details: dict[str, Any] = field(default_factory=dict)
+    question_selections: list[ParsedQuestionSelection] = field(default_factory=list)
+    question_cancelled: bool = False
 
 
 @dataclass

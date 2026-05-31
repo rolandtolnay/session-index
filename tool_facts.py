@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from parser import ParsedToolCall
-from subagent_runs import ParsedSubagentRun, _tool_name
+from subagent_runs import ParsedSubagentRun
 
 _QUESTION_TOOLS = {"askuserquestion", "question"}
 _SKILL_TOOLS = {"skill"}
@@ -18,12 +18,13 @@ _RECOMMENDED_MARKER = "(Recommended)"
 
 
 def normalize_tool_name(raw: str) -> str:
-    """Provider-normalized tool name: namespace-stripped + lowercased.
+    """Lexically normalize a raw tool name: namespace-stripped + lowercased.
 
-    Claude PascalCase (`Agent`, `Skill`, `AskUserQuestion`) and Pi lowercase /
-    namespaced (`bash`, `subagent_run`, `question`) collapse to one vocabulary.
+    Semantic families are intentionally not collapsed here: the raw `tool_name`
+    stays available, and higher-level tables such as `question_answers` and
+    `subagent_runs` expose provider-independent facts for those domains.
     """
-    return _tool_name(raw or "").lower()
+    return (raw or "").rsplit(".", 1)[-1].lower()
 
 
 def extract_skill_name(call: ParsedToolCall) -> str | None:
@@ -111,44 +112,21 @@ def _recommended_labels(options: Any) -> set[str]:
     return rec
 
 
-def _selected_from_details(details: dict[str, Any], question_index: int, question_text: str) -> list[str] | None:
-    """Resolve the picked option(s) from Pi structured `details`.
-
-    Returns a list of labels when answered, `[]` when the prompt was cancelled
-    (definitively unanswered — no text fallback), or None when details cannot
-    resolve this question (let the result-text fallback try).
-    """
-    if not isinstance(details, dict) or not details:
-        return None
+def _selected_from_question_outcome(call: ParsedToolCall, question_index: int, question_text: str) -> list[str] | None:
+    """Resolve selected option(s) from parser-normalized question outcomes."""
+    if call.question_cancelled:
+        return []
 
     selection = None
-    selections = details.get("selections")
-    if isinstance(selections, list):
-        for sel in selections:
-            if isinstance(sel, dict) and sel.get("question") == question_text:
-                selection = sel
-                break
-        if selection is None and 0 <= question_index < len(selections):
-            candidate = selections[question_index]
-            if isinstance(candidate, dict):
-                selection = candidate
+    for candidate in call.question_selections:
+        if candidate.question == question_text:
+            selection = candidate
+            break
+    if selection is None and 0 <= question_index < len(call.question_selections):
+        selection = call.question_selections[question_index]
 
-    if isinstance(selection, dict):
-        opts = selection.get("selectedOptions")
-        if isinstance(opts, list) and opts:
-            return [str(o) for o in opts]
-        answer = selection.get("answer")
-        if isinstance(answer, str) and answer.strip():
-            return [answer]
-
-    answers = details.get("answers")
-    if isinstance(answers, dict):
-        answer = answers.get(question_text)
-        if isinstance(answer, str) and answer.strip():
-            return [answer]
-
-    if details.get("cancelled"):
-        return []
+    if selection and selection.selected_labels:
+        return selection.selected_labels
     return None
 
 
@@ -187,10 +165,11 @@ def build_question_rows(
 ) -> list[dict[str, Any]]:
     """One row per asked question across all question-tool calls.
 
-    `details` (Pi structured form) is authoritative; result text is the fallback
-    (covers Claude and legacy Pi). Unanswered/cancelled questions are stored with
-    NULL selected_label/was_recommended (still counted as "asked"). MultiSelect
-    rows store joined labels with was_recommended NULL (ambiguous by design).
+    Parser-normalized question selections are authoritative; result text is the
+    fallback (covers Claude and legacy Pi text-only echoes). Unanswered/cancelled
+    questions are stored with NULL selected_label/was_recommended (still counted
+    as "asked"). MultiSelect rows store joined labels with was_recommended NULL
+    (ambiguous by design).
     """
     rows: list[dict[str, Any]] = []
     for call in combined_calls:
@@ -200,7 +179,6 @@ def build_question_rows(
         questions = args.get("questions")
         if not isinstance(questions, list):
             continue
-        details = call.result_details if isinstance(call.result_details, dict) else {}
         result_text = call.result or ""
 
         for question_index, question in enumerate(questions):
@@ -213,7 +191,7 @@ def build_question_rows(
             question_text = question.get("question") or ""
             header = question.get("header") or ""
 
-            selected = _selected_from_details(details, question_index, question_text)
+            selected = _selected_from_question_outcome(call, question_index, question_text)
             if selected is None:
                 selected = _selected_from_text(result_text, question_text)
             answered = bool(selected)

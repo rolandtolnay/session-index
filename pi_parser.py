@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from parser import ParsedSession, ParsedToolCall, _clean_text, _format_bash_result, _git_root, _strip_narration
+from parser import ParsedQuestionSelection, ParsedSession, ParsedToolCall, _clean_text, _format_bash_result, _git_root, _strip_narration
 from subagent_parser import ParsedSubagent, SubagentInfo
 
 PI_SOURCE = "pi"
@@ -249,43 +249,79 @@ def _is_question_tool(name: str) -> bool:
     return (name or "").rsplit(".", 1)[-1].lower() in _QUESTION_TOOL_NAMES
 
 
-def _synthesize_question_result(details: dict[str, Any]) -> str:
-    """Build a readable answer string from question `details` (mirrors Pi's own
-    `User answered questions:` form).
+def _question_outcome_from_details(details: dict[str, Any]) -> tuple[list[ParsedQuestionSelection], bool]:
+    """Decode Pi question `details` once into provider-neutral selections."""
+    if not isinstance(details, dict):
+        return [], False
+
+    selections: list[ParsedQuestionSelection] = []
+    raw_selections = details.get("selections")
+    if isinstance(raw_selections, list):
+        for sel in raw_selections:
+            if not isinstance(sel, dict):
+                continue
+            question = sel.get("question")
+            if not isinstance(question, str) or not question.strip():
+                continue
+            labels: list[str] = []
+            opts = sel.get("selectedOptions")
+            if isinstance(opts, list):
+                labels.extend(str(opt) for opt in opts if str(opt).strip())
+            if not labels:
+                answer = sel.get("answer")
+                if isinstance(answer, str) and answer.strip():
+                    labels.append(answer)
+            selections.append(ParsedQuestionSelection(question=question, selected_labels=labels))
+
+    if not selections:
+        answers = details.get("answers")
+        if isinstance(answers, dict):
+            for question, answer in answers.items():
+                if isinstance(question, str) and isinstance(answer, str) and answer.strip():
+                    selections.append(ParsedQuestionSelection(question=question, selected_labels=[answer]))
+
+    return selections, bool(details.get("cancelled"))
+
+
+def _synthesize_question_result(selections: list[ParsedQuestionSelection], cancelled: bool) -> str:
+    """Build a readable answer string from normalized question selections.
 
     Returns "" for cancelled prompts or when no concrete answer is present — it
     never fabricates an answer for an aborted/cancelled question. Used only when
     the standard tool-result `content` is empty (legacy Pi format), so the tool
     log no longer shows `[empty result]` for a genuinely answered question.
     """
-    if not isinstance(details, dict) or details.get("cancelled"):
+    if cancelled:
         return ""
 
-    lines: list[str] = []
-    selections = details.get("selections")
-    if isinstance(selections, list):
-        for sel in selections:
-            if not isinstance(sel, dict):
-                continue
-            question = sel.get("question")
-            answer = sel.get("answer")
-            if not (isinstance(answer, str) and answer.strip()):
-                opts = sel.get("selectedOptions")
-                if isinstance(opts, list) and opts:
-                    answer = ", ".join(str(o) for o in opts)
-            if isinstance(question, str) and isinstance(answer, str) and answer.strip():
-                lines.append(f"- {question} -> {answer}")
-
-    if not lines:
-        answers = details.get("answers")
-        if isinstance(answers, dict):
-            for question, answer in answers.items():
-                if isinstance(question, str) and isinstance(answer, str) and answer.strip():
-                    lines.append(f"- {question} -> {answer}")
-
+    lines = [
+        f"- {selection.question} -> {', '.join(selection.selected_labels)}"
+        for selection in selections
+        if selection.question and selection.selected_labels
+    ]
     if not lines:
         return ""
     return "User answered questions:\n" + "\n".join(lines)
+
+
+def _tool_result_record(message: dict[str, Any]) -> dict[str, Any]:
+    """Canonical Pi toolResult decoding for parent and subagent parsers."""
+    details = message.get("details")
+    details = details if isinstance(details, dict) else {}
+    tool_name = message.get("toolName", "")
+    question_selections, question_cancelled = _question_outcome_from_details(details)
+    content_text = _collect_tool_result_text(message)
+    # Older Pi question results left `content` empty; recover a readable answer
+    # from normalized selections for answered questions.
+    if not content_text and _is_question_tool(str(tool_name)):
+        content_text = _synthesize_question_result(question_selections, question_cancelled)
+    return {
+        "content": content_text,
+        "is_error": bool(message.get("isError", False)),
+        "tool_name": tool_name,
+        "question_selections": question_selections,
+        "question_cancelled": question_cancelled,
+    }
 
 
 def parse_pi_jsonl(path: str) -> ParsedSession:
@@ -371,20 +407,7 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
             elif role == "toolResult":
                 tool_call_id = msg.get("toolCallId", "")
                 if isinstance(tool_call_id, str) and tool_call_id:
-                    details = msg.get("details")
-                    details = details if isinstance(details, dict) else {}
-                    content_text = _collect_tool_result_text(msg)
-                    tool_name = msg.get("toolName", "")
-                    # Older Pi question results left `content` empty; recover a
-                    # readable answer from `details` (authoritative structured form).
-                    if not content_text and _is_question_tool(tool_name):
-                        content_text = _synthesize_question_result(details)
-                    tool_results[tool_call_id] = {
-                        "content": content_text,
-                        "is_error": bool(msg.get("isError", False)),
-                        "tool_name": tool_name,
-                        "details": details,
-                    }
+                    tool_results[tool_call_id] = _tool_result_record(msg)
 
     session.files_touched = sorted(files_set)
     if tool_counter:
@@ -403,7 +426,8 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
             arguments=call.arguments,
             result=tr.get("content", ""),
             is_error=bool(tr.get("is_error", False)),
-            result_details=tr.get("details") or {},
+            question_selections=tr.get("question_selections") or [],
+            question_cancelled=bool(tr.get("question_cancelled", False)),
         ))
 
     # Second pass: cleaned transcript/search messages.
@@ -592,11 +616,7 @@ def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str
         elif role == "toolResult":
             tool_call_id = msg.get("toolCallId", "")
             if isinstance(tool_call_id, str) and tool_call_id:
-                tool_results[tool_call_id] = {
-                    "content": _collect_tool_result_text(msg),
-                    "is_error": bool(msg.get("isError", False)),
-                    "tool_name": msg.get("toolName", ""),
-                }
+                tool_results[tool_call_id] = _tool_result_record(msg)
             if msg.get("isError"):
                 text = _format_bash_result(_collect_tool_result_text(msg), is_error=True)
                 if text:
@@ -620,5 +640,7 @@ def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str
             arguments=call.arguments,
             result=tr.get("content", ""),
             is_error=bool(tr.get("is_error", False)),
+            question_selections=tr.get("question_selections") or [],
+            question_cancelled=bool(tr.get("question_cancelled", False)),
         ))
     return result
