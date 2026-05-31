@@ -221,13 +221,52 @@ def test_optional_session_index_leaf_does_not_block_claude_compat(tmp_path, monk
     assert current.leaf_id is None
 
 
-def test_insufficient_claude_compat_env_fails_clearly():
+def test_resolve_claude_compat_recognizes_claude_code_session_id(tmp_path):
+    source = tmp_path / "cc.jsonl"
+
+    current = resolve_current_session({
+        "CLAUDE_CODE_SESSION_ID": "cc-1",
+        "CLAUDE_CODE_TRANSCRIPT_PATH": str(source),
+    })
+
+    assert current.session_id == "cc-1"
+    assert current.native_session_id == "cc-1"
+    assert current.source == "claude"
+    assert current.source_path == str(source)
+    assert current.transcript_path == str(tmp_path / "cc-1.md")
+
+
+def test_resolve_claude_compat_locates_source_by_session_id(tmp_path, monkeypatch):
+    source = tmp_path / "located.jsonl"
+    source.write_text("{}\n")
+
+    from sources import SourceSessionFile
+
+    monkeypatch.setattr(
+        "sources.discover_claude_sessions",
+        lambda session_id: [SourceSessionFile("claude", str(source))] if session_id == "loc-1" else [],
+    )
+
+    current = resolve_current_session({"CLAUDE_CODE_SESSION_ID": "loc-1"})
+
+    assert current.session_id == "loc-1"
+    assert current.source == "claude"
+    assert current.source_path == str(source)
+    assert current.source_path_exists is True
+    assert current.transcript_path == str(tmp_path / "loc-1.md")
+
+
+def test_session_id_only_without_locatable_jsonl_fails_clearly(monkeypatch):
+    # Session id present but no transcript-path env and no matching JSONL.
+    monkeypatch.setattr("sources.discover_claude_sessions", lambda session_id: [])
+
     with pytest.raises(CurrentSessionError) as exc:
         resolve_current_session({"CLAUDE_SESSION_ID": "claude-only"})
 
     message = str(exc.value)
     assert "current only works inside an active agent runtime exposing Session Index env" in message
-    assert "insufficient claude compatibility env" in message
+    assert "could not locate the source transcript" in message
+    assert "claude-only" in message
     assert "CLAUDE_TRANSCRIPT_PATH" in message
 
 

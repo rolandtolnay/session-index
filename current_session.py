@@ -16,7 +16,16 @@ ENV_SOURCE = "SESSION_INDEX_SOURCE"
 ENV_SOURCE_PATH = "SESSION_INDEX_SOURCE_PATH"
 ENV_LEAF_ID = "SESSION_INDEX_LEAF_ID"
 
-CLAUDE_ENV_SESSION_ID = "CLAUDE_SESSION_ID"
+# Claude Code exposes the active session id to Bash tool calls / slash-command
+# snippets as CLAUDE_CODE_SESSION_ID (the official, stable name); older/hook-era
+# contexts used CLAUDE_SESSION_ID. Accept both, newest convention first.
+CLAUDE_ENV_SESSION_IDS = (
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_SESSION_ID",
+)
+# Claude Code does NOT expose the transcript path as an env var to ordinary Bash
+# calls (only hooks receive it, via stdin JSON). When absent we locate the raw
+# JSONL by exact session id instead — see _locate_claude_source_path.
 CLAUDE_ENV_SOURCE_PATHS = (
     "CLAUDE_TRANSCRIPT_PATH",
     "CLAUDE_CODE_TRANSCRIPT_PATH",
@@ -168,20 +177,39 @@ def _resolve_public_env(env: Mapping[str, str]) -> tuple[str, str, str, str, str
     )
 
 
+def _locate_claude_source_path(session_id: str) -> str | None:
+    """Locate the raw JSONL for an exact Claude session id.
+
+    Deterministic resolution of a *known* id's file — the same
+    ~/.claude/projects/*/<id>.jsonl glob sources.discover_claude_sessions uses,
+    not a latest/most-recent guess — so it cannot resolve a different parallel
+    session. Used when Claude Code exposes the session id but no transcript path.
+    """
+    from sources import discover_claude_sessions
+
+    matches = discover_claude_sessions(session_id)
+    return matches[0].path if matches else None
+
+
 def _resolve_claude_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, str, None]:
-    session_id = _required_value(env, CLAUDE_ENV_SESSION_ID)
-    source_path = _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS)
-
-    missing = []
+    session_id = _first_required_value(env, CLAUDE_ENV_SESSION_IDS)
     if session_id is None:
-        missing.append(CLAUDE_ENV_SESSION_ID)
-    if source_path is None:
-        missing.append(" or ".join(CLAUDE_ENV_SOURCE_PATHS))
-    if missing:
-        raise _fail(f"insufficient claude compatibility env: missing {', '.join(missing)}")
+        raise _fail(
+            "insufficient claude compatibility env: missing "
+            + " or ".join(CLAUDE_ENV_SESSION_IDS)
+        )
 
-    assert session_id is not None
-    assert source_path is not None
+    # Prefer an explicit source-transcript path; otherwise locate the raw JSONL
+    # for this exact session id.
+    source_path = _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS)
+    if source_path is None:
+        source_path = _locate_claude_source_path(session_id)
+    if source_path is None:
+        raise _fail(
+            f"could not locate the source transcript for claude session {session_id!r}: "
+            f"set {' or '.join(CLAUDE_ENV_SOURCE_PATHS)}, or ensure "
+            f"~/.claude/projects/*/{session_id}.jsonl exists"
+        )
 
     return session_id, session_id, "claude", source_path, None
 
@@ -191,17 +219,19 @@ def _resolve_env_inputs(env: Mapping[str, str]) -> tuple[str, str, str, str, str
         return _resolve_public_env(env)
 
     has_claude_compat = (
-        _required_value(env, CLAUDE_ENV_SESSION_ID) is not None
+        _first_required_value(env, CLAUDE_ENV_SESSION_IDS) is not None
         or _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS) is not None
     )
     if has_claude_compat:
         return _resolve_claude_compat_env(env)
 
     required = ", ".join(REQUIRED_ENV)
+    claude_ids = " or ".join(CLAUDE_ENV_SESSION_IDS)
     claude_paths = " or ".join(CLAUDE_ENV_SOURCE_PATHS)
     raise _fail(
         f"missing required env: {required}; claude compatibility requires "
-        f"{CLAUDE_ENV_SESSION_ID} and {claude_paths}"
+        f"{claude_ids} (plus {claude_paths}, or a discoverable "
+        f"~/.claude/projects/*/<session>.jsonl)"
     )
 
 
@@ -212,8 +242,10 @@ def resolve_current_session(env: Mapping[str, str] | None = None) -> CurrentSess
     state, or any registry. Missing or inconsistent env is reported as an
     explicit failure because guessing can identify the wrong parallel session.
     Session Index's public SESSION_INDEX_* contract takes precedence. Claude's
-    native env is accepted only when it provides both the native session ID and
-    source transcript path needed to construct the same result.
+    native env is accepted via CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID; the
+    source transcript path is taken from CLAUDE_(CODE_)TRANSCRIPT_PATH when set,
+    otherwise located by the *exact* session id (~/.claude/projects/*/<id>.jsonl),
+    which is deterministic for a known id and so cannot resolve a different session.
     """
     env = os.environ if env is None else env
 
