@@ -32,6 +32,10 @@ _Avoid_: Clean transcript, markdown transcript
 The generated markdown artifact containing detailed tool-call records for a session.
 _Avoid_: Clean transcript, source transcript
 
+**File Mutation**:
+A successful write or edit tool event targeting a file path during a session.
+_Avoid_: Files touched, file reference, read file
+
 **Evidence Packet**:
 A machine-readable bundle that connects one matched session fact or topic match to the transcript, tool-log, or subagent text needed to inspect what happened.
 _Avoid_: Search result, query row, raw artifact
@@ -77,6 +81,8 @@ _Avoid_: Observed child type, artifact title
 - An **Evidence Find** result includes one or more **Inspection References**.
 - An **Evidence Inspect** accepts an **Inspection Reference** produced by **Evidence Find**.
 - An **Evidence Inspect** produces one or more **Evidence Packets**.
+- A session may have zero or more **File Mutations**.
+- A **File Mutation** is attributed to a tool-call sequence and may be inspected through the corresponding **Tool Log** section.
 - A session may produce zero or more **Evidence Packets** when facts or topic matches point to inspectable artifact text.
 - An **Evidence Packet** references one **Canonical Session ID** and may reference a **Clean Transcript**, **Tool Log**, or **Subagent Run** transcript.
 - A session may request zero or more **Subagent Runs**.
