@@ -20,6 +20,7 @@ from db import (
     replace_tool_calls,
     replace_subagent_runs,
     replace_question_answers,
+    replace_file_mutations,
     delete_sessions,
     fact_table_schema_reference,
 )
@@ -361,7 +362,11 @@ def test_get_session_short_prefix_rejected():
 def test_init_db_creates_fact_tables():
     conn = _make_conn()
     names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"tool_calls", "subagent_runs", "question_answers"} <= names
+    assert {"tool_calls", "subagent_runs", "question_answers", "file_mutations"} <= names
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {"idx_file_mutations_session", "idx_file_mutations_path"} <= indexes
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(file_mutations)")}
+    assert {"session_id", "source", "scope", "sequence", "timestamp", "tool_name", "tool", "path"} <= columns
     conn.close()
 
 
@@ -376,6 +381,24 @@ def test_replace_tool_calls_idempotent():
     assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='s1'").fetchone()[0] == 1
     replace_tool_calls(conn, "s1", [])  # empty clears
     assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='s1'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_replace_file_mutations_idempotent_and_empty_clears():
+    conn = _make_conn()
+    rows = [{
+        "session_id": "s1", "source": "claude", "scope": "main", "sequence": 1,
+        "timestamp": None, "tool_name": "Edit", "tool": "edit", "path": "src/app.py",
+    }]
+
+    replace_file_mutations(conn, "s1", rows)
+    replace_file_mutations(conn, "s1", rows)
+
+    stored = conn.execute("SELECT tool_name, tool, path FROM file_mutations WHERE session_id='s1'").fetchall()
+    assert [tuple(row) for row in stored] == [("Edit", "edit", "src/app.py")]
+
+    replace_file_mutations(conn, "s1", [])
+    assert conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id='s1'").fetchone()[0] == 0
     conn.close()
 
 
@@ -421,12 +444,17 @@ def test_delete_sessions_removes_owned_fact_rows():
         "duration_seconds": None, "tool_call_count": None, "transcript_path": None,
         "task_preview": None, "match_confidence": "request_only",
     }])
+    replace_file_mutations(conn, "owned-1", [{
+        "session_id": "owned-1", "source": "claude", "scope": "main", "sequence": 2,
+        "timestamp": None, "tool_name": "Edit", "tool": "edit", "path": "src/app.py",
+    }])
 
     assert delete_sessions(conn, ["owned-1"]) == 1
     assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id='owned-1'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='owned-1'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM question_answers WHERE session_id='owned-1'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id='owned-1'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id='owned-1'").fetchone()[0] == 0
     conn.close()
 
 
@@ -435,6 +463,7 @@ def test_fact_table_schema_reference_lists_tables_without_db_connection():
     assert "CREATE TABLE IF NOT EXISTS tool_calls" in ddl
     assert "CREATE TABLE IF NOT EXISTS subagent_runs" in ddl
     assert "CREATE TABLE IF NOT EXISTS question_answers" in ddl
+    assert "CREATE TABLE IF NOT EXISTS file_mutations" in ddl
 
 
 # ── run_readonly_select (read-only escape hatch) ────────────────────────────

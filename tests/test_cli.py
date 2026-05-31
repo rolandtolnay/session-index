@@ -173,6 +173,8 @@ def test_cmd_query_schema_prints_tables_and_examples_without_creating_db(tmp_pat
     cmd_query(argparse.Namespace(sql=None, json=False, limit=50, schema=True))
     out = capsys.readouterr().out
     assert "CREATE TABLE IF NOT EXISTS tool_calls" in out
+    assert "CREATE TABLE IF NOT EXISTS file_mutations" in out
+    assert "SELECT DISTINCT path FROM file_mutations" in out
     assert "example queries" in out
     assert not os.path.exists(db_path)
 

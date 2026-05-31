@@ -167,9 +167,11 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `current [--path\|--native\|--json]` | Show the exact active runtime session from Session Index env |
 | `search [query] [--project NAME] [--since DATE] [--until DATE]` | Full-text search with optional project prefix and date range |
 | `excerpt <session>... -q QUERY` | Extract focused transcript passages |
-| `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL over the structured fact tables (`tool_calls`, `subagent_runs`, `question_answers`); `--schema` prints the columns + examples |
+| `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL over the structured fact tables (`tool_calls`, `file_mutations`, `subagent_runs`, `question_answers`); `--schema` prints the columns + examples |
 | `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--no-summary]` | Process JSONL files; `--no-summary` skips the LLM summary (regenerates transcripts, tool logs, and fact tables only) |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
+
+`files_touched` remains broad search metadata and may include reads/searches. For the precise files successfully written or edited by a session, query `file_mutations`, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`.
 
 ## Data locations
 

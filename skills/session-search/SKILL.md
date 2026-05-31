@@ -68,7 +68,8 @@ uv run ~/.claude/skills/session-search/scripts/query.py "SELECT ..."
 ```
 
 The escape hatch for "find/aggregate X" questions that FTS can't answer: *most X tool
-calls*, *how often I picked the recommended answer*, *sessions that used skill/subagent X*.
+calls*, *how often I picked the recommended answer*, *sessions that used skill/subagent X*,
+or *which files were successfully written or edited by a session*.
 Runs a single read-only `SELECT`/`WITH` statement (no writes, no multi-statement) against
 the structured fact tables, row-capped (default 50, max 1000). SQL errors print verbatim so
 you can correct and retry. **Run `--schema` first** to see exact columns + example queries.
@@ -84,7 +85,11 @@ you can correct and retry. **Run `--schema` first** to see exact columns + examp
   (`main` or `agent-<id>`), `sequence, timestamp, tool_name` (raw), `tool`
   (lexically normalized: namespace-stripped + lowercased, e.g. `Agent` -> `agent`),
   `is_error, skill_name` (set only for `skill`/`Skill` calls). Semantic domains are
-  queryable through dedicated tables (`question_answers`, `subagent_runs`).
+  queryable through dedicated tables (`question_answers`, `subagent_runs`, `file_mutations`).
+- `file_mutations` — one row per successful File Mutation (a write/edit target path),
+  excluding failed mutations, reads, searches, lists, and bash. Use this for precise
+  write/edit file lists; `sessions.files_touched` remains broad search metadata. Columns:
+  `session_id, source, scope, sequence, timestamp, tool_name, tool, path`.
 - `subagent_runs` — one row per subagent run. Columns: `parent_session_id, source,
   requested_agent_type` (the canonical query label), `observed_agent_type, call_tool,
   call_sequence, call_tool_id, child_index, agent_id, status, started_at, ended_at,
@@ -93,8 +98,9 @@ you can correct and retry. **Run `--schema` first** to see exact columns + examp
   question_index, header, question, selected_label, was_recommended` (1/0/NULL),
   `is_other, option_count, multi_select`.
 
-Join to `sessions` on `tool_calls.session_id = sessions.session_id` (or
-`subagent_runs.parent_session_id`) for project/date/summary context.
+Join to `sessions` on `tool_calls.session_id = sessions.session_id`,
+`file_mutations.session_id = sessions.session_id` (or `subagent_runs.parent_session_id`)
+for project/date/summary context.
 
 ```sql
 -- 1. Sessions with the most direct subagent-request tool calls
@@ -114,13 +120,23 @@ WHERE t.skill_name='update-config' ORDER BY s.started_at DESC;
 -- 4. Sessions that used a given subagent type
 SELECT parent_session_id, COUNT(*) runs FROM subagent_runs
 WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;
+
+-- 5. Files successfully written or edited in one session
+SELECT DISTINCT path FROM file_mutations
+WHERE session_id='SESSION_ID' ORDER BY path;
+
+-- 6. File Mutation event trail for one session
+SELECT scope, sequence, tool_name, path FROM file_mutations
+WHERE session_id='SESSION_ID' ORDER BY sequence, path;
 ```
 
 **Limitations:**
 
 - Fact tables cover sessions indexed with the tool-log stage; older rows are populated by a
   one-time `uv run cli.py backfill --no-summary --force` (in the repo). If a query returns
-  surprisingly few rows, the corpus may not be fully backfilled yet.
+  surprisingly few rows, the corpus may not be fully backfilled yet. Historical
+  `file_mutations` coverage requires source-transcript backfill and cannot be reconstructed
+  from deleted raw logs by this feature.
 - `was_recommended` is NULL when the question had no `(Recommended)` option, was unanswered
   (cancelled), or is multi-select. Filter `WHERE was_recommended IS NOT NULL AND multi_select=0`
   for "picked the recommended" aggregations.

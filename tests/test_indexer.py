@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import sqlite3
@@ -82,7 +83,7 @@ def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_pa
     assert row["subagent_transcripts"] and "agent-a5f64306c4e829331.md" in row["subagent_transcripts"]
 
 
-def test_full_index_populates_fact_tables_idempotently(tmp_path, monkeypatch):
+def test_full_index_populates_tool_and_subagent_fact_tables(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "summary text")
     parent = _copy_parent(tmp_path)
@@ -103,12 +104,89 @@ def test_full_index_populates_fact_tables_idempotently(tmp_path, monkeypatch):
     assert any(s.startswith("agent-") for s in scopes)
     assert runs == 1  # one discovered subagent artifact (no Agent request in parent)
 
+
+def test_full_index_populates_file_mutations_idempotently(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "summary text")
+    parent = _copy_parent(tmp_path)
+    _add_subagent(parent)
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS)
+    sid = result.session_id
+
+    conn = db.get_connection()
+    file_mutations = conn.execute(
+        "SELECT scope, tool_name, tool, path FROM file_mutations WHERE session_id=? ORDER BY sequence, rowid",
+        (sid,),
+    ).fetchall()
+    conn.close()
+    assert [tuple(row) for row in file_mutations] == [
+        ("main", "Edit", "edit", "/Users/test/project/auth.py"),
+        ("main", "Edit", "edit", "/Users/test/project/auth.py"),
+    ]
+
     # Re-index must not duplicate (delete-then-insert).
     indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS)
     conn = db.get_connection()
-    assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (sid,)).fetchone()[0] == 7
-    assert conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id=?", (sid,)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id=?", (sid,)).fetchone()[0] == 2
     conn.close()
+
+
+def test_no_summary_index_populates_file_mutations(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path)
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.NO_SUMMARY_INDEX_OPTIONS)
+
+    conn = db.get_connection()
+    paths = [row[0] for row in conn.execute(
+        "SELECT path FROM file_mutations WHERE session_id=? ORDER BY sequence, rowid",
+        (result.session_id,),
+    )]
+    conn.close()
+    assert paths == ["/Users/test/project/auth.py", "/Users/test/project/auth.py"]
+
+
+def test_file_mutations_include_subagent_scope_when_subagents_are_parsed(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path)
+    _add_subagent(parent)
+    subagent_path = parent.parent / parent.stem / "subagents" / "agent-a5f64306c4e829331.jsonl"
+    with open(subagent_path, "a") as f:
+        f.write("\n" + json.dumps({
+            "parentUuid": "uuid-sa-009",
+            "isSidechain": True,
+            "agentId": "a5f64306c4e829331",
+            "type": "assistant",
+            "message": {"role": "assistant", "model": "claude-haiku-4-5-20251001", "content": [
+                {"type": "tool_use", "id": "tool-sa-edit", "name": "Edit", "input": {"file_path": "/Users/test/project/agent.py", "old_string": "a", "new_string": "b"}},
+            ]},
+            "uuid": "uuid-sa-010",
+            "timestamp": "2026-01-15T10:00:11.000Z",
+            "sessionId": "parent-session-123",
+        }))
+        f.write("\n" + json.dumps({
+            "parentUuid": "uuid-sa-010",
+            "isSidechain": True,
+            "agentId": "a5f64306c4e829331",
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tool-sa-edit", "content": "ok", "is_error": False},
+            ]},
+            "uuid": "uuid-sa-011",
+            "timestamp": "2026-01-15T10:00:12.000Z",
+            "sessionId": "parent-session-123",
+        }))
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.NO_SUMMARY_INDEX_OPTIONS)
+
+    conn = db.get_connection()
+    row = conn.execute(
+        "SELECT scope, tool_name, path FROM file_mutations WHERE session_id=? AND path=?",
+        (result.session_id, "/Users/test/project/agent.py"),
+    ).fetchone()
+    conn.close()
+    assert tuple(row) == ("agent-a5f64306c4e829331", "Edit", "/Users/test/project/agent.py")
 
 
 def test_index_db_write_rolls_back_session_when_fact_persistence_fails(tmp_path, monkeypatch):
@@ -132,6 +210,29 @@ def test_index_db_write_rolls_back_session_when_fact_persistence_fails(tmp_path,
     assert facts == 0
 
 
+def test_file_mutation_failure_rolls_back_session_and_prior_facts(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path)
+
+    def fail_replace_file_mutations(*args, **kwargs):
+        raise RuntimeError("file mutation write failed")
+
+    monkeypatch.setattr(db, "replace_file_mutations", fail_replace_file_mutations)
+
+    with pytest.raises(RuntimeError, match="file mutation write failed"):
+        indexer.index_source_transcript("claude", str(parent), indexer.NO_SUMMARY_INDEX_OPTIONS)
+
+    parsed = indexer.parse_session_file("claude", str(parent))
+    conn = db.get_connection()
+    row = conn.execute("SELECT session_id FROM sessions WHERE session_id=?", (parsed.session_id,)).fetchone()
+    tool_calls = conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (parsed.session_id,)).fetchone()[0]
+    mutations = conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id=?", (parsed.session_id,)).fetchone()[0]
+    conn.close()
+    assert row is None
+    assert tool_calls == 0
+    assert mutations == 0
+
+
 def test_metadata_only_index_does_not_write_fact_tables(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     parent = _copy_parent(tmp_path)
@@ -140,8 +241,10 @@ def test_metadata_only_index_does_not_write_fact_tables(tmp_path, monkeypatch):
 
     conn = db.get_connection()
     n = conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (result.session_id,)).fetchone()[0]
+    mutations = conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id=?", (result.session_id,)).fetchone()[0]
     conn.close()
     assert n == 0  # fact tables track the tool-log stage, absent here
+    assert mutations == 0
 
 
 def test_pi_question_answer_recovered_into_fact_table(tmp_path, monkeypatch):

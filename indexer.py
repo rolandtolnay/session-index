@@ -379,14 +379,20 @@ def _persist_facts(
 ) -> None:
     """Persist the structured fact tables. Coverage tracks the tool-log stage;
     idempotent via delete-then-insert. No FTS interaction."""
-    from db import replace_question_answers, replace_subagent_runs, replace_tool_calls
-    from tool_facts import build_question_rows, build_subagent_run_rows, build_tool_call_rows
+    from db import replace_file_mutations, replace_question_answers, replace_subagent_runs, replace_tool_calls
+    from tool_facts import build_file_mutation_rows, build_question_rows, build_subagent_run_rows, build_tool_call_rows
     from tool_log import combine_tool_calls
 
     if IndexStage.TOOL_LOG in stages:
+        session_id = session.session_id
         combined = combine_tool_calls(session.tool_calls, parsed_subagents)
-        replace_tool_calls(conn, session.session_id, build_tool_call_rows(session.session_id, source, combined), commit=False)
-        replace_question_answers(conn, session.session_id, build_question_rows(session.session_id, source, combined), commit=False)
+        fact_builders = (
+            (replace_tool_calls, build_tool_call_rows),
+            (replace_question_answers, build_question_rows),
+            (replace_file_mutations, build_file_mutation_rows),
+        )
+        for replace_rows, build_rows in fact_builders:
+            replace_rows(conn, session_id, build_rows(session_id, source, combined), commit=False)
 
     if stages & {IndexStage.TOOL_LOG, IndexStage.SUBAGENT_TRANSCRIPTS}:
         replace_subagent_runs(conn, session.session_id, build_subagent_run_rows(subagent_runs), commit=False)

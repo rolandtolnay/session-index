@@ -395,7 +395,15 @@ WHERE t.skill_name='update-config' ORDER BY s.started_at DESC;
 
 -- 4. Sessions that used a given subagent type
 SELECT parent_session_id, COUNT(*) runs FROM subagent_runs
-WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;"""
+WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;
+
+-- 5. Files successfully written or edited in one session
+SELECT DISTINCT path FROM file_mutations
+WHERE session_id='SESSION_ID' ORDER BY path;
+
+-- 6. File Mutation event trail for one session
+SELECT scope, sequence, tool_name, path FROM file_mutations
+WHERE session_id='SESSION_ID' ORDER BY sequence, path;"""
 
 
 def _log_query(sql: str, count: int, truncated: bool, elapsed_ms: int, error: str | None = None) -> None:
