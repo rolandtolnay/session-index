@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import replace
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from parser import ParsedToolCall
@@ -16,6 +17,17 @@ from transcript import TRANSCRIPT_DIR
 
 TOOL_RESULT_CHAR_LIMIT = 20_000
 _HALF_RESULT_LIMIT = TOOL_RESULT_CHAR_LIMIT // 2
+_TOOL_HEADING_RE = re.compile(r"^## (\d+) — .+ — .+ — .+$")
+
+
+@dataclass(frozen=True)
+class ToolLogSection:
+    path: str
+    sequence: int
+    heading: str
+    line_start: int | None
+    line_end: int | None
+    text: str
 
 
 def _format_time(timestamp: str) -> str:
@@ -52,23 +64,73 @@ def _fence_text(text: str) -> str:
     return text.replace("```", "`\u200b``")
 
 
-def combine_tool_calls(
-    session_calls: list[ParsedToolCall],
-    subagents: list[Any],
-) -> list[ParsedToolCall]:
-    """Combine main and subagent calls with stable global sequence numbers."""
-    combined: list[ParsedToolCall] = []
+def _format_tool_heading(call: ParsedToolCall) -> str:
+    """Return the canonical generated Tool Log section heading."""
+    seq = f"{call.sequence:03d}" if call.sequence < 1000 else str(call.sequence)
+    return f"## {seq} — {call.scope or 'main'} — {call.tool_name or 'tool'} — {_format_time(call.timestamp)}"
 
-    for call in session_calls:
-        combined.append(replace(call, scope="main"))
 
-    for sub in subagents:
-        agent_id = getattr(sub, "agent_id", "") or "unknown"
-        scope = f"agent-{agent_id}"
-        for call in getattr(sub, "tool_calls", []):
-            combined.append(replace(call, scope=scope))
+def _parse_tool_heading(line: str) -> int | None:
+    """Return the numeric sequence from a generated Tool Log heading."""
+    match = _TOOL_HEADING_RE.match(line.rstrip("\n"))
+    if not match:
+        return None
+    return int(match.group(1))
 
-    return [replace(call, sequence=i) for i, call in enumerate(combined, 1)]
+
+def _tool_headings(lines: list[str]) -> list[tuple[int, int]]:
+    """Return (line_index, sequence) headings outside fenced blocks."""
+    headings: list[tuple[int, int]] = []
+    in_fence = False
+    for idx, line in enumerate(lines):
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        sequence = _parse_tool_heading(line)
+        if sequence is not None:
+            headings.append((idx, sequence))
+    return headings
+
+
+def extract_tool_log_section(path: str, sequence: int) -> ToolLogSection | None:
+    """Extract one tool-call section from a generated Tool Log markdown file.
+
+    Returns None for a missing file or a missing sequence. The returned text starts
+    at the matching heading and stops immediately before the next tool heading.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+
+    headings = _tool_headings(lines)
+    start_idx: int | None = None
+    next_heading_idx: int | None = None
+    for pos, (idx, heading_sequence) in enumerate(headings):
+        if heading_sequence == sequence:
+            start_idx = idx
+            if pos + 1 < len(headings):
+                next_heading_idx = headings[pos + 1][0]
+            break
+    if start_idx is None:
+        return None
+
+    end_idx = next_heading_idx if next_heading_idx is not None else len(lines)
+
+    heading = lines[start_idx].rstrip("\n")
+    return ToolLogSection(
+        path=path,
+        sequence=sequence,
+        heading=heading,
+        line_start=start_idx + 1,
+        line_end=end_idx,
+        text="".join(lines[start_idx:end_idx]).rstrip("\n"),
+    )
 
 
 def write_tool_log(
@@ -98,9 +160,8 @@ def write_tool_log(
     ]
 
     for call in tool_calls:
-        seq = f"{call.sequence:03d}" if call.sequence < 1000 else str(call.sequence)
         lines.extend([
-            f"## {seq} — {call.scope or 'main'} — {call.tool_name or 'tool'} — {_format_time(call.timestamp)}",
+            _format_tool_heading(call),
             "",
             f"Status: {'error' if call.is_error else 'ok'}",
             f"Tool call ID: {call.tool_call_id or 'unknown'}",

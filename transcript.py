@@ -21,6 +21,14 @@ class SubagentRef:
     agent_id: str
 
 
+@dataclass(frozen=True)
+class TranscriptExcerpt:
+    artifact: str
+    path: str
+    locator: dict[str, object]
+    text: str
+
+
 def _format_message_time(timestamp: str) -> str:
     """Extract HH:MM:SS from an ISO 8601 timestamp. Returns '' if unavailable."""
     if not timestamp or len(timestamp) < 19:
@@ -42,7 +50,6 @@ def _expand_subagent_markers(
     Mutates ref_index[0] to track which subagent we're up to (order-based matching).
     """
     out_lines: list[str] = []
-    prev_was_subagent = False
     for line in content.split("\n"):
         m = _SUBAGENT_MARKER_RE.match(line.strip())
         if m:
@@ -57,10 +64,7 @@ def _expand_subagent_markers(
                 ref = subagent_refs[idx]
                 out_lines.append(f"→ see: agent-{ref.agent_id}.md")
                 ref_index[0] = idx + 1
-            prev_was_subagent = True
         else:
-            if line.strip():
-                prev_was_subagent = False
             out_lines.append(line)
     return "\n".join(out_lines)
 
@@ -315,6 +319,41 @@ def _apply_qa_pairing(
     return paired
 
 
+def extract_excerpt_objects(
+    transcript_path: str,
+    keywords: list[str],
+    *,
+    artifact: str = "clean_transcript",
+    max_blocks: int = 5,
+    max_lines: int = 200,
+    strategy: str = STRATEGY_HYBRID,
+    qa_pair: bool = True,
+) -> list[TranscriptExcerpt]:
+    """Return JSON-ready transcript excerpts with artifact metadata."""
+    text = _select_excerpt_text(
+        transcript_path,
+        keywords,
+        max_blocks=max_blocks,
+        max_lines=max_lines,
+        strategy=strategy,
+        qa_pair=qa_pair,
+    )
+    if text is None:
+        return []
+    return [TranscriptExcerpt(
+        artifact=artifact,
+        path=transcript_path,
+        locator={
+            "type": "excerpt",
+            "strategy": strategy,
+            "max_blocks": max_blocks,
+            "max_lines": max_lines,
+            "qa_pair": qa_pair,
+        },
+        text=text,
+    )]
+
+
 def extract_excerpts(
     transcript_path: str,
     keywords: list[str],
@@ -323,7 +362,28 @@ def extract_excerpts(
     strategy: str = STRATEGY_HYBRID,
     qa_pair: bool = True,
 ) -> str | None:
-    """Extract the most relevant message blocks from a transcript.
+    """Compatibility shim returning text from the canonical structured excerpt."""
+    excerpts = extract_excerpt_objects(
+        transcript_path,
+        keywords,
+        max_blocks=max_blocks,
+        max_lines=max_lines,
+        strategy=strategy,
+        qa_pair=qa_pair,
+    )
+    return excerpts[0].text if excerpts else None
+
+
+def _select_excerpt_text(
+    transcript_path: str,
+    keywords: list[str],
+    *,
+    max_blocks: int = 5,
+    max_lines: int = 200,
+    strategy: str = STRATEGY_HYBRID,
+    qa_pair: bool = True,
+) -> str | None:
+    """Select excerpt text shared by structured and legacy callers.
 
     Strategies:
       - first_n: first matching blocks chronologically (original behavior)

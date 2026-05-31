@@ -87,6 +87,21 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_skill ON tool_calls(skill_name);
 
+-- One row per successful write/edit file mutation event. Paths are stored exactly
+-- as supplied to the tool call; non-mutating tools and failed mutations are excluded.
+CREATE TABLE IF NOT EXISTS file_mutations (
+    session_id TEXT NOT NULL,
+    source TEXT,
+    scope TEXT,
+    sequence INTEGER,
+    timestamp TEXT,
+    tool_name TEXT,
+    tool TEXT,
+    path TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_file_mutations_session ON file_mutations(session_id);
+CREATE INDEX IF NOT EXISTS idx_file_mutations_path ON file_mutations(path);
+
 -- One row per normalized subagent run (persisted ParsedSubagentRun facts).
 CREATE TABLE IF NOT EXISTS subagent_runs (
     parent_session_id TEXT NOT NULL,
@@ -130,7 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_question_answers_session ON question_answers(sess
 CREATE INDEX IF NOT EXISTS idx_question_answers_recommended ON question_answers(was_recommended);
 """
 
-_FACT_TABLES = ("tool_calls", "subagent_runs", "question_answers")
+_FACT_TABLES = ("tool_calls", "file_mutations", "subagent_runs", "question_answers")
 _SESSION_COLUMNS = (
     "session_id",
     "source",
@@ -322,7 +337,7 @@ def upsert_session(
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 
 
-def _build_fts_query(query: str, use_or: bool = False) -> str:
+def build_fts_query(query: str, use_or: bool = False) -> str:
     """Build an FTS5 query string, quoting terms but preserving operators.
 
     - Quotes each non-operator term with "term" for special char safety
@@ -344,6 +359,11 @@ def _build_fts_query(query: str, use_or: bool = False) -> str:
     return " ".join(parts)
 
 
+def _build_fts_query(query: str, use_or: bool = False) -> str:
+    """Compatibility wrapper for existing tests/imports."""
+    return build_fts_query(query, use_or=use_or)
+
+
 def search_flexible(
     conn: sqlite3.Connection,
     query: str | None = None,
@@ -352,6 +372,7 @@ def search_flexible(
     until: str | None = None,
     limit: int = 20,
     use_or: bool = False,
+    session: str | None = None,
 ) -> list[dict[str, Any]]:
     """Flexible search: FTS5 text + optional project prefix, date range filters.
 
@@ -375,9 +396,12 @@ def search_flexible(
             until = f"{until}T23:59:59.999999"
         clauses.append("s.started_at <= :until")
         params["until"] = until
+    if session:
+        clauses.append("s.session_id = :session")
+        params["session"] = session
 
     if query and query.strip():
-        params["query"] = _build_fts_query(query, use_or=use_or)
+        params["query"] = build_fts_query(query, use_or=use_or)
 
         where = "WHERE sessions_fts MATCH :query"
         if clauses:
@@ -544,15 +568,26 @@ def replace_question_answers(
     _replace_rows(conn, "question_answers", "session_id", session_id, rows, commit=commit)
 
 
+def replace_file_mutations(
+    conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]], *, commit: bool = True,
+) -> None:
+    _replace_rows(conn, "file_mutations", "session_id", session_id, rows, commit=commit)
+
+
 def delete_sessions(conn: sqlite3.Connection, session_ids: list[str], *, commit: bool = True) -> int:
     """Delete sessions and all owned fact rows for those session ids."""
     ids = [sid for sid in session_ids if sid]
     if not ids:
         return 0
     placeholders = ", ".join("?" for _ in ids)
-    conn.execute(f"DELETE FROM tool_calls WHERE session_id IN ({placeholders})", ids)
-    conn.execute(f"DELETE FROM question_answers WHERE session_id IN ({placeholders})", ids)
-    conn.execute(f"DELETE FROM subagent_runs WHERE parent_session_id IN ({placeholders})", ids)
+    fact_owners = (
+        ("tool_calls", "session_id"),
+        ("question_answers", "session_id"),
+        ("file_mutations", "session_id"),
+        ("subagent_runs", "parent_session_id"),
+    )
+    for table, key_column in fact_owners:
+        conn.execute(f"DELETE FROM {table} WHERE {key_column} IN ({placeholders})", ids)
     cursor = conn.execute(f"DELETE FROM sessions WHERE session_id IN ({placeholders})", ids)
     if commit:
         conn.commit()

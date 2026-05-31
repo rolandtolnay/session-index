@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, _block_role
+from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, extract_excerpt_objects, _block_role
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -265,6 +265,34 @@ def _write_test_transcript(tmp_path, messages):
     with open(path, "w") as f:
         f.write("\n".join(lines))
     return path
+
+
+def test_extract_excerpt_objects_wraps_existing_excerpt_behavior(tmp_path):
+    path = _write_test_transcript(tmp_path, [
+        {"role": "user", "content": "Fix the authentication timeout bug"},
+        {"role": "assistant", "content": "I found the issue in the auth module."},
+        {"role": "user", "content": "Add pagination to the API"},
+        {"role": "assistant", "content": "Done with pagination."},
+    ])
+
+    objects = extract_excerpt_objects(path, ["authentication"], artifact="clean_transcript")
+
+    assert len(objects) == 1
+    excerpt = objects[0]
+    assert excerpt.artifact == "clean_transcript"
+    assert excerpt.path == path
+    assert excerpt.locator["type"] == "excerpt"
+    assert excerpt.locator["strategy"] == "hybrid"
+    assert "authentication timeout" in excerpt.text
+    assert "pagination" not in excerpt.text
+    assert excerpt.text == extract_excerpts(path, ["authentication"])
+
+
+def test_extract_excerpt_objects_missing_no_keywords_or_no_matches_are_empty(tmp_path):
+    path = _write_test_transcript(tmp_path, [{"role": "user", "content": "Fix the auth bug"}])
+    assert extract_excerpt_objects("/nonexistent/path.md", ["auth"]) == []
+    assert extract_excerpt_objects(path, ["to"]) == []
+    assert extract_excerpt_objects(path, ["pagination"]) == []
 
 
 def test_excerpt_matches_keyword(tmp_path):

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Excerpt wrapper — resolves repo root via symlink, runs CLI excerpt."""
-import argparse
-import os
-import sys
+"""Legacy excerpt wrapper.
 
-# Resolve symlink chain: scripts/ -> session-search/ -> skills/ -> repo_root
-here = os.path.dirname(os.path.realpath(__file__))
-repo_root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
-sys.path.insert(0, repo_root)
+Kept temporarily for compatibility; primary workflow is find -> inspect, with
+query for aggregates/custom SQL. This wrapper is not documented by the skill.
+"""
+from _bootstrap import repo_root
+
+repo_root()
+
+import argparse
 
 from cli import cmd_excerpt
 

@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from parser import ParsedQuestionSelection, ParsedToolCall
 from subagent_runs import ParsedSubagentRun
 from tool_facts import (
+    build_file_mutation_rows,
     build_question_rows,
     build_subagent_run_rows,
     build_tool_call_rows,
@@ -48,6 +49,146 @@ def test_build_tool_call_rows_normalizes_and_flags():
     assert rows[2]["skill_name"] == "review"
     assert rows[0]["skill_name"] is None
     assert all(r["session_id"] == "sess-1" and r["source"] == "claude" for r in rows)
+
+
+# ── build_file_mutation_rows ────────────────────────────────────────────────
+
+
+def test_claude_write_file_path_produces_file_mutation_row():
+    call = ParsedToolCall(
+        scope="main",
+        sequence=7,
+        timestamp="2026-05-31T12:00:00Z",
+        tool_name="Write",
+        arguments={"file_path": "src/app.py", "content": "print('hi')"},
+    )
+
+    rows = build_file_mutation_rows("sess-1", "claude", [call])
+
+    assert rows == [{
+        "session_id": "sess-1",
+        "source": "claude",
+        "scope": "main",
+        "sequence": 7,
+        "timestamp": "2026-05-31T12:00:00Z",
+        "tool_name": "Write",
+        "tool": "write",
+        "path": "src/app.py",
+    }]
+
+
+def test_claude_edit_file_path_produces_file_mutation_row():
+    call = ParsedToolCall(tool_name="Edit", arguments={"file_path": "src/app.py", "old_string": "a", "new_string": "b"})
+
+    rows = build_file_mutation_rows("sess-1", "claude", [call])
+
+    assert [(r["tool_name"], r["tool"], r["path"]) for r in rows] == [("Edit", "edit", "src/app.py")]
+
+
+def test_pi_write_and_edit_path_produce_file_mutation_rows():
+    calls = [
+        ParsedToolCall(sequence=1, tool_name="write", arguments={"path": "src/a.py", "content": "a"}),
+        ParsedToolCall(sequence=2, tool_name="edit", arguments={"path": "src/b.py", "oldText": "a", "newText": "b"}),
+    ]
+
+    rows = build_file_mutation_rows("pi:sess-1", "pi", calls)
+
+    assert [(r["sequence"], r["tool"], r["path"]) for r in rows] == [
+        (1, "write", "src/a.py"),
+        (2, "edit", "src/b.py"),
+    ]
+
+
+def test_pi_edit_nested_paths_used_when_no_top_level_path_covers_them():
+    call = ParsedToolCall(
+        sequence=3,
+        tool_name="edit",
+        arguments={"edits": [{"path": "src/a.py", "oldText": "a"}, {"path": "src/b.py", "oldText": "b"}]},
+    )
+
+    rows = build_file_mutation_rows("pi:sess-1", "pi", [call])
+
+    assert [(r["tool"], r["path"]) for r in rows] == [("edit", "src/a.py"), ("edit", "src/b.py")]
+
+
+def test_edit_top_level_and_nested_paths_are_both_preserved_when_distinct():
+    call = ParsedToolCall(
+        tool_name="edit",
+        arguments={"path": "src/top.py", "edits": [{"path": "src/nested.py"}]},
+    )
+
+    rows = build_file_mutation_rows("pi:sess-1", "pi", [call])
+
+    assert [r["path"] for r in rows] == ["src/top.py", "src/nested.py"]
+
+
+def test_wrapper_write_and_edit_mutations_use_wrapper_attribution_and_nested_tool_names():
+    call = ParsedToolCall(
+        scope="main",
+        sequence=9,
+        timestamp="2026-05-31T13:00:00Z",
+        tool_name="multi_tool_use.parallel",
+        arguments={"tool_uses": [
+            {"recipient_name": "functions.write", "parameters": {"path": "src/a.py", "content": "a"}},
+            {"recipient_name": "functions.edit", "parameters": {"path": "src/b.py", "edits": []}},
+            {"recipient_name": "functions.read", "parameters": {"path": "src/c.py"}},
+        ]},
+    )
+
+    rows = build_file_mutation_rows("sess-1", "pi", [call])
+
+    assert all(
+        row["session_id"] == "sess-1"
+        and row["source"] == "pi"
+        and row["scope"] == "main"
+        and row["sequence"] == 9
+        and row["timestamp"] == "2026-05-31T13:00:00Z"
+        for row in rows
+    )
+    assert [(row["tool_name"], row["tool"], row["path"]) for row in rows] == [
+        ("functions.write", "write", "src/a.py"),
+        ("functions.edit", "edit", "src/b.py"),
+    ]
+
+
+def test_failed_file_mutations_are_excluded():
+    calls = [
+        ParsedToolCall(tool_name="Write", arguments={"file_path": "src/a.py"}, is_error=True),
+        ParsedToolCall(tool_name="edit", arguments={"path": "src/b.py"}, is_error=True),
+    ]
+
+    assert build_file_mutation_rows("sess-1", "claude", calls) == []
+
+
+def test_non_mutating_tools_do_not_produce_file_mutation_rows():
+    calls = [
+        ParsedToolCall(tool_name="Read", arguments={"file_path": "src/a.py"}),
+        ParsedToolCall(tool_name="Grep", arguments={"path": "src"}),
+        ParsedToolCall(tool_name="LS", arguments={"path": "src"}),
+        ParsedToolCall(tool_name="Bash", arguments={"command": "cat > src/a.py"}),
+    ]
+
+    assert build_file_mutation_rows("sess-1", "claude", calls) == []
+
+
+def test_file_mutations_dedupe_paths_within_call_but_not_across_calls():
+    calls = [
+        ParsedToolCall(sequence=1, tool_name="edit", arguments={"edits": [{"path": "src/a.py"}, {"path": "src/a.py"}]}),
+        ParsedToolCall(sequence=2, tool_name="edit", arguments={"path": "src/a.py"}),
+    ]
+
+    rows = build_file_mutation_rows("sess-1", "pi", calls)
+
+    assert [(r["sequence"], r["path"]) for r in rows] == [(1, "src/a.py"), (2, "src/a.py")]
+
+
+def test_file_mutations_preserve_subagent_scope():
+    call = ParsedToolCall(scope="agent-a5f64306c4e829331", sequence=4, tool_name="Edit", arguments={"file_path": "src/agent.py"})
+
+    rows = build_file_mutation_rows("sess-1", "claude", [call])
+
+    assert rows[0]["scope"] == "agent-a5f64306c4e829331"
+    assert rows[0]["path"] == "src/agent.py"
 
 
 # ── build_question_rows ─────────────────────────────────────────────────────

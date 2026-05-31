@@ -14,6 +14,7 @@ from subagent_runs import ParsedSubagentRun
 
 _QUESTION_TOOLS = {"askuserquestion", "question"}
 _SKILL_TOOLS = {"skill"}
+_FILE_MUTATION_TOOLS = {"write", "edit"}
 _RECOMMENDED_MARKER = "(Recommended)"
 
 
@@ -55,6 +56,108 @@ def build_tool_call_rows(
             "is_error": 1 if call.is_error else 0,
             "skill_name": extract_skill_name(call),
         })
+    return rows
+
+
+def _top_level_paths(arguments: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for key in ("file_path", "path"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value:
+            paths.append(value)
+    return paths
+
+
+def _edit_batch_paths(arguments: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    edits = arguments.get("edits")
+    if isinstance(edits, list):
+        for edit in edits:
+            if isinstance(edit, dict) and isinstance(edit.get("path"), str) and edit["path"]:
+                paths.append(edit["path"])
+    return paths
+
+
+def _unique_in_order(paths: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def _mutation_paths(tool: str, arguments: dict[str, Any]) -> list[str]:
+    if tool not in _FILE_MUTATION_TOOLS:
+        return []
+
+    paths = _top_level_paths(arguments)
+    if tool == "edit":
+        paths.extend(_edit_batch_paths(arguments))
+    return _unique_in_order(paths)
+
+
+def _append_file_mutation_rows(
+    rows: list[dict[str, Any]],
+    *,
+    session_id: str,
+    source: str,
+    call: ParsedToolCall,
+    tool_name: str,
+    tool: str,
+    paths: list[str],
+) -> None:
+    for path in paths:
+        rows.append({
+            "session_id": session_id,
+            "source": source,
+            "scope": call.scope or "main",
+            "sequence": call.sequence or None,
+            "timestamp": call.timestamp or None,
+            "tool_name": tool_name or "",
+            "tool": tool,
+            "path": path,
+        })
+
+
+def _mutation_candidates(call: ParsedToolCall) -> list[tuple[str, dict[str, Any]]]:
+    args = call.arguments if isinstance(call.arguments, dict) else {}
+    candidates = [(call.tool_name, args)]
+
+    tool_uses = args.get("tool_uses")
+    if isinstance(tool_uses, list):
+        for nested in tool_uses:
+            if not isinstance(nested, dict):
+                continue
+            nested_tool_name = nested.get("recipient_name")
+            if not isinstance(nested_tool_name, str):
+                continue
+            nested_args = nested.get("parameters")
+            candidates.append((nested_tool_name, nested_args if isinstance(nested_args, dict) else {}))
+    return candidates
+
+
+def build_file_mutation_rows(
+    session_id: str, source: str, combined_calls: list[ParsedToolCall],
+) -> list[dict[str, Any]]:
+    """One row per successful write/edit file mutation event."""
+    rows: list[dict[str, Any]] = []
+    for call in combined_calls:
+        if call.is_error:
+            continue
+
+        for tool_name, args in _mutation_candidates(call):
+            tool = normalize_tool_name(tool_name)
+            _append_file_mutation_rows(
+                rows,
+                session_id=session_id,
+                source=source,
+                call=call,
+                tool_name=tool_name,
+                tool=tool,
+                paths=_mutation_paths(tool, args),
+            )
     return rows
 
 

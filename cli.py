@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""CLI for session-index: search, backfill, status.
+"""CLI for session-index: find, inspect, query, backfill, status.
 
-Usage:
-    uv run cli.py search "query"
-    uv run cli.py backfill [--source claude|pi|all] [--force] [--prune]
-    uv run cli.py status [--fix]
+Use `query` for aggregates/custom SQL, `find` for compact evidence candidates,
+and `inspect` for scoped transcript/tool/subagent evidence text.
 """
 
 import argparse
@@ -30,7 +28,88 @@ from db import (
     DB_PATH,
 )
 from logger import log
+from evidence_find import find_candidates
+from evidence_inspect import EvidenceInspectError, inspect_ref
 from transcript import extract_excerpts, TRANSCRIPT_DIR
+
+
+def _parse_bool(value: str) -> bool:
+    lowered = value.lower()
+    if lowered in {"true", "1", "yes"}:
+        return True
+    if lowered in {"false", "0", "no"}:
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
+
+
+def cmd_find(args: argparse.Namespace) -> None:
+    """Print compact JSON Evidence Find candidates."""
+    conn = get_connection()
+    try:
+        init_db(conn)
+        data = find_candidates(
+            conn,
+            topic=args.topic,
+            tool=args.tool,
+            skill=args.skill,
+            mutated=args.mutated,
+            subagent=args.subagent,
+            question_recommended=args.question_recommended,
+            project=args.project,
+            since=args.since,
+            until=args.until,
+            session=args.session,
+            limit=args.limit,
+        )
+    except ValueError as e:
+        print(json.dumps({"error": {"code": "invalid_find", "message": str(e)}}))
+        raise SystemExit(2)
+    finally:
+        conn.close()
+    print(json.dumps(data, default=str, sort_keys=True))
+
+
+def cmd_inspect(args: argparse.Namespace) -> None:
+    """Print a JSON Evidence Packet for one Inspection Reference."""
+    conn = get_connection()
+    try:
+        init_db(conn)
+        packet = inspect_ref(conn, args.ref, q=args.q, max_snippets=args.max_snippets)
+    except EvidenceInspectError as e:
+        print(json.dumps(e.to_json(), default=str, sort_keys=True))
+        raise SystemExit(1)
+    finally:
+        conn.close()
+    print(json.dumps(packet, default=str, sort_keys=True))
+
+
+def add_find_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--topic", help="Topic text for session-level candidate discovery")
+    parser.add_argument("--tool", help="Tool name for event-level Tool Call candidates")
+    parser.add_argument("--skill", help="Skill name for event-level skill invocation candidates")
+    parser.add_argument("--mutated", help="File Mutation path fragment (uses file_mutations, not files_touched)")
+    parser.add_argument("--subagent", help="Requested/observed subagent type")
+    parser.add_argument(
+        "--question-recommended",
+        type=_parse_bool,
+        choices=[True, False],
+        help="For --tool question, filter by true/false recommended answer selection",
+    )
+    parser.add_argument("--project", "-p", help="Filter by project name (prefix match)")
+    parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
+    parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
+    parser.add_argument("--session", help="Only this canonical session ID")
+    parser.add_argument("--limit", type=int, default=20)
+
+
+def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ref",
+        required=True,
+        help="Inspection Reference, e.g. session/<id>, tool/<id>/<seq>, question/<id>/<seq>/<idx>, subagent/<id>/<child>",
+    )
+    parser.add_argument("--q", help="Query text for session/subagent transcript excerpts")
+    parser.add_argument("--max-snippets", type=int, default=5, help="Maximum transcript excerpt blocks/snippets")
 
 
 def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
@@ -379,6 +458,10 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 _QUERY_LIMIT_CAP = 1000
 
 EXAMPLE_QUERIES = """\
+-- Use query for counts, rankings, aggregates, and custom SQL.
+-- Use find --mutated/--tool/--skill/--subagent for compact evidence candidates,
+-- then copy refs into inspect for scoped evidence text.
+
 -- 1. Sessions with the most direct subagent-request tool calls
 SELECT session_id, COUNT(*) n FROM tool_calls
 WHERE tool IN ('agent', 'subagent', 'subagent_run') AND scope='main'
@@ -388,14 +471,23 @@ GROUP BY session_id ORDER BY n DESC LIMIT 10;
 SELECT was_recommended, COUNT(*) FROM question_answers
 WHERE was_recommended IS NOT NULL AND multi_select=0 GROUP BY was_recommended;
 
--- 3. Sessions that used a given skill
-SELECT DISTINCT t.session_id, s.project, s.started_at
+-- 3. Sessions that used a given skill (candidate refs can be built as tool/<session_id>/<sequence>)
+SELECT 'tool/' || t.session_id || '/' || t.sequence AS ref, t.session_id, s.project, s.started_at
 FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id
-WHERE t.skill_name='update-config' ORDER BY s.started_at DESC;
+WHERE t.skill_name='update-config' ORDER BY s.started_at DESC LIMIT 20;
 
 -- 4. Sessions that used a given subagent type
 SELECT parent_session_id, COUNT(*) runs FROM subagent_runs
-WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;"""
+WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;
+
+-- 5. Files successfully written or edited in one session
+SELECT DISTINCT path FROM file_mutations
+WHERE session_id='SESSION_ID' ORDER BY path;
+
+-- 6. File Mutation event trail for one session (use find --mutated for evidence candidates)
+SELECT 'tool/' || session_id || '/' || sequence AS ref, scope, sequence, tool_name, path
+FROM file_mutations
+WHERE session_id='SESSION_ID' ORDER BY sequence, path;"""
 
 
 def _log_query(sql: str, count: int, truncated: bool, elapsed_ms: int, error: str | None = None) -> None:
@@ -703,7 +795,12 @@ def _fix_issues(conn, issues: dict) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Session Index CLI")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Session Index CLI. Decision tree: use query for aggregates/custom SQL, "
+            "find for compact evidence candidates, inspect for scoped evidence text."
+        )
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # current
@@ -718,21 +815,26 @@ def main() -> None:
     current_output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")
     sp_current.set_defaults(func=cmd_current)
 
-    # search
-    sp_search = subparsers.add_parser("search", help="Full-text search")
-    sp_search.add_argument("query", nargs="?", default=None, help="Search query (optional if filters provided)")
-    sp_search.add_argument("--project", "-p", help="Filter by project name (prefix match)")
-    sp_search.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
-    sp_search.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
-    sp_search.add_argument("--any", action="store_true", help="Match ANY term (OR) instead of ALL terms (AND)")
-    sp_search.add_argument("--limit", type=int, default=20)
-    sp_search.set_defaults(func=cmd_search)
+    # find
+    sp_find = subparsers.add_parser(
+        "find",
+        help="Compact JSON evidence candidates (no transcript/tool-log evidence text)",
+        description=(
+            "Evidence Find: compact JSON candidates with Inspection References. "
+            "Use query for aggregates/custom SQL and inspect for scoped evidence text."
+        ),
+    )
+    add_find_arguments(sp_find)
+    sp_find.set_defaults(func=cmd_find)
 
-    # excerpt
-    sp_excerpt = subparsers.add_parser("excerpt", help="Extract transcript passages from specific sessions")
-    sp_excerpt.add_argument("sessions", nargs="+", help="Session ID(s) or 8+ char prefix (max 3)")
-    sp_excerpt.add_argument("--query", "-q", required=True, help="Keywords to focus extraction")
-    sp_excerpt.set_defaults(func=cmd_excerpt)
+    # inspect
+    sp_inspect = subparsers.add_parser(
+        "inspect",
+        help="Resolve one Inspection Reference into a JSON Evidence Packet",
+        description="Evidence Inspect: scoped evidence text from refs returned by find.",
+    )
+    add_inspect_arguments(sp_inspect)
+    sp_inspect.set_defaults(func=cmd_inspect)
 
     # backfill
     sp_backfill = subparsers.add_parser("backfill", help="Process all JSONL files")
