@@ -145,33 +145,6 @@ CREATE INDEX IF NOT EXISTS idx_question_answers_session ON question_answers(sess
 CREATE INDEX IF NOT EXISTS idx_question_answers_recommended ON question_answers(was_recommended);
 """
 
-_FACT_TABLES = ("tool_calls", "file_mutations", "subagent_runs", "question_answers")
-_SESSION_COLUMNS = (
-    "session_id",
-    "source",
-    "native_session_id",
-    "source_path",
-    "slug",
-    "project_path",
-    "project",
-    "branch",
-    "model",
-    "started_at",
-    "ended_at",
-    "duration_seconds",
-    "user_message_count",
-    "user_messages",
-    "files_touched",
-    "tools_used",
-    "summary",
-    "transcript_path",
-    "tool_log_path",
-    "subagent_transcripts",
-    "parent_session_path",
-    "parent_native_session_id",
-)
-
-
 def get_connection() -> sqlite3.Connection:
     """Get a database connection with WAL mode enabled."""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -364,7 +337,7 @@ def _build_fts_query(query: str, use_or: bool = False) -> str:
     return build_fts_query(query, use_or=use_or)
 
 
-def search_flexible(
+def find_session_candidates(
     conn: sqlite3.Connection,
     query: str | None = None,
     project: str | None = None,
@@ -374,9 +347,9 @@ def search_flexible(
     use_or: bool = False,
     session: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Flexible search: FTS5 text + optional project prefix, date range filters.
+    """Find FTS-backed session candidates with optional structured filters.
 
-    - query provided: FTS5 search with optional structured filters, ordered by rank
+    - query provided: FTS5 candidate lookup with optional structured filters, ordered by rank
     - query empty: structured filters only, ordered by started_at DESC
     - nothing provided: returns most recent sessions
     - use_or: join terms with OR instead of implicit AND (ignored if query has explicit operators)
@@ -643,16 +616,48 @@ def run_readonly_select(sql: str, max_rows: int = 50) -> tuple[list[str], list[l
         conn.close()
 
 
-def fact_table_schema_reference() -> str:
-    """Return fact-table CREATE DDL from the static schema without opening SQLite."""
-    statements: list[str] = []
-    for raw_statement in SCHEMA.split(";"):
-        statement = raw_statement.strip()
-        if any(f"CREATE TABLE IF NOT EXISTS {table}" in statement for table in _FACT_TABLES):
-            statements.append(statement + ";")
-    return "\n\n".join(statements)
+def query_reference() -> str:
+    """Return a curated LLM-oriented reference for read-only fact-table queries."""
+    return """Session Index query reference
 
+Use `query` for counts, rankings, aggregates, and custom joins. Use `find` for compact Evidence Find candidates, then pass Inspection References to `inspect` for scoped evidence text.
 
-def session_columns() -> list[str]:
-    """Return sessions table columns from the static schema contract."""
-    return list(_SESSION_COLUMNS)
+Tables and semantics
+
+sessions: one row per indexed conversation. Useful join columns: session_id, source, project, branch, started_at, ended_at, duration_seconds, summary, transcript_path, tool_log_path. Source Transcript paths are ingestion metadata, not the normal evidence path.
+
+tool_calls: one row per indexed tool call. Key columns: session_id, scope, sequence, timestamp, tool_name, tool, is_error, skill_name. The pair (session_id, sequence) constructs a Tool Inspection Reference.
+
+file_mutations: one row per successful write/edit path. Key columns: session_id, scope, sequence, timestamp, tool_name, tool, path. This is the precise File Mutation table; sessions.files_touched is broad metadata.
+
+subagent_runs: one row per Subagent Run requested by a parent session. Key columns: parent_session_id, requested_agent_type, observed_agent_type, call_tool, call_sequence, child_index, agent_id, status, tool_call_count, transcript_path, task_preview, match_confidence. Use requested_agent_type as the canonical agent label.
+
+question_answers: one row per asked question. Key columns: session_id, sequence, question_index, header, question, selected_label, was_recommended, is_other, option_count, multi_select. was_recommended is NULL for unanswered or multi-select rows.
+
+Construct Inspection References
+
+tool/<session_id>/<sequence> for rows from tool_calls or file_mutations.
+question/<session_id>/<sequence>/<question_index> for rows from question_answers.
+subagent/<parent_session_id>/<child_index> for rows from subagent_runs with child_index.
+session/<session_id> for session-level inspection and generated artifact metadata.
+
+Copyable examples
+
+Aggregate tool use:
+SELECT tool, COUNT(*) AS n FROM tool_calls GROUP BY tool ORDER BY n DESC LIMIT 20;
+
+Recommended answer rate:
+SELECT was_recommended, COUNT(*) AS n FROM question_answers WHERE was_recommended IS NOT NULL AND multi_select=0 GROUP BY was_recommended;
+
+Find skill invocations and build inspect refs:
+SELECT 'tool/' || t.session_id || '/' || t.sequence AS ref, t.session_id, s.project, s.started_at FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id WHERE t.skill_name='review' ORDER BY s.started_at DESC LIMIT 20;
+
+Subagent runs with inspect refs:
+SELECT 'subagent/' || parent_session_id || '/' || child_index AS ref, requested_agent_type, task_preview FROM subagent_runs WHERE child_index IS NOT NULL ORDER BY parent_session_id, child_index LIMIT 20;
+
+Exact File Mutations in one session:
+SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;
+
+File Mutation event trail to inspect:
+SELECT 'tool/' || session_id || '/' || sequence AS ref, scope, sequence, tool_name, path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY sequence, path;
+"""

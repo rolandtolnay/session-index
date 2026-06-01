@@ -10,7 +10,7 @@ import db
 from db import (
     init_db,
     upsert_session,
-    search_flexible,
+    find_session_candidates,
     get_session,
     get_recent_by_project,
     get_stats,
@@ -22,7 +22,7 @@ from db import (
     replace_question_answers,
     replace_file_mutations,
     delete_sessions,
-    fact_table_schema_reference,
+    query_reference,
 )
 
 
@@ -109,7 +109,7 @@ def test_upsert_overwrites_with_value():
     conn.close()
 
 
-def test_search_fts():
+def test_find_session_candidates_fts():
     conn = _make_conn()
     upsert_session(
         conn, session_id="s1", project="dashboard",
@@ -121,7 +121,7 @@ def test_search_fts():
         user_messages="Add pagination to API",
         summary="Implemented cursor-based pagination",
     )
-    results = search_flexible(conn, query="token refresh")
+    results = find_session_candidates(conn, query="token refresh")
     assert len(results) >= 1
     assert any(r["session_id"] == "s1" for r in results)
     conn.close()
@@ -157,7 +157,7 @@ def test_rebuild_fts():
     conn = _make_conn()
     upsert_session(conn, session_id="rb1", user_messages="test rebuild", summary="rebuilding")
     rebuild_fts(conn)
-    results = search_flexible(conn, query="rebuild")
+    results = find_session_candidates(conn, query="rebuild")
     assert len(results) >= 1
     conn.close()
 
@@ -192,38 +192,38 @@ def test_build_fts_query_explicit_ops_ignore_use_or():
     assert result == '"auth" OR "token"'
 
 
-# ── search_flexible tests ──────────────────────────────────────────────────
+# ── find_session_candidates tests ─────────────────────────────────────────
 
 
-def test_search_flexible_or_mode():
+def test_find_session_candidates_or_mode():
     conn = _make_conn()
     upsert_session(conn, session_id="or1", project="proj",
                    user_messages="auth token refresh", summary="Fixed auth tokens")
     upsert_session(conn, session_id="or2", project="proj",
                    user_messages="add pagination", summary="Added pagination")
     # AND: only or1 matches (has both "auth" and "token")
-    results_and = search_flexible(conn, query="auth pagination", use_or=False)
+    results_and = find_session_candidates(conn, query="auth pagination", use_or=False)
     assert len(results_and) == 0  # no session has both
     # OR: both match (or1 has "auth", or2 has "pagination")
-    results_or = search_flexible(conn, query="auth pagination", use_or=True)
+    results_or = find_session_candidates(conn, query="auth pagination", use_or=True)
     assert len(results_or) == 2
     conn.close()
 
 
-def test_search_flexible_fts_only():
+def test_find_session_candidates_fts_only():
     conn = _make_conn()
     upsert_session(conn, session_id="sf1", project="proj",
                    user_messages="auth token refresh", summary="Fixed auth tokens")
     upsert_session(conn, session_id="sf2", project="proj",
                    user_messages="add pagination", summary="Added pagination")
-    results = search_flexible(conn, query="auth token")
+    results = find_session_candidates(conn, query="auth token")
     assert len(results) >= 1
     assert any(r["session_id"] == "sf1" for r in results)
     assert not any(r["session_id"] == "sf2" for r in results)
     conn.close()
 
 
-def test_search_flexible_project_prefix():
+def test_find_session_candidates_project_prefix():
     conn = _make_conn()
     upsert_session(conn, session_id="sp1", project="synapto-backend",
                    started_at="2026-03-15T00:00:00Z")
@@ -231,14 +231,14 @@ def test_search_flexible_project_prefix():
                    started_at="2026-03-16T00:00:00Z")
     upsert_session(conn, session_id="sp3", project="dashboard-web",
                    started_at="2026-03-17T00:00:00Z")
-    results = search_flexible(conn, project="synapto")
+    results = find_session_candidates(conn, project="synapto")
     assert len(results) == 2
     ids = {r["session_id"] for r in results}
     assert ids == {"sp1", "sp2"}
     conn.close()
 
 
-def test_search_flexible_date_range():
+def test_find_session_candidates_date_range():
     conn = _make_conn()
     upsert_session(conn, session_id="sd1", project="p",
                    started_at="2026-02-15T10:00:00Z")
@@ -246,13 +246,13 @@ def test_search_flexible_date_range():
                    started_at="2026-03-15T10:00:00Z")
     upsert_session(conn, session_id="sd3", project="p",
                    started_at="2026-04-15T10:00:00Z")
-    results = search_flexible(conn, since="2026-03-01", until="2026-03-31")
+    results = find_session_candidates(conn, since="2026-03-01", until="2026-03-31")
     assert len(results) == 1
     assert results[0]["session_id"] == "sd2"
     conn.close()
 
 
-def test_search_flexible_combined():
+def test_find_session_candidates_combined():
     conn = _make_conn()
     upsert_session(conn, session_id="sc1", project="dashboard-web",
                    started_at="2026-03-10T00:00:00Z",
@@ -264,14 +264,14 @@ def test_search_flexible_combined():
                    started_at="2026-03-10T00:00:00Z",
                    user_messages="debug auth flow", summary="Backend auth debug")
     # Only sc1 matches: query + project + date
-    results = search_flexible(conn, query="debug auth",
+    results = find_session_candidates(conn, query="debug auth",
                               project="dashboard", since="2026-03-01")
     assert len(results) == 1
     assert results[0]["session_id"] == "sc1"
     conn.close()
 
 
-def test_search_flexible_no_filters():
+def test_find_session_candidates_no_filters():
     conn = _make_conn()
     upsert_session(conn, session_id="sn1", project="a",
                    started_at="2026-03-01T00:00:00Z")
@@ -279,7 +279,7 @@ def test_search_flexible_no_filters():
                    started_at="2026-03-10T00:00:00Z")
     upsert_session(conn, session_id="sn3", project="c",
                    started_at="2026-03-05T00:00:00Z")
-    results = search_flexible(conn, limit=3)
+    results = find_session_candidates(conn, limit=3)
     assert len(results) == 3
     # Most recent first
     assert results[0]["session_id"] == "sn2"
@@ -288,14 +288,14 @@ def test_search_flexible_no_filters():
     conn.close()
 
 
-def test_search_flexible_until_inclusive():
+def test_find_session_candidates_until_inclusive():
     conn = _make_conn()
     upsert_session(conn, session_id="su1", project="p",
                    started_at="2026-03-31T23:30:00Z")
     upsert_session(conn, session_id="su2", project="p",
                    started_at="2026-04-01T00:30:00Z")
     # Bare date until should include full day
-    results = search_flexible(conn, until="2026-03-31")
+    results = find_session_candidates(conn, until="2026-03-31")
     assert len(results) == 1
     assert results[0]["session_id"] == "su1"
     conn.close()
@@ -458,12 +458,15 @@ def test_delete_sessions_removes_owned_fact_rows():
     conn.close()
 
 
-def test_fact_table_schema_reference_lists_tables_without_db_connection():
-    ddl = fact_table_schema_reference()
-    assert "CREATE TABLE IF NOT EXISTS tool_calls" in ddl
-    assert "CREATE TABLE IF NOT EXISTS subagent_runs" in ddl
-    assert "CREATE TABLE IF NOT EXISTS question_answers" in ddl
-    assert "CREATE TABLE IF NOT EXISTS file_mutations" in ddl
+def test_query_reference_describes_tables_without_raw_ddl():
+    reference = query_reference()
+    assert "tool_calls" in reference
+    assert "subagent_runs" in reference
+    assert "question_answers" in reference
+    assert "file_mutations" in reference
+    assert "sessions" in reference
+    assert "tool/<session_id>/<sequence>" in reference
+    assert "CREATE TABLE" not in reference
 
 
 # ── run_readonly_select (read-only escape hatch) ────────────────────────────
