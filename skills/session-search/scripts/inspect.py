@@ -8,7 +8,9 @@ import argparse
 
 from cli import add_inspect_arguments, cmd_inspect
 
-parser = argparse.ArgumentParser(description="Resolve an Inspection Reference into a JSON Evidence Packet")
+parser = argparse.ArgumentParser(
+    description="Evidence Inspect: resolve one ref into artifact metadata and scoped Evidence Snippets; session refs also work without --q",
+)
 add_inspect_arguments(parser)
 args = parser.parse_args()
 

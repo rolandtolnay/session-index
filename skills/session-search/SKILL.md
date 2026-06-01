@@ -10,17 +10,20 @@ arguments:
 
 # Session Search
 
-Search and inspect past Claude Code and Pi conversations indexed in `~/.session-index`.
+Use Session Index to move from a user’s vague reference to past work into scoped, inspectable evidence. The canonical LLM-facing surface is this skill plus CLI `--help`; the README is not required for operation.
 
 ## Decision tree
 
-1. Use `current` for the active conversation only.
-2. Use `query` for counts, rankings, aggregates, custom grouping, and raw SQL.
-3. Use `find` for compact past-session/event candidates with Inspection References.
-4. Use `inspect` only on selected refs copied from `find` to retrieve bounded evidence text.
-5. Prefer generated Clean Transcripts, Tool Logs, and Subagent Run transcripts over raw JSONL.
+1. Use `current` only for the exact active runtime conversation.
+2. Use `query` for counts, rankings, aggregates, custom joins, and audits over structured fact tables.
+3. Use `find` for compact Evidence Find candidates when you need likely sessions/events and Inspection References.
+4. Use `inspect` on selected refs copied unchanged from `find` or constructed from SQL rows.
+5. Prefer generated Clean Transcripts, Tool Logs, and Subagent Run transcripts. Do not read raw JSONL unless generated artifacts are insufficient.
 
-Most audit questions should be `find` first, then `inspect` one or two selected refs. Do not read raw JSONL unless the generated artifacts are insufficient.
+Most lookup tasks are either:
+
+- `find` → choose a candidate by `session.summary` and `match` → `inspect --ref ...`
+- `query --schema` → SQL aggregate/custom rows → construct refs → `inspect --ref ...`
 
 ## Commands
 
@@ -30,34 +33,29 @@ Most audit questions should be `find` first, then `inspect` one or two selected 
 uv run ~/.pi/agent/skills/session-search/scripts/current.py          # Canonical Session ID
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --path   # Clean Transcript path; warns if missing
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --native # provider-native session ID
-uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured IDs and artifact paths
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured current-session metadata
 ```
 
-Claude Code path, if needed:
+Use `current` only inside an active runtime exposing Session Index environment. It does not guess from latest sessions or the database.
 
-```bash
-uv run ~/.claude/skills/session-search/scripts/current.py --json
-```
-
-Use `current --path` or `current --json` only for the exact active runtime session. It does not guess from latest sessions or the database.
-
-### query — read-only SQL over structured fact tables
+### query — read-only SQL over fact tables
 
 ```bash
 uv run ~/.pi/agent/skills/session-search/scripts/query.py --schema
 uv run ~/.pi/agent/skills/session-search/scripts/query.py "SELECT ..." [--json] [--limit N]
 ```
 
-Use `query` for aggregate questions: most tool calls, counts by project/date, recommended-answer rates, exact File Mutation lists, custom joins, and schema discovery. It runs one read-only `SELECT`/`WITH` statement, row-capped (default 50, max 1000). SQL errors print verbatim so you can correct and retry.
+Use `query` for aggregate questions: counts by tool/project/date, recommended-answer rates, exact File Mutation lists, subagent usage, skill usage, and custom joins. It runs one read-only `SELECT`/`WITH` statement, row-capped (default 50, max 1000). SQL errors print verbatim so you can correct and retry.
+
+Run `query --schema` for a curated LLM-oriented reference: table purposes, key columns, important semantics, Inspection Reference construction, and copyable SQL examples. It is not raw DDL.
 
 Key tables:
 
-- `tool_calls` — one row per tool call: `session_id, source, scope, sequence, timestamp, tool_name, tool, is_error, skill_name`.
-- `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and aggregates; `sessions.files_touched` is broad metadata.
-- `subagent_runs` — one row per Subagent Run: `parent_session_id, requested_agent_type, observed_agent_type, call_sequence, child_index, agent_id, transcript_path, task_preview, match_confidence`, etc.
-- `question_answers` — one row per asked question: `session_id, sequence, question_index, question, selected_label, was_recommended, is_other, option_count, multi_select`.
-
-Run `query --schema` for exact DDL and examples. If you need evidence text after a SQL result, select or construct refs such as `tool/<session_id>/<sequence>` and pass them to `inspect`.
+- `tool_calls` — one row per tool call. Construct `tool/<session_id>/<sequence>`.
+- `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and event trails.
+- `subagent_runs` — one row per Subagent Run. Construct `subagent/<parent_session_id>/<child_index>` when `child_index` is present.
+- `question_answers` — one row per asked question. Construct `question/<session_id>/<sequence>/<question_index>`.
+- `sessions` — session metadata useful for joins: `session_id`, `project`, `branch`, `started_at`, `summary`, generated artifact paths.
 
 ### find — compact Evidence Find candidates
 
@@ -67,21 +65,18 @@ uv run ~/.pi/agent/skills/session-search/scripts/find.py [criteria] [filters]
 
 Criteria:
 
-- `--topic TEXT` — session-level topic candidates with `session/<session_id>` refs.
-- `--tool NAME` — Tool Call event candidates with `tool/<session_id>/<sequence>` refs.
-- `--skill NAME` — skill invocation candidates with `tool/<session_id>/<sequence>` refs.
-- `--mutated PATH_FRAGMENT` — File Mutation candidates from `file_mutations` with `tool/<session_id>/<sequence>` refs.
+- `--topic TEXT` — session/topic candidates with `session/<session_id>` refs.
+- `--tool NAME` — Tool Call candidates with `tool/<session_id>/<sequence>` refs.
+- `--skill NAME` — skill invocation candidates with tool refs.
+- `--mutated PATH_FRAGMENT` — File Mutation candidates from `file_mutations` with tool refs.
 - `--subagent NAME` — Subagent Run candidates with `subagent/<session_id>/<child_index>` refs and parent-call refs when available.
-- `--tool question --question-recommended true|false` — question-answer candidates with `question/<session_id>/<sequence>/<question_index>` refs.
+- `--tool question --question-recommended true|false` — question-answer candidates with question refs.
 
-Filters compose with the criteria:
+Filters compose with criteria: `--project`, `--since`, `--until`, `--session`, and `--limit`.
 
-- `--project NAME` — project prefix filter.
-- `--since YYYY-MM-DD` / `--until YYYY-MM-DD` — date range.
-- `--session ID` — canonical session id.
-- `--limit N` — result cap.
+`find` emits compact JSON only. Each candidate includes `ref`, `inspect_refs`, `session`, and `match`. `session.summary` is retained because it is high-signal candidate-selection metadata. `find` does not return Evidence Snippets or broad top-level artifact inventories such as repeated Clean Transcript paths, Tool Log paths, or subagent transcript lists.
 
-`find` emits JSON only. It includes compact session summaries, match metadata, artifact paths, and `inspect_refs`; it never includes Clean Transcript, Tool Log, or subagent transcript evidence text.
+Candidate-specific artifact handles may appear when they shorten the path to scoped context. In particular, `find --subagent ...` keeps `match.transcript_path` for the exact matched Subagent Run.
 
 Examples:
 
@@ -100,18 +95,27 @@ uv run ~/.pi/agent/skills/session-search/scripts/find.py --tool question --quest
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref REF [--q TEXT] [--max-snippets N]
 ```
 
-Use refs copied unchanged from `find`:
+Use refs copied unchanged from `find` or constructed from `query --schema` guidance:
 
-- `session/<session_id>` — requires `--q TEXT`; returns bounded Clean Transcript excerpts.
+- `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata, structured subagent refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets.
 - `tool/<session_id>/<sequence>` — returns the matching Tool Log section plus associated File Mutation paths.
 - `question/<session_id>/<sequence>/<question_index>` — returns question-answer metadata plus the Tool Log section.
-- `subagent/<session_id>/<child_index>` — returns task/prompt-area evidence by default; with `--q`, returns query-focused subagent transcript excerpts.
+- `subagent/<session_id>/<child_index>` — returns task/prompt-area evidence by default; with `--q`, returns query-focused Subagent Run Evidence Snippets.
 
-`inspect` emits JSON Evidence Packets with artifact path, locator metadata, and bounded evidence text. Invalid refs, missing sessions, stale refs, and missing artifacts return JSON errors and a non-zero exit status.
+Session inspect artifact metadata has deterministic paths and existence booleans for generated artifacts:
+
+- `artifacts.clean_transcript: {path, exists}`
+- `artifacts.tool_log: {path, exists}`
+- `artifacts.subagent_transcripts: {count}`
+
+Session inspect does not expose raw Source Transcript paths and does not list every subagent transcript path. It exposes `inspect_refs.subagents[]` objects with `ref`, `requested_agent_type`, and `task_preview` so you can choose a child run before loading it.
+
+`inspect` emits JSON Evidence Packets with artifact path, locator metadata, and bounded Evidence Snippets. Invalid refs, missing sessions, stale refs, and missing artifacts return JSON errors and a non-zero exit status.
 
 Examples:
 
 ```bash
+uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref session/pi:abc
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref session/pi:abc --q "session index"
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref tool/pi:abc/12
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref subagent/pi:abc/0 --q "task result"

@@ -8,7 +8,7 @@ import argparse
 
 from cli import cmd_current
 
-parser = argparse.ArgumentParser(description="Show the active runtime session")
+parser = argparse.ArgumentParser(description="Show the exact active runtime session from Session Index environment")
 output = parser.add_mutually_exclusive_group()
 output.add_argument(
     "--path",

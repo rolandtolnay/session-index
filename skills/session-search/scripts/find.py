@@ -8,7 +8,9 @@ import argparse
 
 from cli import add_find_arguments, cmd_find
 
-parser = argparse.ArgumentParser(description="Find compact JSON evidence candidates")
+parser = argparse.ArgumentParser(
+    description="Evidence Find: compact JSON candidates with refs, summaries, and match metadata; no evidence text or broad artifact inventories",
+)
 add_find_arguments(parser)
 args = parser.parse_args()
 
