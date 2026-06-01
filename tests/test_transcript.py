@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_evidence_text, extract_evidence_snippets, _block_role
+from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_evidence_snippets, _block_role
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -265,6 +265,25 @@ def _write_test_transcript(tmp_path, messages):
     with open(path, "w") as f:
         f.write("\n".join(lines))
     return path
+
+
+def extract_evidence_text(
+    transcript_path: str,
+    keywords: list[str],
+    max_blocks: int = 5,
+    max_lines: int = 200,
+    strategy: str = "hybrid",
+    qa_pair: bool = True,
+) -> str | None:
+    snippets = extract_evidence_snippets(
+        transcript_path,
+        keywords,
+        max_blocks=max_blocks,
+        max_lines=max_lines,
+        strategy=strategy,
+        qa_pair=qa_pair,
+    )
+    return snippets[0].text if snippets else None
 
 
 def test_extract_evidence_snippets_wraps_existing_selection_behavior(tmp_path):

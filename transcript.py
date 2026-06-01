@@ -354,26 +354,6 @@ def extract_evidence_snippets(
     )]
 
 
-def extract_evidence_text(
-    transcript_path: str,
-    keywords: list[str],
-    max_blocks: int = 5,
-    max_lines: int = 200,
-    strategy: str = STRATEGY_HYBRID,
-    qa_pair: bool = True,
-) -> str | None:
-    """Return text from the canonical structured Evidence Snippet selection."""
-    snippets = extract_evidence_snippets(
-        transcript_path,
-        keywords,
-        max_blocks=max_blocks,
-        max_lines=max_lines,
-        strategy=strategy,
-        qa_pair=qa_pair,
-    )
-    return snippets[0].text if snippets else None
-
-
 def _select_evidence_text(
     transcript_path: str,
     keywords: list[str],
