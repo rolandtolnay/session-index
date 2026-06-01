@@ -22,8 +22,8 @@ from db import (
     replace_question_answers,
     replace_file_mutations,
     delete_sessions,
-    query_reference,
 )
+from query_reference import query_reference
 
 
 def _make_conn():

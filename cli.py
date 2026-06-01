@@ -20,13 +20,13 @@ from db import (
     get_stats,
     rebuild_fts,
     run_readonly_select,
-    query_reference,
     delete_sessions,
     DB_PATH,
 )
 from logger import log
 from evidence_find import find_candidates
 from evidence_inspect import EvidenceInspectError, inspect_ref
+from query_reference import query_reference
 from transcript import TRANSCRIPT_DIR
 
 
