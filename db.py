@@ -145,33 +145,6 @@ CREATE INDEX IF NOT EXISTS idx_question_answers_session ON question_answers(sess
 CREATE INDEX IF NOT EXISTS idx_question_answers_recommended ON question_answers(was_recommended);
 """
 
-_FACT_TABLES = ("tool_calls", "file_mutations", "subagent_runs", "question_answers")
-_SESSION_COLUMNS = (
-    "session_id",
-    "source",
-    "native_session_id",
-    "source_path",
-    "slug",
-    "project_path",
-    "project",
-    "branch",
-    "model",
-    "started_at",
-    "ended_at",
-    "duration_seconds",
-    "user_message_count",
-    "user_messages",
-    "files_touched",
-    "tools_used",
-    "summary",
-    "transcript_path",
-    "tool_log_path",
-    "subagent_transcripts",
-    "parent_session_path",
-    "parent_native_session_id",
-)
-
-
 def get_connection() -> sqlite3.Connection:
     """Get a database connection with WAL mode enabled."""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -364,7 +337,7 @@ def _build_fts_query(query: str, use_or: bool = False) -> str:
     return build_fts_query(query, use_or=use_or)
 
 
-def search_flexible(
+def find_session_candidates(
     conn: sqlite3.Connection,
     query: str | None = None,
     project: str | None = None,
@@ -374,9 +347,9 @@ def search_flexible(
     use_or: bool = False,
     session: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Flexible search: FTS5 text + optional project prefix, date range filters.
+    """Find FTS-backed session candidates with optional structured filters.
 
-    - query provided: FTS5 search with optional structured filters, ordered by rank
+    - query provided: FTS5 candidate lookup with optional structured filters, ordered by rank
     - query empty: structured filters only, ordered by started_at DESC
     - nothing provided: returns most recent sessions
     - use_or: join terms with OR instead of implicit AND (ignored if query has explicit operators)
@@ -641,18 +614,3 @@ def run_readonly_select(sql: str, max_rows: int = 50) -> tuple[list[str], list[l
         return _run_select(conn, sql, max_rows)
     finally:
         conn.close()
-
-
-def fact_table_schema_reference() -> str:
-    """Return fact-table CREATE DDL from the static schema without opening SQLite."""
-    statements: list[str] = []
-    for raw_statement in SCHEMA.split(";"):
-        statement = raw_statement.strip()
-        if any(f"CREATE TABLE IF NOT EXISTS {table}" in statement for table in _FACT_TABLES):
-            statements.append(statement + ";")
-    return "\n\n".join(statements)
-
-
-def session_columns() -> list[str]:
-    """Return sessions table columns from the static schema contract."""
-    return list(_SESSION_COLUMNS)

@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_excerpts, extract_excerpt_objects, _block_role
+from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_evidence_snippets, _block_role
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -246,7 +246,7 @@ def test_subagent_transcript_creates_subdir(tmp_path, monkeypatch):
     assert os.path.exists(path)
 
 
-# ── Excerpt extraction tests ────────────────────────────────────────────────
+# ── Evidence Snippet extraction tests ────────────────────────────────────────────────
 
 
 def _write_test_transcript(tmp_path, messages):
@@ -267,7 +267,26 @@ def _write_test_transcript(tmp_path, messages):
     return path
 
 
-def test_extract_excerpt_objects_wraps_existing_excerpt_behavior(tmp_path):
+def extract_evidence_text(
+    transcript_path: str,
+    keywords: list[str],
+    max_blocks: int = 5,
+    max_lines: int = 200,
+    strategy: str = "hybrid",
+    qa_pair: bool = True,
+) -> str | None:
+    snippets = extract_evidence_snippets(
+        transcript_path,
+        keywords,
+        max_blocks=max_blocks,
+        max_lines=max_lines,
+        strategy=strategy,
+        qa_pair=qa_pair,
+    )
+    return snippets[0].text if snippets else None
+
+
+def test_extract_evidence_snippets_wraps_existing_selection_behavior(tmp_path):
     path = _write_test_transcript(tmp_path, [
         {"role": "user", "content": "Fix the authentication timeout bug"},
         {"role": "assistant", "content": "I found the issue in the auth module."},
@@ -275,45 +294,45 @@ def test_extract_excerpt_objects_wraps_existing_excerpt_behavior(tmp_path):
         {"role": "assistant", "content": "Done with pagination."},
     ])
 
-    objects = extract_excerpt_objects(path, ["authentication"], artifact="clean_transcript")
+    objects = extract_evidence_snippets(path, ["authentication"], artifact="clean_transcript")
 
     assert len(objects) == 1
-    excerpt = objects[0]
-    assert excerpt.artifact == "clean_transcript"
-    assert excerpt.path == path
-    assert excerpt.locator["type"] == "excerpt"
-    assert excerpt.locator["strategy"] == "hybrid"
-    assert "authentication timeout" in excerpt.text
-    assert "pagination" not in excerpt.text
-    assert excerpt.text == extract_excerpts(path, ["authentication"])
+    snippet = objects[0]
+    assert snippet.artifact == "clean_transcript"
+    assert snippet.path == path
+    assert snippet.locator["type"] == "snippet"
+    assert snippet.locator["strategy"] == "hybrid"
+    assert "authentication timeout" in snippet.text
+    assert "pagination" not in snippet.text
+    assert snippet.text == extract_evidence_text(path, ["authentication"])
 
 
-def test_extract_excerpt_objects_missing_no_keywords_or_no_matches_are_empty(tmp_path):
+def test_extract_evidence_snippets_missing_no_keywords_or_no_matches_are_empty(tmp_path):
     path = _write_test_transcript(tmp_path, [{"role": "user", "content": "Fix the auth bug"}])
-    assert extract_excerpt_objects("/nonexistent/path.md", ["auth"]) == []
-    assert extract_excerpt_objects(path, ["to"]) == []
-    assert extract_excerpt_objects(path, ["pagination"]) == []
+    assert extract_evidence_snippets("/nonexistent/path.md", ["auth"]) == []
+    assert extract_evidence_snippets(path, ["to"]) == []
+    assert extract_evidence_snippets(path, ["pagination"]) == []
 
 
-def test_excerpt_matches_keyword(tmp_path):
+def test_snippet_matches_keyword(tmp_path):
     path = _write_test_transcript(tmp_path, [
         {"role": "user", "content": "Fix the authentication timeout bug"},
         {"role": "assistant", "content": "I found the issue in the auth module."},
         {"role": "user", "content": "Add pagination to the API"},
         {"role": "assistant", "content": "Done with pagination."},
     ])
-    result = extract_excerpts(path, ["authentication"])
+    result = extract_evidence_text(path, ["authentication"])
     assert result is not None
     assert "authentication timeout" in result
     assert "pagination" not in result
 
 
-def test_excerpt_returns_full_block(tmp_path):
+def test_snippet_returns_full_block(tmp_path):
     path = _write_test_transcript(tmp_path, [
         {"role": "user", "content": "Fix the auth bug"},
         {"role": "assistant", "content": "The auth module had a token expiry issue.\nI updated the TTL to 1 hour."},
     ])
-    result = extract_excerpts(path, ["auth"])
+    result = extract_evidence_text(path, ["auth"])
     assert result is not None
     # Both blocks should match (both contain "auth")
     assert "Fix the auth bug" in result
@@ -321,13 +340,13 @@ def test_excerpt_returns_full_block(tmp_path):
     assert "TTL to 1 hour" in result
 
 
-def test_excerpt_caps_at_max_blocks(tmp_path):
+def test_snippet_caps_at_max_blocks(tmp_path):
     messages = []
     for i in range(10):
         messages.append({"role": "user", "content": f"auth question {i}"})
         messages.append({"role": "assistant", "content": f"auth answer {i}"})
     path = _write_test_transcript(tmp_path, messages)
-    result = extract_excerpts(path, ["auth"], max_blocks=3)
+    result = extract_evidence_text(path, ["auth"], max_blocks=3)
     assert result is not None
     # Hybrid strategy prefers later blocks; Q/A pairing pulls in partners
     # Should have later content (not all 20 blocks) + truncation note
@@ -335,7 +354,7 @@ def test_excerpt_caps_at_max_blocks(tmp_path):
     assert "not shown" in result
 
 
-def test_excerpt_first_n_strategy(tmp_path):
+def test_snippet_first_n_strategy(tmp_path):
     """First-N strategy returns earliest matching blocks."""
     from transcript import STRATEGY_FIRST_N
     messages = [
@@ -347,12 +366,12 @@ def test_excerpt_first_n_strategy(tmp_path):
         {"role": "assistant", "content": "auth final implementation"},
     ]
     path = _write_test_transcript(tmp_path, messages)
-    result = extract_excerpts(path, ["auth"], max_blocks=2, strategy=STRATEGY_FIRST_N, qa_pair=False)
+    result = extract_evidence_text(path, ["auth"], max_blocks=2, strategy=STRATEGY_FIRST_N, qa_pair=False)
     assert "auth setup early" in result
     assert "auth decision final" not in result
 
 
-def test_excerpt_hybrid_prefers_later(tmp_path):
+def test_snippet_hybrid_prefers_later(tmp_path):
     """Hybrid strategy prefers later blocks with same keyword density."""
     from transcript import STRATEGY_HYBRID
     messages = [
@@ -362,12 +381,12 @@ def test_excerpt_hybrid_prefers_later(tmp_path):
         {"role": "assistant", "content": "auth final implementation done"},
     ]
     path = _write_test_transcript(tmp_path, messages)
-    result = extract_excerpts(path, ["auth"], max_blocks=2, strategy=STRATEGY_HYBRID, qa_pair=False)
+    result = extract_evidence_text(path, ["auth"], max_blocks=2, strategy=STRATEGY_HYBRID, qa_pair=False)
     # Hybrid should pick the later blocks (higher recency weight)
     assert "auth decision final" in result or "auth final implementation" in result
 
 
-def test_excerpt_qa_pairing(tmp_path):
+def test_snippet_qa_pairing(tmp_path):
     """Q/A pairing pulls in adjacent partner blocks."""
     messages = [
         {"role": "user", "content": "unrelated question"},
@@ -378,35 +397,35 @@ def test_excerpt_qa_pairing(tmp_path):
     path = _write_test_transcript(tmp_path, messages)
     # Without pairing: only the assistant block (higher density) matches
     from transcript import STRATEGY_DENSITY
-    result_no_qa = extract_excerpts(path, ["auth"], max_blocks=1, strategy=STRATEGY_DENSITY, qa_pair=False)
+    result_no_qa = extract_evidence_text(path, ["auth"], max_blocks=1, strategy=STRATEGY_DENSITY, qa_pair=False)
     assert "JWT tokens" in result_no_qa
     assert "what about" not in result_no_qa
     # With pairing: user question gets pulled in
-    result_qa = extract_excerpts(path, ["auth"], max_blocks=1, strategy=STRATEGY_DENSITY, qa_pair=True)
+    result_qa = extract_evidence_text(path, ["auth"], max_blocks=1, strategy=STRATEGY_DENSITY, qa_pair=True)
     assert "JWT tokens" in result_qa
     assert "what about the auth flow" in result_qa
 
 
-def test_excerpt_no_match_returns_none(tmp_path):
+def test_snippet_no_match_returns_none(tmp_path):
     path = _write_test_transcript(tmp_path, [
         {"role": "user", "content": "Fix the login bug"},
         {"role": "assistant", "content": "Done."},
     ])
-    result = extract_excerpts(path, ["pagination"])
+    result = extract_evidence_text(path, ["pagination"])
     assert result is None
 
 
-def test_excerpt_missing_file_returns_none():
-    result = extract_excerpts("/nonexistent/path.md", ["auth"])
+def test_snippet_missing_file_returns_none():
+    result = extract_evidence_text("/nonexistent/path.md", ["auth"])
     assert result is None
 
 
-def test_excerpt_skips_short_keywords(tmp_path):
+def test_snippet_skips_short_keywords(tmp_path):
     path = _write_test_transcript(tmp_path, [
         {"role": "user", "content": "Fix the auth bug"},
     ])
     # Keywords with <= 2 chars should be skipped
-    result = extract_excerpts(path, ["an", "to"])
+    result = extract_evidence_text(path, ["an", "to"])
     assert result is None
 
 
@@ -434,13 +453,13 @@ def test_block_role_maps_prompt_and_agent():
     assert _block_role("header line with no role") is None
 
 
-def test_excerpt_parses_agent_transcript(tmp_path):
+def test_snippet_parses_agent_transcript(tmp_path):
     # Regression: before [prompt]/[agent] were added to _ROLE_RE, agent transcripts
-    # parsed as a single header block and extract_excerpts returned None.
+    # parsed as a single header block and extract_evidence_text returned None.
     path = _write_agent_transcript(tmp_path, [
         {"role": "prompt", "content": "Investigate claude-mem and episodic-memory trade-offs"},
         {"role": "agent", "content": "I found that claude-mem has a ~72% summary failure rate."},
     ])
-    result = extract_excerpts(path, ["claude-mem"])
+    result = extract_evidence_text(path, ["claude-mem"])
     assert result is not None
     assert "claude-mem" in result

@@ -79,24 +79,27 @@ Progress is per-session and idempotent — safe to interrupt and resume. Pi rows
 
 ## Evidence retrieval
 
-Use the installed `session-search` skill when asking an agent to look up past work. The deterministic CLI workflow is:
+Use the installed `session-search` skill and CLI `--help` as the canonical LLM operating surface. README stays intentionally brief for adopters/maintainers.
 
-1. `query` for counts, rankings, aggregates, and custom SQL.
-2. `find` for compact JSON candidates with Inspection References.
-3. `inspect` for scoped evidence text from selected refs.
+The deterministic workflow is:
+
+1. `query` for counts, rankings, aggregates, and custom SQL; `query --schema` prints a curated LLM-oriented table/reference guide.
+2. `find` for compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata — no evidence text or broad artifact inventories.
+3. `inspect` for scoped Evidence Inspect packets from selected refs. `inspect --ref session/<id>` works without `--q` to return generated artifact metadata and subagent refs; add `--q` for query-focused Evidence Snippets.
 
 From the terminal:
 
 ```bash
 uv run cli.py find --topic "token refresh" --limit 5
 uv run cli.py find --mutated "etc/prd" --project session-index
+uv run cli.py inspect --ref session/pi:abc
 uv run cli.py inspect --ref session/pi:abc --q "token refresh"
 uv run cli.py inspect --ref tool/pi:abc/12
 uv run cli.py query --schema
 uv run cli.py status
 ```
 
-`find` returns compact JSON and does not include Clean Transcript, Tool Log, or subagent transcript evidence text. Copy a `ref` or `inspect_refs.primary` value unchanged into `inspect` to retrieve bounded Evidence Packets with artifact paths, locators, and text.
+Copy a `ref` or `inspect_refs.primary` value unchanged into `inspect` to retrieve bounded Evidence Packets with artifact metadata, locators, and Evidence Snippets.
 
 ## Current session lookup
 
@@ -162,9 +165,9 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | Command | Description |
 |---------|-------------|
 | `current [--path\|--native\|--json]` | Show the exact active runtime session from Session Index env |
-| `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping over `tool_calls`, `file_mutations`, `subagent_runs`, and `question_answers`; `--schema` prints columns + examples |
-| `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References and no evidence text |
-| `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with scoped Clean Transcript, Tool Log, or Subagent Run transcript evidence text |
+| `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
+| `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |
+| `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with generated artifact metadata and scoped Clean Transcript, Tool Log, or Subagent Run Evidence Snippets |
 | `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--no-summary]` | Process JSONL files; `--no-summary` skips the LLM summary (regenerates transcripts, tool logs, and fact tables only) |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 

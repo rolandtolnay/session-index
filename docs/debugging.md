@@ -24,20 +24,15 @@ Pi extension
     └─ session_shutdown ───► pi_index.py --mode full
 
 Shared full pass:
-    parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► cleaned transcript + tool log ─► DB upsert
+    parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► Clean Transcript + Tool Log ─► DB upsert + fact tables
 
-Search path (skill invocation):
-    search.py (skill wrapper) ──► cmd_search() in cli.py ──► FTS5 query ──► formatted output
-                                                          └─► log entry to session-index.log
+Canonical evidence path:
+    find/query ──► Inspection Reference ──► inspect ──► artifact metadata + scoped Evidence Snippets
 
 Current-session lookup:
-    active runtime env ──► current_session.py ──► cli.py current ──► Canonical Session ID / artifact paths
+    active runtime env ──► current_session.py ──► cli.py current ──► Canonical Session ID / generated artifact paths
                          ├─► optional generated-artifact last-written timestamps
                          └─► no DB, latest-session, terminal, or registry fallback
-
-Manual Current Session Indexing:
-    /current-session focused display Ctrl+R ─► refresh exact Pi runtime env ─► pi_index.py --mode full --session-file <Source Transcript>
-                                             └─► refresh current --json for factual artifact statuses when the display remains open
 ```
 
 ## File Map
@@ -54,20 +49,20 @@ Manual Current Session Indexing:
 | `pi-extension/session-index-env.ts` | Pi runtime environment helper for current-session lookup |
 | `current_session.py` | Exact current-session resolver using Session Index runtime env |
 | `indexer.py` | Shared parse/summarize/transcript/upsert pipeline |
-| `sources.py` | Claude/Pi source JSONL discovery for backfill |
+| `sources.py` | Claude/Pi Source Transcript discovery for backfill |
 | `recent_context.py` | Shared recent-session context builder |
-| `cli.py` | CLI entry point: search, excerpt, backfill, status commands |
-| `db.py` | SQLite operations: provider-aware schema, upsert, FTS5 search, stats |
-| `parser.py` | Claude JSONL parser |
-| `pi_parser.py` | Pi tree-structured JSONL parser |
-| `transcript.py` | Transcript writer + excerpt extractor for search results |
-| `tool_log.py` | Per-session Markdown tool-call log writer |
+| `cli.py` | CLI entry point: current, find, inspect, query, backfill, status |
+| `db.py` | SQLite operations: provider-aware schema, FTS-backed candidate lookup, read-only query helpers, stats |
+| `evidence_find.py` | Evidence Find candidate retrieval and JSON construction |
+| `evidence_inspect.py` | Evidence Inspect reference resolution and packet construction |
+| `inspect_refs.py` | Inspection Reference parsing/formatting |
+| `transcript.py` | Clean Transcript writer + Evidence Snippet selector |
+| `tool_log.py` | Per-session Markdown Tool Log writer and section extractor |
 | `summarizer.py` | LLM summary generator using headless Pi, with legacy Gemini/Ollama fallback |
 | `logger.py` | Structured logging with monthly rotation |
 | `client.py` | Standalone Ollama HTTP client for fallback summaries (pure stdlib) |
-| `skills/session-search/scripts/search.py` | Skill wrapper: argparse → `cmd_search()` |
-| `skills/session-search/scripts/excerpt.py` | Skill wrapper: argparse → `cmd_excerpt()` |
-| `skills/session-search/SKILL.md` | Skill instructions for Claude Code and Pi agents |
+| `skills/session-search/SKILL.md` | Canonical installed LLM operating guide |
+| `skills/session-search/scripts/*.py` | Thin wrappers for current, find, inspect, and query |
 
 ---
 
@@ -76,12 +71,13 @@ Manual Current Session Indexing:
 | Data | Path | Lifetime |
 |------|------|----------|
 | Database | `~/.session-index/sessions.db` | Permanent |
-| Transcripts | `~/.session-index/transcripts/{session_id}.md` | Permanent |
-| Tool logs | `~/.session-index/transcripts/{session_id}.tools.md` | Permanent |
+| Clean Transcripts | `~/.session-index/transcripts/{session_id}.md` | Permanent |
+| Tool Logs | `~/.session-index/transcripts/{session_id}.tools.md` | Permanent |
+| Subagent Run transcripts | `~/.session-index/transcripts/{session_id}/agent-*.md` | Permanent |
 | Log (current month) | `~/.session-index/logs/session-index.log` | Monthly rotation |
 | Log (previous month) | `~/.session-index/logs/session-index.prev.log` | Overwritten monthly |
-| Claude source JSONL | `~/.claude/projects/{encoded_path}/{session_id}.jsonl` | Claude Code managed |
-| Pi source JSONL | `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl` | Pi managed |
+| Claude Source Transcript | `~/.claude/projects/{encoded_path}/{session_id}.jsonl` | Claude Code managed |
+| Pi Source Transcript | `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl` | Pi managed |
 
 ---
 
@@ -91,7 +87,7 @@ Manual Current Session Indexing:
 
 Location: `~/.session-index/logs/session-index.log`. Rotates monthly — current + previous month retained.
 
-All hooks and search calls log every code path. If a hook fires and there is **no log line at all**, it means the hook runner itself failed before the script executed.
+All hooks and query calls log their code paths. If a hook fires and there is no log line at all, the hook runner itself likely failed before the script executed.
 
 ### Log Format
 
@@ -100,8 +96,8 @@ HH:MM:SS.mmm [sid] hook_name          | message
 ```
 
 - `HH:MM:SS.mmm` — wall-clock timestamp with millisecond precision
-- `[sid]` — last 6 characters of the session ID (or `??????` if unavailable)
-- `hook_name` — left-padded to 18 chars. Common values: `session_start`, `session_end`, `worker`, `stop`, `pi_index`, `pi_context`, `search`
+- `[sid]` — last 6 characters of the session ID, or `??????` if unavailable
+- `hook_name` — left-padded to 18 chars. Common values: `session_start`, `session_end`, `worker`, `stop`, `pi_index`, `pi_context`, `query`
 - `message` — free-form, action-oriented
 
 ### Filtering by Session
@@ -110,7 +106,7 @@ HH:MM:SS.mmm [sid] hook_name          | message
 grep '\[abc123\]' ~/.session-index/logs/session-index.log
 ```
 
-The `[sid]` tag links all activity for a session: hook events, worker progress, and search calls made during that conversation.
+The `[sid]` tag links all activity for a session: hook events, worker progress, and CLI query calls made during that conversation.
 
 ### Example: Full Session Lifecycle
 
@@ -119,8 +115,6 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 15:30:01.130 [a1b2c3] session_start      | injected 3 same + 8 cross
 15:32:45.200 [a1b2c3] stop               | started
 15:32:45.230 [a1b2c3] stop               | upserted (4 msgs, 2 files)
-15:32:46.100 [a1b2c3] search             | query="auth middleware" project=dashboard-web excerpt=true -> 3 results (12ms)
-15:32:47.500 [a1b2c3] search             | query="auth middleware rewrite" -> 1 results (8ms)
 15:35:10.400 [a1b2c3] stop               | started
 15:35:10.430 [a1b2c3] stop               | upserted (6 msgs, 3 files)
 15:40:00.100 [a1b2c3] session_end        | launching worker
@@ -137,9 +131,9 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 
 **Session not indexed:**
 - `stop | skipped (N user, M assistant msgs)` or `pi_index | fast skipped (...)` — needs at least 1 user + 1 assistant message
-- Claude: no `session_end` or `worker` lines — session still active, or SessionEnd hook didn't fire
+- Claude: no `session_end` or `worker` lines — session still active, or SessionEnd hook did not fire
 - Pi: no `pi_index` lines — run `/reload` or restart Pi after installing the extension
-- `worker | jsonl not found` / `pi_index | missing session file` — source JSONL path mismatch
+- `worker | jsonl not found` / `pi_index | missing session file` — Source Transcript path mismatch
 
 **Summary missing:**
 - Check Pi auth/model availability: default is `openai-codex/gpt-5.4-mini` via `pi -p --no-session --no-tools`.
@@ -147,15 +141,24 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to force the legacy fallback path.
 - Run `uv run cli.py status` to find sessions missing summaries.
 
-**Search returns no results:**
-- Check the log for `search | query="..." -> 0 results` to confirm the search ran
-- FTS5 tokenization: queries like `COOLDOWN_SECONDS` won't match because FTS5 splits on underscores. Try `cooldown seconds` instead
-- Project filter is prefix match: `--project ghostty` matches `ghostty-peon` but `--project ghostty-peon` won't match sessions indexed under `.claude` (the project before repo extraction)
-- Date filters are inclusive: `--since 2026-03-17 --until 2026-03-18` includes both days
+**Evidence Find returns no candidates:**
+- Use `uv run cli.py find --help` to confirm criteria. `find` requires at least one criterion/filter.
+- FTS5 tokenization splits underscores and punctuation. Try fewer words or separated terms, e.g. `cooldown seconds`.
+- Project filter is prefix match: `--project ghostty` matches `ghostty-peon`.
+- Date filters are inclusive for bare dates.
+- For exact File Mutation trails or aggregates, use `query --schema` then SQL over `file_mutations`.
+
+**Evidence Inspect fails:**
+- Invalid refs, missing sessions, stale refs, and missing generated artifacts return JSON errors.
+- `inspect --ref session/<id>` works without `--q` and returns generated artifact metadata plus subagent refs.
+- `inspect --ref session/<id> --q TEXT` requires the Clean Transcript file to exist, because snippets cannot be produced without it.
+- Tool/question inspect requires the Tool Log file and sequence section.
+- Subagent inspect requires the selected Subagent Run transcript.
 
 **Transcript not generated:**
-- `worker | transcript written` should appear — if missing, check for errors before it
-- Run `uv run cli.py status --fix` to identify and repair dangling paths
+- `worker | transcript written` should appear — if missing, check for errors before it.
+- Run `uv run cli.py status --fix` to identify and repair dangling paths.
+- Run `uv run cli.py backfill --no-summary --force --session SESSION_ID` to regenerate deterministic artifacts/fact tables for one session.
 
 **Current session lookup fails:**
 - `uv run cli.py current` works only inside an active runtime that exposes exact Session Index identity.
@@ -163,80 +166,51 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - Optional public env: `SESSION_INDEX_LEAF_ID` for Pi leaf metadata; it is reported as `leaf_id` in JSON when available.
 - `source_path` is the raw provider Source Transcript, `transcript_path` is the generated Clean Transcript artifact, and `tool_log_path` is the generated Tool Log artifact.
 - The Clean Transcript and Tool Log paths are derived from the Canonical Session ID under `~/.session-index/transcripts/`; a database row is not required.
-- `current --path` prints the deterministic Clean Transcript path on stdout and warns on stderr if that file does not exist yet. For machine-readable checks, use `current --json` and inspect `transcript_exists`.
-- In Pi, `/current-session` is user-only and model-invisible. Press `Ctrl+R` while the display is focused to run the full Pi indexing pass for the current snapshot; the child keeps running if the display is closed or the UI wait times out.
-- `current --json` includes `transcript_written_at` and `tool_log_written_at` only for existing generated artifacts. The raw Source Transcript mtime is not exposed as an indexing timestamp.
 - Missing or inconsistent runtime identity exits non-zero by design. v1 does not fall back to the latest session, focused terminal, registry state, or the database.
-- Subagent transcript paths are not returned by `current` in v1.
+
+---
+
+## Canonical troubleshooting workflow
+
+1. Identify or narrow candidates:
+   ```bash
+   uv run cli.py find --topic "session index" --project session-index --limit 5
+   uv run cli.py query --schema
+   ```
+
+2. Inspect generated artifact metadata without loading text:
+   ```bash
+   uv run cli.py inspect --ref session/pi:abc
+   ```
+
+3. Inspect scoped text only after selecting a ref:
+   ```bash
+   uv run cli.py inspect --ref session/pi:abc --q "the exact topic"
+   uv run cli.py inspect --ref tool/pi:abc/12
+   uv run cli.py inspect --ref subagent/pi:abc/0 --q "task result"
+   ```
+
+4. Read generated artifact files directly only when `inspect` is insufficient:
+   ```bash
+   cat ~/.session-index/transcripts/{session_id}.md
+   cat ~/.session-index/transcripts/{session_id}.tools.md
+   ```
+
+5. Fall back to raw Source Transcript JSONL only for provider-native details not normalized into generated artifacts.
 
 ---
 
 ## Evaluating Cross-Project Injection
 
-The SessionStart hook injects recent cross-project sessions as context. To measure whether this is useful, run the evaluation script:
+The SessionStart hook injects recent cross-project sessions as context. To measure whether this is useful, run:
 
 ```bash
 uv run tests/eval_cross_project.py
-uv run tests/eval_cross_project.py --verbose          # show per-session hits
-uv run tests/eval_cross_project.py --since 2026-04-01  # only recent sessions
+uv run tests/eval_cross_project.py --verbose
+uv run tests/eval_cross_project.py --since 2026-04-01
 ```
 
-The script simulates what the SessionStart hook would have injected for each session (cross-project sessions in the prior 24h), then checks if those project names appear in the conversation transcript. It reports a hit rate — how often cross-project context was actually referenced.
-
-**Interpreting results:**
-- **< 10%** — injection is mostly noise, consider removing or making it opt-in
-- **10-30%** — useful enough to keep, but consider a lighter format (project names only, no summaries)
-- **> 30%** — high value, keep as-is
-
-Note: the system was installed on **2026-04-02**. Sessions before that date are backfilled and lack injection context, so use `--since 2026-04-01` for meaningful results. Without the filter, the script measures cross-project *relevance* (whether the topic came up) rather than *usefulness* (whether the injection influenced the conversation).
-
----
-
-## Auditing Search Effectiveness
-
-The search log enables mechanical auditing: hit rates, common failure patterns, and filter usage. For intent-based auditing (was this the right search for what the user wanted?), start with the cleaned transcript and tool log; use raw JSONL only when provider-specific reconstruction is still needed and the source file exists.
-
-### Three-source audit workflow
-
-Each search call exists in up to three places with different detail levels:
-
-| Source | Contains | Limitation |
-|--------|----------|------------|
-| **Log** (`session-index.log`) | Query, flags, result count, duration | No results content, no user intent |
-| **Cleaned transcript** (`transcripts/{sid}.md`) | Conversation narrative around the search | Detailed tool calls intentionally stripped |
-| **Tool log** (`transcripts/{sid}.tools.md`) | Ordered tool names, parameters, status, and result text | Result text is capped at 20,000 characters per call |
-| **Raw JSONL** (`~/.claude/projects/.../{sid}.jsonl`) | Provider-native events and any details not normalized into artifacts | Ephemeral (~3 months), requires JSON parsing |
-
-### Step-by-step audit
-
-1. **Pull search calls from the log:**
-   ```bash
-   grep '\] search' ~/.session-index/logs/session-index.log
-   ```
-
-2. **Identify patterns** — look for:
-   - `-> 0 results` entries (failed searches)
-   - Multiple searches from the same `[sid]` (progressive narrowing/broadening)
-   - Repeated queries across sessions (systemic gaps)
-
-3. **Read the transcript for context** — understand what the user was trying to find:
-   ```bash
-   cat ~/.session-index/transcripts/{session_id}.md
-   ```
-
-4. **Read the tool log when debugging tool behavior** — search/excerpt output prints `tool log:` / `Tool log available:` when present:
-   ```bash
-   cat ~/.session-index/transcripts/{session_id}.tools.md
-   ```
-
-5. **Fall back to raw JSONL only if needed** — for provider-native fields that are not normalized into the cleaned transcript or tool log.
-
-### Known audit limitations
-
-- **Log ↔ transcript reconciliation**: Both the log and the cleaned transcript include timestamps (`HH:MM:SS` format). Match a search log entry's timestamp to the nearest `[user]` or `[assistant]` timestamp in the transcript to locate the surrounding conversation context. Transcripts generated before per-message timestamps were added (pre-2026-04) lack these markers — re-run `backfill --no-summary --force` to regenerate them.
-- **Tool-log truncation**: Tool result text is capped at 20,000 characters per call, preserving the beginning and end with a truncation marker.
-- **JSONL expiry**: Provider-native raw logs can still disappear, but indexed sessions keep DB rows, cleaned transcripts, and generated tool logs.
-- **Cross-session queries**: The `[sid]` in the log is the session that *ran* the search, not the sessions that were *found*. To audit result quality, inspect the found sessions' transcripts/tool logs.
+The script simulates what SessionStart would have injected and checks if those project names appear in the conversation transcript.
 
 ---
 
@@ -250,16 +224,16 @@ Each search call exists in up to three places with different detail levels:
 
 ### `stop.py` (Stop)
 
-1. Parses the session's JSONL for deterministic fields (message counts, files touched)
+1. Parses the session Source Transcript for deterministic fields
 2. Upserts to DB — no LLM call, fast enough to run synchronously
 3. Skips sessions without at least 1 user + 1 assistant message
 
 ### `session_end.py` + `_session_end_worker.py` (SessionEnd)
 
 1. `session_end.py` forks a detached worker process and exits immediately (< 1s)
-2. Worker renders the cleaned transcript in memory and generates an LLM summary via headless Pi print mode
-3. Worker writes cleaned Markdown transcript and separate `.tools.md` tool log when tool calls exist
-4. Worker upserts all fields to DB (summary, transcript_path, tool_log_path, slug)
+2. Worker renders the Clean Transcript in memory and generates an LLM summary via headless Pi print mode
+3. Worker writes Clean Transcript and Tool Log when tool calls exist
+4. Worker upserts all fields to DB and replaces fact-table rows
 5. All failures are caught and logged — worker never crashes silently
 
 ### settings.json Hook Registration

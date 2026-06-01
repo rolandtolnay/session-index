@@ -7,7 +7,7 @@ from typing import Any
 
 from inspect_refs import SessionRef, format_ref
 from tool_log import ToolLogSection
-from transcript import TranscriptExcerpt
+from transcript import EvidenceSnippet
 
 
 def session_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -32,19 +32,10 @@ def session_packet(row: dict[str, Any], *, include_summary: bool = False) -> dic
     return packet
 
 
-def artifacts(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "transcript_path": row["transcript_path"],
-        "tool_log_path": row["tool_log_path"],
-        "subagent_transcripts": row["subagent_transcripts"],
-    }
-
-
 def candidate(
     ref: str,
     session: dict[str, Any],
     match: dict[str, Any],
-    artifact_paths: dict[str, Any],
     *,
     inspect_refs: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -56,7 +47,6 @@ def candidate(
         "inspect_refs": refs,
         "session": session,
         "match": match,
-        "artifacts": artifact_paths,
     }
 
 
@@ -145,12 +135,15 @@ def session_filter_match(*, project: str | None, since: str | None, until: str |
     }
 
 
-def session_query_match(query: str) -> dict[str, Any]:
-    return {"kind": "session", "query": query}
+def session_query_match(query: str | None = None) -> dict[str, Any]:
+    match: dict[str, Any] = {"kind": "session"}
+    if query is not None:
+        match["query"] = query
+    return match
 
 
-def excerpt_payload(excerpt: TranscriptExcerpt) -> dict[str, Any]:
-    return asdict(excerpt)
+def snippet_payload(snippet: EvidenceSnippet) -> dict[str, Any]:
+    return asdict(snippet)
 
 
 def tool_log_payload(section: ToolLogSection) -> dict[str, Any]:

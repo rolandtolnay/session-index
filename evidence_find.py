@@ -5,9 +5,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from db import build_fts_query, search_flexible
+from db import build_fts_query, find_session_candidates
 from evidence_model import (
-    artifacts,
     candidate,
     file_mutation_match,
     question_answer_match,
@@ -97,7 +96,7 @@ def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dic
     out = []
     for row in rows:
         ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), tool_call_match(row), artifacts(row)))
+        out.append(candidate(ref, session_summary(row), tool_call_match(row)))
     return out
 
 
@@ -119,7 +118,7 @@ def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
     out = []
     for row in rows:
         ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), skill_invocation_match(row), artifacts(row)))
+        out.append(candidate(ref, session_summary(row), skill_invocation_match(row)))
     return out
 
 
@@ -141,7 +140,7 @@ def _mutation_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
     out = []
     for row in rows:
         ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), file_mutation_match(row), artifacts(row)))
+        out.append(candidate(ref, session_summary(row), file_mutation_match(row)))
     return out
 
 
@@ -169,7 +168,7 @@ def _question_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
             question_index=row["question_index"],
         ))
         tool_ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), question_answer_match(row), artifacts(row), inspect_refs={"tool": tool_ref}))
+        out.append(candidate(ref, session_summary(row), question_answer_match(row), inspect_refs={"tool": tool_ref}))
     return out
 
 
@@ -197,12 +196,12 @@ def _subagent_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
         if row["call_sequence"] is not None:
             refs["parent_call"] = format_ref(ToolRef(session_id=row["session_id"], sequence=row["call_sequence"]))
         match_row = {**row, "transcript_path": row["run_transcript_path"]}
-        out.append(candidate(ref, session_summary(row), subagent_run_match(match_row), artifacts(row), inspect_refs=refs))
+        out.append(candidate(ref, session_summary(row), subagent_run_match(match_row), inspect_refs=refs))
     return out
 
 
 def _topic_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = search_flexible(
+    rows = find_session_candidates(
         conn,
         query=args.get("topic"),
         project=args.get("project"),
@@ -221,7 +220,7 @@ def _topic_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
     for row in rows[:args["limit"]]:
         row_dict = dict(row)
         ref = format_ref(SessionRef(session_id=row_dict["session_id"]))
-        out.append(candidate(ref, session_summary(row_dict), match, artifacts(row_dict)))
+        out.append(candidate(ref, session_summary(row_dict), match))
     return out
 
 

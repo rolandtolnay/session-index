@@ -17,20 +17,17 @@ from current_session import CurrentSessionError, resolve_current_session
 from db import (
     get_connection,
     init_db,
-    search_flexible,
-    get_session,
     get_stats,
     rebuild_fts,
     run_readonly_select,
-    fact_table_schema_reference,
-    session_columns,
     delete_sessions,
     DB_PATH,
 )
 from logger import log
 from evidence_find import find_candidates
 from evidence_inspect import EvidenceInspectError, inspect_ref
-from transcript import extract_excerpts, TRANSCRIPT_DIR
+from query_reference import query_reference
+from transcript import TRANSCRIPT_DIR
 
 
 def _parse_bool(value: str) -> bool:
@@ -84,22 +81,22 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
 
 def add_find_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--topic", help="Topic text for session-level candidate discovery")
-    parser.add_argument("--tool", help="Tool name for event-level Tool Call candidates")
-    parser.add_argument("--skill", help="Skill name for event-level skill invocation candidates")
-    parser.add_argument("--mutated", help="File Mutation path fragment (uses file_mutations, not files_touched)")
-    parser.add_argument("--subagent", help="Requested/observed subagent type")
+    parser.add_argument("--topic", help="Session/topic candidate discovery; returns session/<id> refs with summaries, not evidence text")
+    parser.add_argument("--tool", help="Tool Call candidate discovery; returns tool/<session_id>/<sequence> refs")
+    parser.add_argument("--skill", help="Skill invocation candidates; returns tool refs for matching skill tool calls")
+    parser.add_argument("--mutated", help="File Mutation path fragment from file_mutations; returns tool refs")
+    parser.add_argument("--subagent", help="Requested/observed subagent type; returns subagent refs with candidate-specific transcript_path")
     parser.add_argument(
         "--question-recommended",
         type=_parse_bool,
         choices=[True, False],
-        help="For --tool question, filter by true/false recommended answer selection",
+        help="For --tool question, filter by true/false recommended answer selection; returns question refs",
     )
     parser.add_argument("--project", "-p", help="Filter by project name (prefix match)")
     parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
     parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
     parser.add_argument("--session", help="Only this canonical session ID")
-    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--limit", type=int, default=20, help="Maximum candidates to return")
 
 
 def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:
@@ -108,25 +105,8 @@ def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:
         required=True,
         help="Inspection Reference, e.g. session/<id>, tool/<id>/<seq>, question/<id>/<seq>/<idx>, subagent/<id>/<child>",
     )
-    parser.add_argument("--q", help="Query text for session/subagent transcript excerpts")
-    parser.add_argument("--max-snippets", type=int, default=5, help="Maximum transcript excerpt blocks/snippets")
-
-
-def _log_search(args: argparse.Namespace, count: int, elapsed_ms: int) -> None:
-    """Log search call for auditing."""
-    session_id = os.environ.get("SESSION_INDEX_CALLER_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID", "")
-    params = []
-    if args.query:
-        params.append(f'query="{args.query}"')
-    if getattr(args, "project", None):
-        params.append(f"project={args.project}")
-    if getattr(args, "since", None):
-        params.append(f"since={args.since}")
-    if getattr(args, "until", None):
-        params.append(f"until={args.until}")
-    if args.limit != 20:
-        params.append(f"limit={args.limit}")
-    log(session_id, "search", f"{' '.join(params)} -> {count} results ({elapsed_ms}ms)")
+    parser.add_argument("--q", help="Query text for session/subagent Evidence Snippets; omit for session artifact metadata or subagent task area")
+    parser.add_argument("--max-snippets", type=int, default=5, help="Maximum transcript Evidence Snippet blocks")
 
 
 def _warn_missing_path(label: str, path: str) -> None:
@@ -152,191 +132,6 @@ def cmd_current(args: argparse.Namespace) -> None:
         print(current.native_session_id)
     else:
         print(current.session_id)
-
-
-def cmd_search(args: argparse.Namespace) -> None:
-    """Search the session index."""
-    start = time.monotonic()
-    conn = get_connection()
-    init_db(conn)
-    use_or = getattr(args, "any", False)
-    results = search_flexible(
-        conn,
-        query=args.query,
-        project=getattr(args, "project", None),
-        since=getattr(args, "since", None),
-        until=getattr(args, "until", None),
-        limit=args.limit,
-        use_or=use_or,
-    )
-
-    # Zero-results fallback: retry with OR if AND returned nothing
-    or_fallback = False
-    if not results and args.query and not use_or and len(args.query.split()) > 1:
-        results = search_flexible(
-            conn,
-            query=args.query,
-            project=getattr(args, "project", None),
-            since=getattr(args, "since", None),
-            until=getattr(args, "until", None),
-            limit=args.limit,
-            use_or=True,
-        )
-        or_fallback = bool(results)
-
-    conn.close()
-
-    if not results:
-        _log_search(args, 0, int((time.monotonic() - start) * 1000))
-        if args.query and len(args.query.split()) > 1:
-            print("No results found. Try fewer keywords or use OR between terms.")
-        else:
-            print("No results found.")
-        return
-
-    if or_fallback:
-        print("No exact matches. Showing partial matches:")
-
-    for r in results:
-        print(f"\n{'─' * 60}")
-        sid = r["session_id"]
-        project = r.get("project") or "unknown"
-        date = (r.get("started_at") or "")[:10]
-        duration = r.get("duration_seconds", 0)
-        duration_str = f"{duration // 60}m{duration % 60}s" if duration else "?"
-
-        print(f"  {sid}  |  {project}  |  {date}  |  {duration_str}")
-
-        if r.get("branch"):
-            print(f"  branch: {r['branch']}")
-        if r.get("summary"):
-            print(f"  {r['summary']}")
-        elif r.get("user_messages"):
-            first = r["user_messages"].split("\n---\n")[0][:120]
-            print(f"  {first}")
-        if r.get("files_touched"):
-            files = r["files_touched"][:200]
-            print(f"  files: {files}")
-        if r.get("tool_log_path"):
-            print(f"  tool log: {r['tool_log_path']}")
-
-    print(f"\n{'─' * 60}")
-    print(f"  {len(results)} result(s)")
-    _log_search(args, len(results), int((time.monotonic() - start) * 1000))
-
-
-def _log_excerpt(session_ids: list[str], query: str, elapsed_ms: int) -> None:
-    """Log excerpt call for auditing."""
-    caller_sid = os.environ.get("SESSION_INDEX_CALLER_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID", "")
-    ids_str = ",".join(s[:12] for s in session_ids)
-    log(caller_sid, "excerpt", f'sessions=[{ids_str}] query="{query}" ({elapsed_ms}ms)')
-
-
-def _print_agent_excerpts(main_transcript_path: str, keywords: list[str]) -> None:
-    """Scan subagent transcripts for keyword matches, print top hit + count of rest.
-
-    Subagent prompts and tool calls live in <main_transcript_path minus .md>/agent-*.md.
-    `extract_excerpts` against the parent session can't surface them.
-    """
-    agent_dir = main_transcript_path[:-3] if main_transcript_path.endswith(".md") else main_transcript_path
-    if not os.path.isdir(agent_dir):
-        return
-
-    agent_files = sorted(glob.glob(os.path.join(agent_dir, "agent-*.md")))
-    kw_filtered = [k for k in keywords if len(k) > 2]
-    if not kw_filtered:
-        return
-
-    scored: list[tuple[int, str]] = []
-    for agent_path in agent_files:
-        try:
-            with open(agent_path) as f:
-                content_lower = f.read().lower()
-        except OSError:
-            continue
-        score = sum(content_lower.count(k.lower()) for k in kw_filtered)
-        if score > 0:
-            scored.append((score, agent_path))
-
-    if not scored:
-        return
-
-    scored.sort(reverse=True)
-    top_score, top_path = scored[0]
-    top_excerpt = extract_excerpts(top_path, keywords, max_blocks=3, max_lines=60)
-    if top_excerpt:
-        agent_name = os.path.basename(top_path).replace(".md", "")
-        print(f"  ┄┄┄ {agent_name} ({top_score} keyword hits) ┄┄┄")
-        for line in top_excerpt.splitlines():
-            print(f"  {line}")
-
-    remaining = len(scored) - 1
-    if remaining > 0:
-        print(f"  [{remaining} more agent transcript(s) matched — read {agent_dir}/ directly for more]")
-
-
-def cmd_excerpt(args: argparse.Namespace) -> None:
-    """Extract transcript excerpts from specific sessions."""
-    start = time.monotonic()
-    conn = get_connection()
-    init_db(conn)
-
-    MAX_SESSIONS = 3
-    identifiers = args.sessions[:MAX_SESSIONS]
-    keywords = args.query.split()
-
-    if len(args.sessions) > MAX_SESSIONS:
-        print(f"Note: limited to {MAX_SESSIONS} sessions (requested {len(args.sessions)})")
-
-    resolved = []
-    for ident in identifiers:
-        session = get_session(conn, ident)
-        if session is None:
-            print(f"Session not found: {ident}")
-            continue
-        if not session.get("transcript_path"):
-            print(f"No transcript available for: {session['session_id']}")
-            continue
-        resolved.append(session)
-
-    conn.close()
-
-    if not resolved:
-        _log_excerpt([i for i in identifiers], args.query, int((time.monotonic() - start) * 1000))
-        print("No valid sessions to excerpt.")
-        return
-
-    for session in resolved:
-        sid = session["session_id"]
-        project = session.get("project") or "unknown"
-        date = (session.get("started_at") or "")[:10]
-
-        print(f"\n{'─' * 60}")
-        print(f"  {sid}  |  {project}  |  {date}")
-
-        excerpt = extract_excerpts(
-            session["transcript_path"],
-            keywords,
-            max_blocks=4,
-            max_lines=100,
-        )
-        if excerpt:
-            print(f"  ┄┄┄ excerpts ┄┄┄")
-            for line in excerpt.splitlines():
-                print(f"  {line}")
-        else:
-            print(f"  No matching excerpts for: {' '.join(keywords)}")
-
-        _print_agent_excerpts(session["transcript_path"], keywords)
-        if session.get("tool_log_path"):
-            print(f"  Tool log available: {session['tool_log_path']}")
-
-    print(f"\n{'─' * 60}")
-    _log_excerpt(
-        [s["session_id"] for s in resolved],
-        args.query,
-        int((time.monotonic() - start) * 1000),
-    )
 
 
 def _backfill_options(args: argparse.Namespace):
@@ -457,41 +252,16 @@ def cmd_backfill(args: argparse.Namespace) -> None:
 
 _QUERY_LIMIT_CAP = 1000
 
-EXAMPLE_QUERIES = """\
--- Use query for counts, rankings, aggregates, and custom SQL.
--- Use find --mutated/--tool/--skill/--subagent for compact evidence candidates,
--- then copy refs into inspect for scoped evidence text.
 
--- 1. Sessions with the most direct subagent-request tool calls
-SELECT session_id, COUNT(*) n FROM tool_calls
-WHERE tool IN ('agent', 'subagent', 'subagent_run') AND scope='main'
-GROUP BY session_id ORDER BY n DESC LIMIT 10;
-
--- 2. How often I picked the recommended answer (Claude + recovered Pi)
-SELECT was_recommended, COUNT(*) FROM question_answers
-WHERE was_recommended IS NOT NULL AND multi_select=0 GROUP BY was_recommended;
-
--- 3. Sessions that used a given skill (candidate refs can be built as tool/<session_id>/<sequence>)
-SELECT 'tool/' || t.session_id || '/' || t.sequence AS ref, t.session_id, s.project, s.started_at
-FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id
-WHERE t.skill_name='update-config' ORDER BY s.started_at DESC LIMIT 20;
-
--- 4. Sessions that used a given subagent type
-SELECT parent_session_id, COUNT(*) runs FROM subagent_runs
-WHERE requested_agent_type='Explore' GROUP BY parent_session_id ORDER BY runs DESC;
-
--- 5. Files successfully written or edited in one session
-SELECT DISTINCT path FROM file_mutations
-WHERE session_id='SESSION_ID' ORDER BY path;
-
--- 6. File Mutation event trail for one session (use find --mutated for evidence candidates)
-SELECT 'tool/' || session_id || '/' || sequence AS ref, scope, sequence, tool_name, path
-FROM file_mutations
-WHERE session_id='SESSION_ID' ORDER BY sequence, path;"""
+def add_query_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("sql", nargs="?", default=None, help="A single read-only SELECT / WITH statement")
+    parser.add_argument("--json", action="store_true", help="Output rows as JSON")
+    parser.add_argument("--limit", type=int, default=50, help=f"Max rows (default 50, cap {_QUERY_LIMIT_CAP})")
+    parser.add_argument("--schema", action="store_true", help="Print curated fact-table reference + Inspection Reference examples and exit")
 
 
 def _log_query(sql: str, count: int, truncated: bool, elapsed_ms: int, error: str | None = None) -> None:
-    """Log query call for auditing (mirrors _log_search)."""
+    """Log query calls for auditing."""
     session_id = os.environ.get("SESSION_INDEX_CALLER_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID", "")
     one_line = " ".join((sql or "").split())[:200]
     if error:
@@ -526,11 +296,7 @@ def _print_query_table(columns: list[str], rows: list[list]) -> None:
 def cmd_query(args: argparse.Namespace) -> None:
     """Run a guarded read-only SELECT against the session index."""
     if args.schema:
-        print(fact_table_schema_reference())
-        print("\n-- sessions columns --")
-        print(", ".join(session_columns()))
-        print("\n-- example queries --")
-        print(EXAMPLE_QUERIES)
+        print(query_reference())
         return
 
     if not args.sql:
@@ -850,11 +616,15 @@ def main() -> None:
     sp_backfill.set_defaults(func=cmd_backfill)
 
     # query
-    sp_query = subparsers.add_parser("query", help="Run a read-only SELECT against the fact tables")
-    sp_query.add_argument("sql", nargs="?", default=None, help="A single SELECT / WITH statement")
-    sp_query.add_argument("--json", action="store_true", help="Output rows as JSON")
-    sp_query.add_argument("--limit", type=int, default=50, help=f"Max rows (default 50, cap {_QUERY_LIMIT_CAP})")
-    sp_query.add_argument("--schema", action="store_true", help="Print fact-table schema + examples and exit")
+    sp_query = subparsers.add_parser(
+        "query",
+        help="Run read-only SQL; --schema prints a curated fact-table reference",
+        description=(
+            "Query: read-only SELECT/WITH for aggregates, rankings, audits, and custom joins. "
+            "Use --schema for table semantics and examples that construct refs for inspect."
+        ),
+    )
+    add_query_arguments(sp_query)
     sp_query.set_defaults(func=cmd_query)
 
     # status

@@ -22,7 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import get_connection, init_db, search_flexible
+from db import get_connection, init_db, find_session_candidates
 from transcript import (
     _parse_blocks, _keyword_density, _score_blocks, _block_role,
     _apply_qa_pairing, _ROLE_RE,
@@ -61,7 +61,7 @@ def _load_transcripts_for_queries(conn):
     transcript_data = []  # list of (query, session_id, blocks, keywords)
 
     for q in QUERIES:
-        results = search_flexible(
+        results = find_session_candidates(
             conn, query=q["query"], project=q.get("project"), limit=SEARCH_LIMIT,
         )
         keywords = [k.lower() for k in q["query"].split() if len(k) > 2]

@@ -8,7 +8,7 @@ from typing import Any
 
 from db import get_session
 from evidence_model import (
-    excerpt_payload,
+    snippet_payload,
     question_answer_match,
     session_packet,
     session_query_match,
@@ -18,7 +18,7 @@ from evidence_model import (
 )
 from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SubagentRef, ToolRef, format_ref, parse_ref
 from tool_log import extract_tool_log_section
-from transcript import extract_excerpt_objects
+from transcript import extract_evidence_snippets
 
 
 class EvidenceInspectError(Exception):
@@ -56,22 +56,67 @@ def _require_tool_log_section(session: dict[str, Any], sequence: int, raw_ref: s
     return section
 
 
+def _path_metadata(path: str | None) -> dict[str, Any]:
+    return {"path": path, "exists": bool(path and os.path.exists(path))}
+
+
+def _subagent_transcript_count(session: dict[str, Any]) -> int:
+    value = session.get("subagent_transcripts") or ""
+    return len([path for path in value.split(",") if path.strip()])
+
+
+def _session_artifacts(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "clean_transcript": _path_metadata(session.get("transcript_path")),
+        "tool_log": _path_metadata(session.get("tool_log_path")),
+        "subagent_transcripts": {"count": _subagent_transcript_count(session)},
+    }
+
+
+def _session_subagent_refs(conn: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT child_index, requested_agent_type, task_preview
+        FROM subagent_runs
+        WHERE parent_session_id = ? AND child_index IS NOT NULL
+        ORDER BY child_index
+        """,
+        (session_id,),
+    ).fetchall()
+    return [
+        {
+            "ref": format_ref(SubagentRef(session_id=session_id, child_index=row["child_index"])),
+            "requested_agent_type": row["requested_agent_type"],
+            "task_preview": row["task_preview"],
+        }
+        for row in rows
+    ]
+
+
+def _session_metadata_packet(conn: sqlite3.Connection, raw_ref: str, session: dict[str, Any], match: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ref": raw_ref,
+        "session": session_packet(session),
+        "match": match,
+        "artifacts": _session_artifacts(session),
+        "inspect_refs": {"subagents": _session_subagent_refs(conn, session["session_id"])},
+    }
+
+
 def _inspect_session(conn: sqlite3.Connection, raw_ref: str, ref: SessionRef, q: str | None, max_snippets: int) -> dict[str, Any]:
     session = _require_session(conn, ref.session_id, raw_ref)
+    packet = _session_metadata_packet(conn, raw_ref, session, session_query_match(q))
     if not q:
-        raise EvidenceInspectError("Session inspection requires --q TEXT", code="missing_query", ref=raw_ref)
+        packet["evidence"] = []
+        return packet
     path = session.get("transcript_path")
     if not path:
         raise EvidenceInspectError("Session has no Clean Transcript path", code="missing_artifact", ref=raw_ref)
     if not os.path.exists(path):
         raise EvidenceInspectError(f"Clean Transcript artifact is missing: {path}", code="missing_artifact", ref=raw_ref)
-    excerpts = extract_excerpt_objects(path, q.split(), max_blocks=max_snippets, max_lines=200)
-    return {
-        "ref": raw_ref,
-        "session": session_packet(session),
-        "match": session_query_match(q),
-        "evidence": [excerpt_payload(excerpt) for excerpt in excerpts],
-    }
+    snippets = extract_evidence_snippets(path, q.split(), max_blocks=max_snippets, max_lines=200)
+    packet["evidence"] = [snippet_payload(snippet) for snippet in snippets]
+    return packet
 
 
 def _tool_row(conn: sqlite3.Connection, session_id: str, sequence: int) -> dict[str, Any] | None:
@@ -149,7 +194,7 @@ def _inspect_subagent(conn: sqlite3.Connection, raw_ref: str, ref: SubagentRef, 
         raise EvidenceInspectError(f"Subagent transcript artifact is missing: {path}", code="missing_artifact", ref=raw_ref)
 
     if q:
-        evidence = [excerpt_payload(excerpt) for excerpt in extract_excerpt_objects(
+        evidence = [snippet_payload(snippet) for snippet in extract_evidence_snippets(
             path,
             q.split(),
             artifact="subagent_transcript",

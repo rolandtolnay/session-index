@@ -1,4 +1,4 @@
-"""Cleaned .md transcript writer and excerpt extractor.
+"""Cleaned .md transcript writer and Evidence Snippet extractor.
 
 Writes conversation transcripts to ~/.session-index/transcripts/{session_id}.md
 Uses inline role tags with bracket tool calls.
@@ -22,7 +22,7 @@ class SubagentRef:
 
 
 @dataclass(frozen=True)
-class TranscriptExcerpt:
+class EvidenceSnippet:
     artifact: str
     path: str
     locator: dict[str, object]
@@ -207,11 +207,11 @@ def write_subagent_transcript(session_id: str, parsed: "ParsedSubagent") -> str:
     return path
 
 
-# ── Excerpt extraction ──────────────────────────────────────────────────────
+# ── Evidence Snippet extraction ─────────────────────────────────────────────
 
 _ROLE_RE = re.compile(r"^\[(user|assistant|subagent|prompt|agent)\] (?:\d{2}:\d{2}:\d{2} |\S+ )?─")
 
-_excerpt_log = logging.getLogger("session-index.excerpt")
+_snippet_log = logging.getLogger("session-index.snippet")
 
 # Strategy names
 STRATEGY_FIRST_N = "first_n"
@@ -319,7 +319,7 @@ def _apply_qa_pairing(
     return paired
 
 
-def extract_excerpt_objects(
+def extract_evidence_snippets(
     transcript_path: str,
     keywords: list[str],
     *,
@@ -328,9 +328,9 @@ def extract_excerpt_objects(
     max_lines: int = 200,
     strategy: str = STRATEGY_HYBRID,
     qa_pair: bool = True,
-) -> list[TranscriptExcerpt]:
-    """Return JSON-ready transcript excerpts with artifact metadata."""
-    text = _select_excerpt_text(
+) -> list[EvidenceSnippet]:
+    """Return JSON-ready Evidence Snippets with artifact metadata."""
+    text = _select_evidence_text(
         transcript_path,
         keywords,
         max_blocks=max_blocks,
@@ -340,11 +340,11 @@ def extract_excerpt_objects(
     )
     if text is None:
         return []
-    return [TranscriptExcerpt(
+    return [EvidenceSnippet(
         artifact=artifact,
         path=transcript_path,
         locator={
-            "type": "excerpt",
+            "type": "snippet",
             "strategy": strategy,
             "max_blocks": max_blocks,
             "max_lines": max_lines,
@@ -354,27 +354,7 @@ def extract_excerpt_objects(
     )]
 
 
-def extract_excerpts(
-    transcript_path: str,
-    keywords: list[str],
-    max_blocks: int = 5,
-    max_lines: int = 200,
-    strategy: str = STRATEGY_HYBRID,
-    qa_pair: bool = True,
-) -> str | None:
-    """Compatibility shim returning text from the canonical structured excerpt."""
-    excerpts = extract_excerpt_objects(
-        transcript_path,
-        keywords,
-        max_blocks=max_blocks,
-        max_lines=max_lines,
-        strategy=strategy,
-        qa_pair=qa_pair,
-    )
-    return excerpts[0].text if excerpts else None
-
-
-def _select_excerpt_text(
+def _select_evidence_text(
     transcript_path: str,
     keywords: list[str],
     *,
@@ -383,7 +363,7 @@ def _select_excerpt_text(
     strategy: str = STRATEGY_HYBRID,
     qa_pair: bool = True,
 ) -> str | None:
-    """Select excerpt text shared by structured and legacy callers.
+    """Select bounded Evidence Snippet text.
 
     Strategies:
       - first_n: first matching blocks chronologically (original behavior)
@@ -426,7 +406,7 @@ def _select_excerpt_text(
 
         if block_lines > max_lines:
             skipped_large += 1
-            _excerpt_log.debug(
+            _snippet_log.debug(
                 "%s: skipped block #%d (%d lines > %d max_lines), strategy=%s",
                 sid, idx, block_lines, max_lines, strategy,
             )
@@ -455,7 +435,7 @@ def _select_excerpt_text(
 
     skipped_total = skipped_large + skipped_budget
     if skipped_total > 0:
-        _excerpt_log.info(
+        _snippet_log.info(
             "%s: %d/%d matching blocks selected, %d skipped "
             "(%d oversized, %d budget), strategy=%s, keywords=%s",
             sid, len(selected_indices), total_matching, skipped_total,
@@ -465,7 +445,7 @@ def _select_excerpt_text(
     if not selected_indices:
         if total_matching > 0:
             return (
-                f"[{total_matching} matching block(s) too large for excerpts "
+                f"[{total_matching} matching block(s) too large for snippets "
                 f"— grep transcript for detail]"
             )
         return None
