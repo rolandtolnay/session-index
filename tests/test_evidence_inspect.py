@@ -9,16 +9,40 @@ from evidence_inspect import EvidenceInspectError, inspect_ref
 from tests.evidence_helpers import make_memory_conn, seed_evidence_graph
 
 
-def test_inspect_session_returns_clean_transcript_excerpt(tmp_path, monkeypatch):
+def test_inspect_session_without_query_returns_artifact_metadata_and_subagent_refs(tmp_path, monkeypatch):
     monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
     conn = make_memory_conn()
-    seed_evidence_graph(conn, tmp_path, write_artifacts=True, summary="summary")
+    paths = seed_evidence_graph(conn, tmp_path, write_artifacts=True, summary="summary")
+
+    packet = inspect_ref(conn, "session/pi:abc")
+
+    assert packet["ref"] == "session/pi:abc"
+    assert packet["match"] == {"kind": "session"}
+    assert packet["evidence"] == []
+    assert packet["artifacts"]["clean_transcript"] == {"path": paths["transcript_path"], "exists": True}
+    assert packet["artifacts"]["tool_log"] == {"path": paths["tool_log_path"], "exists": True}
+    assert packet["artifacts"]["subagent_transcripts"] == {"count": 1}
+    assert packet["inspect_refs"]["subagents"] == [{
+        "ref": "subagent/pi:abc/0",
+        "requested_agent_type": "scout",
+        "task_preview": "Inspect evidence flow",
+    }]
+    assert "source_path" not in packet
+
+
+def test_inspect_session_returns_clean_transcript_snippet_with_same_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    conn = make_memory_conn()
+    paths = seed_evidence_graph(conn, tmp_path, write_artifacts=True, summary="summary")
 
     packet = inspect_ref(conn, "session/pi:abc", q="scoped evidence")
 
     assert packet["ref"] == "session/pi:abc"
     assert packet["match"] == {"kind": "session", "query": "scoped evidence"}
+    assert packet["artifacts"]["clean_transcript"] == {"path": paths["transcript_path"], "exists": True}
+    assert packet["inspect_refs"]["subagents"][0]["ref"] == "subagent/pi:abc/0"
     assert packet["evidence"][0]["artifact"] == "clean_transcript"
+    assert packet["evidence"][0]["locator"]["type"] == "snippet"
     assert "Evidence inspect retrieves scoped text" in packet["evidence"][0]["text"]
 
 
@@ -61,6 +85,7 @@ def test_inspect_subagent_default_and_query_focused(tmp_path, monkeypatch):
     assert default["evidence"][0]["locator"]["type"] == "task_area"
     assert "Inspect evidence flow" in default["evidence"][0]["text"]
     assert focused["evidence"][0]["artifact"] == "subagent_transcript"
+    assert focused["evidence"][0]["locator"]["type"] == "snippet"
     assert "scoped evidence details" in focused["evidence"][0]["text"]
 
 

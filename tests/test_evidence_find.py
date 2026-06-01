@@ -22,6 +22,7 @@ def test_find_topic_returns_compact_session_refs_without_evidence_text(tmp_path)
     assert result["inspect_refs"]["primary"] == "session/pi:abc"
     assert result["match"] == {"kind": "topic", "topic": "session index"}
     assert result["session"]["summary"] == "Worked on session index evidence retrieval."
+    assert "artifacts" not in result
     assert "evidence" not in result
     assert "text" not in result
 
@@ -56,6 +57,9 @@ def test_find_skill_mutation_question_and_subagent_candidates(tmp_path):
     assert question["match"]["was_recommended"] is True
     assert subagent["ref"] == "subagent/pi:abc/0"
     assert subagent["inspect_refs"]["parent_call"] == "tool/pi:abc/15"
+    assert subagent["match"]["transcript_path"].endswith("agent-child.md")
+    for result in [skill, mutation, question, subagent]:
+        assert "artifacts" not in result
 
 
 def test_find_event_filters_compose_or_fail_clearly(tmp_path):
