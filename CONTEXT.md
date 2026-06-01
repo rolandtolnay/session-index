@@ -40,6 +40,10 @@ _Avoid_: Files touched, file reference, read file
 A machine-readable bundle that connects one matched session fact or topic match to the transcript, tool-log, or subagent text needed to inspect what happened.
 _Avoid_: Search result, query row, raw artifact
 
+**Evidence Snippet**:
+A bounded text selection from a Clean Transcript, Tool Log, or Subagent Run transcript included in an Evidence Packet.
+_Avoid_: Excerpt, passage, broad transcript dump
+
 **File Mutation**:
 An attributed file path targeted by a successful write or edit tool action within a session.
 _Avoid_: Changed File, Session Footprint, File Event
@@ -55,6 +59,10 @@ _Avoid_: File read, broad excerpt, search
 **Inspection Reference**:
 A stable string returned by Evidence Find and accepted unchanged by Evidence Inspect to identify a specific session, tool call, or subagent run.
 _Avoid_: File path, line number, raw query row
+
+**LLM-Facing CLI Surface**:
+The self-contained instruction layer formed by the installed skill documentation and CLI help output.
+_Avoid_: README-dependent workflow, hidden maintainer knowledge
 
 **Leaf ID**:
 A provider-specific Pi branch identifier inside a session tree.
@@ -77,10 +85,11 @@ _Avoid_: Observed child type, artifact title
 - A **Current Session** may expose a **Leaf ID** when the provider has branch-level identity.
 - A **Current Session Display** presents metadata about exactly one **Current Session**.
 - A **Current Session Display** may initiate **Manual Current Session Indexing** for its active **Current Session**.
-- An **Evidence Find** produces zero or more compact candidate results and does not include transcript, tool-log, or subagent evidence text.
-- An **Evidence Find** result includes one or more **Inspection References**.
+- An **Evidence Find** produces zero or more compact candidate results and does not include evidence text.
+- An **Evidence Find** result includes one or more **Inspection References** and may include candidate-specific metadata that directly helps choose or retrieve scoped context.
 - An **Evidence Inspect** accepts an **Inspection Reference** produced by **Evidence Find**.
 - An **Evidence Inspect** produces one or more **Evidence Packets**.
+- An **Evidence Packet** may contain zero or more **Evidence Snippets**.
 - A session may have zero or more **File Mutations**.
 - A **File Mutation** is attributed to a tool-call sequence and may be inspected through the corresponding **Tool Log** section.
 - A session may produce zero or more **Evidence Packets** when facts or topic matches point to inspectable artifact text.
@@ -91,6 +100,7 @@ _Avoid_: Observed child type, artifact title
 - A **File Mutation** may be attributed to the main session or to a **Subagent Run** when the mutation occurred inside child-agent work.
 - A **Subagent Run** has one **Requested Agent Type** when the parent session records the request.
 - A **Subagent Run** may be known from the parent request even when its child Source Transcript or generated artifacts are missing.
+- The **LLM-Facing CLI Surface** must be sufficient for an LLM to move from user prompt to relevant scoped context without reading the README.
 
 ## Example dialogue
 
@@ -104,6 +114,10 @@ _Avoid_: Observed child type, artifact title
 - "session ID" can mean provider-native ID or Session Index ID — resolved for v1: default command output uses the **Canonical Session ID**.
 - "find" can mean natural-language intent parsing or deterministic **Evidence Find** criteria — resolved: the CLI exposes structured criteria, and the calling LLM maps user language to those criteria using help text and the session-search skill.
 - **Evidence Packet** output can mean human-readable text, TOON, or JSON — resolved: JSON is the canonical and only planned output format for reliable, predictable LLM use.
+- "excerpt" was legacy retrieval language — resolved: use **Evidence Snippet** for bounded evidence text inside an **Evidence Packet**.
 - **Inspection Reference** syntax can be URI-like, JSON-shaped, or path-like — resolved: use slash-style strings such as `session/<session_id>`, `tool/<session_id>/<sequence>`, and `subagent/<session_id>/<child_index>` so Pi session ids containing `:` remain easy to parse.
 - Evidence locations can be persisted as indexed spans or derived from artifacts at inspection time — resolved for v1: derive from current artifacts at inspection time and return computed locators, avoiding a general artifact-span schema until the workflow proves it needs one.
+- Artifact paths can be broad artifact inventories or candidate-specific handles — resolved: **Evidence Find** avoids broad artifact inventories, but candidate-specific artifact pointers are acceptable when they directly help an LLM choose or retrieve scoped context.
+- CLI compactness can mean fewer fields or faster path-to-context — resolved: optimize for the LLM reaching the most relevant scoped context quickly, not for minimal JSON or ceremony for its own sake.
+- CLI usage guidance can live in README, docs, skill docs, or help text — resolved: the **LLM-Facing CLI Surface** is the installed skill documentation plus CLI help; README is for adopters and maintainers, not required LLM operating context.
 - "changed files" can mean read/search references, write/edit targets, git dirty state, or net filesystem delta — resolved: **File Mutation** means successful write/edit tool targets only and is distinct from Pi's **Session Footprint** concept.
