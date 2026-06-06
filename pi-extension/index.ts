@@ -338,10 +338,14 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 				const childEnv = overlaySessionIndexEnv(process.env, sessionEnv);
 				const result = await runCurrentSessionJson(childEnv, spawnProcess);
 				const content = currentSessionDisplayContent(result);
+				const piCommandSessionId = contentHasMetadata(content)
+					? content.metadata.native_session_id
+					: undefined;
 				let latestContent = content;
 				await showCurrentSessionDisplay({
 					ctx,
 					content,
+					piCommandSessionId,
 					onIndexSnapshot: async () => {
 						const result = await runManualCurrentSessionIndex(
 							ctx.sessionManager,

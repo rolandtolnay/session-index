@@ -162,7 +162,7 @@ function displayError(error: string): string {
 	return trimmed.length > 0 ? trimmed : "Current Session metadata is unavailable.";
 }
 
-export function formatCurrentSessionDisplay(content: CurrentSessionDisplayContent): string[] {
+export function formatCurrentSessionDisplay(content: CurrentSessionDisplayContent, piCommandSessionId?: string): string[] {
 	if ("error" in content) {
 		return [
 			"Current Session",
@@ -175,6 +175,7 @@ export function formatCurrentSessionDisplay(content: CurrentSessionDisplayConten
 	return [
 		"Current Session",
 		...currentSessionRows(content.metadata).map(withStatus),
+		...piCommandRows(piCommandSessionId),
 		INDEX_ACTION_HINT,
 	];
 }
@@ -251,6 +252,42 @@ function statusText(theme: ThemeLike, exists: boolean): string {
 	return color(theme, exists ? "success" : "warning", `[${label}]`);
 }
 
+type PiCommandRow = {
+	label: string;
+	command: string;
+};
+
+function piCommandLines(piCommandSessionId: string): string[] {
+	return piCommandParts(piCommandSessionId).map((row) => `${row.label}${row.command}`);
+}
+
+function piCommandParts(piCommandSessionId: string): PiCommandRow[] {
+	return [
+		{ label: "Resume: ", command: `pi --session ${piCommandSessionId}` },
+		{ label: "Fork:   ", command: `pi --fork ${piCommandSessionId}` },
+	];
+}
+
+function piCommandRows(piCommandSessionId: string | undefined): string[] {
+	if (!piCommandSessionId) return [];
+	return ["Pi commands:", ...piCommandLines(piCommandSessionId)];
+}
+
+function pushPiCommandRows(lines: string[], width: number, theme: ThemeLike, piCommandSessionId: string | undefined) {
+	if (!piCommandSessionId) return;
+	const contentWidth = Math.max(0, width - CONTENT_INDENT.length);
+	const add = (line: string, colorName: string) => lines.push(`${CONTENT_INDENT}${color(theme, colorName, truncatePlain(line, contentWidth))}`);
+	add("Pi commands:", "muted");
+	for (const row of piCommandParts(piCommandSessionId)) {
+		const line = truncatePlain(`${row.label}${row.command}`, contentWidth);
+		if (line.length <= row.label.length) {
+			lines.push(`${CONTENT_INDENT}${color(theme, "dim", line)}`);
+		} else {
+			lines.push(`${CONTENT_INDENT}${color(theme, "dim", row.label)}${color(theme, "text", line.slice(row.label.length))}`);
+		}
+	}
+}
+
 function pushRow(
 	lines: string[],
 	width: number,
@@ -282,6 +319,7 @@ function renderCurrentSessionDisplay(
 	theme: ThemeLike,
 	width: number,
 	state: RenderState = { phase: "idle" },
+	piCommandSessionId?: string,
 ): string[] {
 	const lines: string[] = [];
 	const contentWidth = Math.max(0, width - CONTENT_INDENT.length);
@@ -304,6 +342,8 @@ function renderCurrentSessionDisplay(
 	for (const row of currentSessionRows(content.metadata)) {
 		pushRow(lines, width, theme, row.label, row.value, row.exists, row.writtenAt);
 	}
+	lines.push("");
+	pushPiCommandRows(lines, width, theme, piCommandSessionId);
 	lines.push("");
 	if (state.phase === "idle") {
 		add(color(theme, "dim", "User-only display. Press Ctrl+R to index the current snapshot; not sent to the model."));
@@ -334,6 +374,7 @@ class CurrentSessionDisplayComponent implements ComponentLike {
 	private readonly theme: ThemeLike;
 	private content: CurrentSessionDisplayContent;
 	private readonly onIndexSnapshot: (() => Promise<CurrentSessionIndexResult>) | undefined;
+	private readonly piCommandSessionId: string | undefined;
 	private readonly done: () => void;
 	private state: RenderState = { phase: "idle" };
 	private closed = false;
@@ -345,19 +386,21 @@ class CurrentSessionDisplayComponent implements ComponentLike {
 		theme: ThemeLike,
 		content: CurrentSessionDisplayContent,
 		onIndexSnapshot: (() => Promise<CurrentSessionIndexResult>) | undefined,
+		piCommandSessionId: string | undefined,
 		done: () => void,
 	) {
 		this.tui = tui;
 		this.theme = theme;
 		this.content = content;
 		this.onIndexSnapshot = onIndexSnapshot;
+		this.piCommandSessionId = piCommandSessionId;
 		this.done = done;
 	}
 
 	render(width: number): string[] {
 		if (this.cachedWidth === width && this.cachedLines) return this.cachedLines;
 		this.cachedWidth = width;
-		this.cachedLines = renderCurrentSessionDisplay(this.content, this.theme, width, this.state);
+		this.cachedLines = renderCurrentSessionDisplay(this.content, this.theme, width, this.state, this.piCommandSessionId);
 		return this.cachedLines;
 	}
 
@@ -434,9 +477,10 @@ class CurrentSessionDisplayComponent implements ComponentLike {
 export async function showCurrentSessionDisplay(options: {
 	ctx: { ui: CurrentSessionDisplayUi };
 	content: CurrentSessionDisplayContent;
+	piCommandSessionId?: string;
 	onIndexSnapshot?: () => Promise<CurrentSessionIndexResult>;
 }): Promise<void> {
 	await withFooterSuppressed(() => options.ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-		return new CurrentSessionDisplayComponent(tui, theme, options.content, options.onIndexSnapshot, () => done(undefined));
+		return new CurrentSessionDisplayComponent(tui, theme, options.content, options.onIndexSnapshot, options.piCommandSessionId, () => done(undefined));
 	}));
 }
