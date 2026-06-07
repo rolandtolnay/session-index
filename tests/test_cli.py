@@ -104,7 +104,7 @@ def test_cmd_find_emits_compact_json_candidates(tmp_path, monkeypatch, capsys):
     _seed_evidence_cli_db(tmp_path, monkeypatch)
 
     cmd_find(argparse.Namespace(
-        topic="session index", tool=None, skill=None, mutated=None, subagent=None,
+        topic="session index", tool=None, skill=None, mutated=None, mutation_mode="session", subagent=None,
         question_recommended=None, project=None, since=None, until=None, session=None, limit=2,
     ))
 
@@ -118,11 +118,24 @@ def test_cmd_find_emits_compact_json_candidates(tmp_path, monkeypatch, capsys):
     assert "changed" not in json.dumps(result)
 
 
-def test_cmd_find_mutated_ref_can_be_passed_to_inspect(tmp_path, monkeypatch, capsys):
+def test_cmd_find_mutated_default_emits_session_ref(tmp_path, monkeypatch, capsys):
     _seed_evidence_cli_db(tmp_path, monkeypatch)
 
     cmd_find(argparse.Namespace(
-        topic=None, tool=None, skill=None, mutated="example.md", subagent=None,
+        topic=None, tool=None, skill=None, mutated="example.md", mutation_mode="session", subagent=None,
+        question_recommended=None, project=None, since=None, until=None, session=None, limit=2,
+    ))
+
+    result = json.loads(capsys.readouterr().out)["results"][0]
+    assert result["ref"] == "session/pi:abc"
+    assert result["inspect_refs"]["primary"] == "session/pi:abc"
+
+
+def test_cmd_find_mutated_event_ref_can_be_passed_to_inspect(tmp_path, monkeypatch, capsys):
+    _seed_evidence_cli_db(tmp_path, monkeypatch)
+
+    cmd_find(argparse.Namespace(
+        topic=None, tool=None, skill=None, mutated="example.md", mutation_mode="event", subagent=None,
         question_recommended=None, project=None, since=None, until=None, session=None, limit=2,
     ))
     ref = json.loads(capsys.readouterr().out)["results"][0]["ref"]

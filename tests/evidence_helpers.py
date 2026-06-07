@@ -20,6 +20,65 @@ def make_memory_conn():
     return conn
 
 
+def seed_session_with_mutations(
+    conn,
+    tmp_path: Path,
+    *,
+    session_id: str,
+    project: str = "session-index",
+    started_at: str,
+    summary: str = DEFAULT_SUMMARY,
+    branch: str | None = "main",
+    mutations: list[tuple[int, str, str]] | None = None,
+) -> None:
+    """Seed one Canonical Session ID with repeated File Mutation rows.
+
+    mutations entries are (sequence, tool, path).
+    """
+    db.upsert_session(
+        conn,
+        session_id=session_id,
+        source="pi",
+        project=project,
+        branch=branch,
+        started_at=started_at,
+        summary=summary,
+        user_messages=summary,
+        transcript_path=str(tmp_path / f"{session_id}.md"),
+        tool_log_path=str(tmp_path / f"{session_id}.tools.md"),
+    )
+    mutations = mutations or []
+    sequences = sorted({sequence for sequence, _tool, _path in mutations})
+    db.replace_tool_calls(conn, session_id, [
+        {
+            "session_id": session_id,
+            "source": "pi",
+            "scope": "main",
+            "sequence": sequence,
+            "timestamp": f"{started_at}+{sequence}",
+            "tool_name": tool,
+            "tool": tool,
+            "is_error": 0,
+            "skill_name": None,
+        }
+        for sequence in sequences
+        for tool in [next(tool for seq, tool, _path in mutations if seq == sequence)]
+    ])
+    db.replace_file_mutations(conn, session_id, [
+        {
+            "session_id": session_id,
+            "source": "pi",
+            "scope": "main",
+            "sequence": sequence,
+            "timestamp": f"{started_at}+{sequence}",
+            "tool_name": tool,
+            "tool": tool,
+            "path": path,
+        }
+        for sequence, tool, path in mutations
+    ])
+
+
 def seed_evidence_graph(
     conn,
     tmp_path: Path,
