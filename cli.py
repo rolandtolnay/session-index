@@ -83,7 +83,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 def add_find_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--topic", help="Session/topic candidate discovery; returns session/<id> refs with summaries, not evidence text")
     parser.add_argument("--tool", help="Tool Call candidate discovery; returns tool/<session_id>/<sequence> refs")
-    parser.add_argument("--skill", help="Skill invocation candidates; returns tool refs for matching skill tool calls")
+    parser.add_argument("--skill", help="Skill Invocation candidates; returns skill/<session_id>/<sequence> refs")
     parser.add_argument("--mutated", help="File Mutation path fragment from file_mutations; returns tool refs")
     parser.add_argument("--subagent", help="Requested/observed subagent type; returns subagent refs with candidate-specific transcript_path")
     parser.add_argument(
@@ -103,7 +103,7 @@ def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ref",
         required=True,
-        help="Inspection Reference, e.g. session/<id>, tool/<id>/<seq>, question/<id>/<seq>/<idx>, subagent/<id>/<child>",
+        help="Inspection Reference, e.g. session/<id>, skill/<id>/<seq>, tool/<id>/<seq>, question/<id>/<seq>/<idx>, subagent/<id>/<child>",
     )
     parser.add_argument("--q", help="Query text for session/subagent Evidence Snippets; omit for session artifact metadata or subagent task area")
     parser.add_argument("--max-snippets", type=int, default=5, help="Maximum transcript Evidence Snippet blocks")

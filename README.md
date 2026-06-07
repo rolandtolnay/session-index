@@ -9,6 +9,7 @@ Automatic indexing, summarization, and search for Claude Code and Pi conversatio
 - **Unified DB** — stores both sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
+- **Skill Invocation audits** — normalizes slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads into the canonical `skill_invocations` table
 - **CLI** — `find`, `inspect`, `query`, backfill, status, and current-session lookup from the terminal
 - **Skill** — `session-search` skill for Claude Code and Pi
 
@@ -77,6 +78,14 @@ uv run cli.py backfill --source pi
 
 Progress is per-session and idempotent — safe to interrupt and resume. Pi rows are stored with `pi:<uuid>` DB IDs.
 
+To regenerate deterministic artifacts and fact tables, including historical Skill Invocations, without new LLM summaries:
+
+```bash
+uv run cli.py backfill --source all --no-summary --force
+```
+
+For scoped validation, run the same command with `--session SESSION_ID` before a full backfill.
+
 ## Evidence retrieval
 
 Use the installed `session-search` skill and CLI `--help` as the canonical LLM operating surface. README stays intentionally brief for adopters/maintainers.
@@ -92,7 +101,9 @@ From the terminal:
 ```bash
 uv run cli.py find --topic "token refresh" --limit 5
 uv run cli.py find --mutated "etc/prd" --project session-index
+uv run cli.py find --skill review --project session-index
 uv run cli.py inspect --ref session/pi:abc
+uv run cli.py inspect --ref skill/pi:abc/1
 uv run cli.py inspect --ref session/pi:abc --q "token refresh"
 uv run cli.py inspect --ref tool/pi:abc/12
 uv run cli.py query --schema
@@ -172,6 +183,8 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
 `find --mutated` uses `file_mutations` for evidence candidates. Raw SQL over `file_mutations` remains the path for exact lists and aggregates, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.
+
+`find --skill NAME` uses the canonical `skill_invocations` table and returns `skill/<session_id>/<sequence>` refs. SQL audits should aggregate `skill_invocations.skill_name`, not `tool_calls`, because Skill Invocations may originate from slash commands, Pi skill envelopes, provider Skill tools, or exact `SKILL.md` reads.
 
 ## Data locations
 

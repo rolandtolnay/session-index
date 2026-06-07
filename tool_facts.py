@@ -13,7 +13,6 @@ from parser import ParsedToolCall
 from subagent_runs import ParsedSubagentRun
 
 _QUESTION_TOOLS = {"askuserquestion", "question"}
-_SKILL_TOOLS = {"skill"}
 _FILE_MUTATION_TOOLS = {"write", "edit"}
 _RECOMMENDED_MARKER = "(Recommended)"
 
@@ -26,17 +25,6 @@ def normalize_tool_name(raw: str) -> str:
     `subagent_runs` expose provider-independent facts for those domains.
     """
     return (raw or "").rsplit(".", 1)[-1].lower()
-
-
-def extract_skill_name(call: ParsedToolCall) -> str | None:
-    """For `skill`-tool calls, the invoked skill name (`arguments.skill`)."""
-    if normalize_tool_name(call.tool_name) not in _SKILL_TOOLS:
-        return None
-    args = call.arguments if isinstance(call.arguments, dict) else {}
-    skill = args.get("skill")
-    if isinstance(skill, str) and skill.strip():
-        return skill.strip()
-    return None
 
 
 def build_tool_call_rows(
@@ -54,7 +42,6 @@ def build_tool_call_rows(
             "tool_name": call.tool_name or "",
             "tool": normalize_tool_name(call.tool_name),
             "is_error": 1 if call.is_error else 0,
-            "skill_name": extract_skill_name(call),
         })
     return rows
 

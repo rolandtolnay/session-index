@@ -68,10 +68,23 @@ def seed_evidence_graph(
         subagent_transcripts=str(subagent_path),
     )
     db.replace_tool_calls(conn, SESSION_ID, [
-        {"session_id": SESSION_ID, "source": "pi", "scope": "main", "sequence": 12, "timestamp": "2026-05-31T10:01:00Z", "tool_name": "edit", "tool": "edit", "is_error": 0, "skill_name": None},
-        {"session_id": SESSION_ID, "source": "pi", "scope": "main", "sequence": 13, "timestamp": "2026-05-31T10:02:00Z", "tool_name": "Skill", "tool": "skill", "is_error": 0, "skill_name": "review"},
-        {"session_id": SESSION_ID, "source": "pi", "scope": "main", "sequence": 14, "timestamp": "2026-05-31T10:03:00Z", "tool_name": "question", "tool": "question", "is_error": 0, "skill_name": None},
+        {"session_id": SESSION_ID, "source": "pi", "scope": "main", "sequence": 12, "timestamp": "2026-05-31T10:01:00Z", "tool_name": "edit", "tool": "edit", "is_error": 0},
+        {"session_id": SESSION_ID, "source": "pi", "scope": "main", "sequence": 13, "timestamp": "2026-05-31T10:02:00Z", "tool_name": "Skill", "tool": "skill", "is_error": 0},
+        {"session_id": SESSION_ID, "source": "pi", "scope": "main", "sequence": 14, "timestamp": "2026-05-31T10:03:00Z", "tool_name": "question", "tool": "question", "is_error": 0},
     ])
+    db.replace_skill_invocations(conn, SESSION_ID, [{
+        "session_id": SESSION_ID,
+        "source": "pi",
+        "sequence": 1,
+        "timestamp": "2026-05-31T10:02:00Z",
+        "skill_name": "review",
+        "invocation_preview": None,
+        "arguments": None,
+        "transcript_message_index": None,
+        "tool_sequence": 13,
+        "child_index": None,
+        "subagent_transcript_path": None,
+    }])
     db.replace_file_mutations(conn, SESSION_ID, [{
         "session_id": SESSION_ID,
         "source": "pi",

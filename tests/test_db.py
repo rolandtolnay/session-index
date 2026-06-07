@@ -18,6 +18,7 @@ from db import (
     _build_fts_query,
     run_readonly_select,
     replace_tool_calls,
+    replace_skill_invocations,
     replace_subagent_runs,
     replace_question_answers,
     replace_file_mutations,
@@ -362,11 +363,41 @@ def test_get_session_short_prefix_rejected():
 def test_init_db_creates_fact_tables():
     conn = _make_conn()
     names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"tool_calls", "subagent_runs", "question_answers", "file_mutations"} <= names
+    assert {"tool_calls", "skill_invocations", "subagent_runs", "question_answers", "file_mutations"} <= names
     indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert {"idx_file_mutations_session", "idx_file_mutations_path"} <= indexes
     columns = {row[1] for row in conn.execute("PRAGMA table_info(file_mutations)")}
     assert {"session_id", "source", "scope", "sequence", "timestamp", "tool_name", "tool", "path"} <= columns
+    tool_columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+    assert "skill_name" not in tool_columns
+    skill_columns = {row[1] for row in conn.execute("PRAGMA table_info(skill_invocations)")}
+    assert {"session_id", "source", "sequence", "skill_name", "tool_sequence", "child_index", "subagent_transcript_path"} <= skill_columns
+    conn.close()
+
+
+def test_init_db_migrates_obsolete_tool_call_skill_name_column():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE tool_calls (
+            session_id TEXT NOT NULL, source TEXT, scope TEXT, sequence INTEGER,
+            timestamp TEXT, tool_name TEXT, tool TEXT, is_error INTEGER, skill_name TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX idx_tool_calls_skill ON tool_calls(skill_name)")
+    conn.execute("""
+        INSERT INTO tool_calls (session_id, source, scope, sequence, timestamp, tool_name, tool, is_error, skill_name)
+        VALUES ('s1', 'claude', 'main', 1, NULL, 'Skill', 'skill', 0, 'review')
+    """)
+
+    init_db(conn)
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    row = conn.execute("SELECT session_id, tool_name, tool FROM tool_calls").fetchone()
+    assert "skill_name" not in columns
+    assert "idx_tool_calls_skill" not in indexes
+    assert tuple(row) == ("s1", "Skill", "skill")
     conn.close()
 
 
@@ -374,13 +405,33 @@ def test_replace_tool_calls_idempotent():
     conn = _make_conn()
     rows = [{
         "session_id": "s1", "source": "claude", "scope": "main", "sequence": 1,
-        "timestamp": None, "tool_name": "Bash", "tool": "bash", "is_error": 0, "skill_name": None,
+        "timestamp": None, "tool_name": "Bash", "tool": "bash", "is_error": 0,
     }]
     replace_tool_calls(conn, "s1", rows)
     replace_tool_calls(conn, "s1", rows)  # re-index must not duplicate
     assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='s1'").fetchone()[0] == 1
     replace_tool_calls(conn, "s1", [])  # empty clears
     assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='s1'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_replace_skill_invocations_idempotent_and_empty_clears():
+    conn = _make_conn()
+    rows = [{
+        "session_id": "s1", "source": "claude", "sequence": 1,
+        "timestamp": None, "skill_name": "review", "invocation_preview": None,
+        "arguments": None, "transcript_message_index": None, "tool_sequence": 7,
+        "child_index": None, "subagent_transcript_path": None,
+    }]
+
+    replace_skill_invocations(conn, "s1", rows)
+    replace_skill_invocations(conn, "s1", rows)
+
+    stored = conn.execute("SELECT skill_name, tool_sequence FROM skill_invocations WHERE session_id='s1'").fetchall()
+    assert [tuple(row) for row in stored] == [("review", 7)]
+
+    replace_skill_invocations(conn, "s1", [])
+    assert conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE session_id='s1'").fetchone()[0] == 0
     conn.close()
 
 
@@ -430,7 +481,12 @@ def test_delete_sessions_removes_owned_fact_rows():
     replace_tool_calls(conn, "owned-1", [{
         "session_id": "owned-1", "source": "claude", "scope": "main", "sequence": 1,
         "timestamp": None, "tool_name": "Read", "tool": "read", "is_error": 0,
-        "skill_name": None,
+    }])
+    replace_skill_invocations(conn, "owned-1", [{
+        "session_id": "owned-1", "source": "claude", "sequence": 1,
+        "timestamp": None, "skill_name": "review", "invocation_preview": None,
+        "arguments": None, "transcript_message_index": None, "tool_sequence": 1,
+        "child_index": None, "subagent_transcript_path": None,
     }])
     replace_question_answers(conn, "owned-1", [{
         "session_id": "owned-1", "source": "claude", "sequence": 1, "question_index": 0,
@@ -452,6 +508,7 @@ def test_delete_sessions_removes_owned_fact_rows():
     assert delete_sessions(conn, ["owned-1"]) == 1
     assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id='owned-1'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='owned-1'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE session_id='owned-1'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM question_answers WHERE session_id='owned-1'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id='owned-1'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id='owned-1'").fetchone()[0] == 0

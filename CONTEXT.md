@@ -37,7 +37,7 @@ A provider-recorded assistant tool-use event that may have arguments, result tex
 _Avoid_: Skill Invocation, user request
 
 **Skill Invocation**:
-A request to load a named reusable prompt or workflow template, regardless of whether the provider presents it as a skill or a slash command.
+A request to load a named reusable prompt or workflow template, regardless of whether the provider presents it as a slash command, Pi skill envelope, provider Skill tool event, or exact `SKILL.md` read.
 _Avoid_: Command Invocation, Skill result, Subagent Run, generic Tool Call
 
 **Evidence Packet**:
@@ -101,7 +101,7 @@ _Avoid_: Observed child type, artifact title
 - An **Evidence Find** result includes one or more **Inspection References** and may include candidate-specific metadata that directly helps choose or retrieve scoped context.
 - An **Evidence Inspect** accepts an **Inspection Reference** produced by **Evidence Find**.
 - A **Tool Log** contains sections for zero or more **Tool Calls**.
-- A **Skill Invocation** belongs to exactly one **Canonical Session ID** and abstracts over provider-specific skill, slash-command, or prompt-template encodings.
+- A **Skill Invocation** belongs to exactly one **Canonical Session ID** and abstracts over provider-specific skill, slash-command, skill-envelope, or exact `SKILL.md` read encodings.
 - An **Evidence Inspect** produces one or more **Evidence Packets**.
 - An **Evidence Packet** may contain zero or more **Evidence Snippets**.
 - A session may have zero or more **File Mutations**.
@@ -130,7 +130,7 @@ _Avoid_: Observed child type, artifact title
 - A missing **Current Session** must not be guessed from latest project or terminal state in v1; command callers should receive a clear failure.
 - "session ID" can mean provider-native ID or Session Index ID — resolved for v1: default command output uses the **Canonical Session ID**.
 - "find" can mean natural-language intent parsing or deterministic **Evidence Find** criteria — resolved: the CLI exposes structured criteria, and the calling LLM maps user language to those criteria using help text and the session-search skill.
-- "skill invocation" was used as if every skill use were a row in `tool_calls` or separate from slash commands — resolved: **Skill Invocation** is the unified user-facing fact for reusable prompt or workflow template use, while provider-specific encodings are parser implementation details.
+- "skill invocation" was used as if every skill use were a row in `tool_calls` or separate from slash commands — resolved: **Skill Invocation** is the unified user-facing fact for reusable prompt or workflow template use, persisted in `skill_invocations`; provider-specific encodings are parser implementation details.
 - **Evidence Packet** output can mean human-readable text, TOON, or JSON — resolved: JSON is the canonical and only planned output format for reliable, predictable LLM use.
 - "excerpt" was legacy retrieval language — resolved: use **Evidence Snippet** for bounded evidence text inside an **Evidence Packet**.
 - **Inspection Reference** syntax can be URI-like, JSON-shaped, or path-like — resolved: use slash-style strings such as `session/<session_id>`, `skill/<session_id>/<sequence>`, `tool/<session_id>/<sequence>`, and `subagent/<session_id>/<child_index>` so Pi session ids containing `:` remain easy to parse.

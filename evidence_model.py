@@ -58,7 +58,6 @@ def tool_call_match(row: dict[str, Any], *, file_mutations: list[str] | None = N
         "tool_name": row["tool_name"],
         "scope": row["scope"],
         "is_error": bool(row["is_error"]),
-        "skill_name": row["skill_name"],
     }
     if file_mutations is not None:
         match["file_mutations"] = file_mutations
@@ -66,14 +65,17 @@ def tool_call_match(row: dict[str, Any], *, file_mutations: list[str] | None = N
 
 
 def skill_invocation_match(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    match = {
         "kind": "skill_invocation",
         "sequence": row["sequence"],
-        "tool": row["tool"],
-        "tool_name": row["tool_name"],
-        "scope": row["scope"],
         "skill_name": row["skill_name"],
+        "timestamp": row["timestamp"],
     }
+    if row.get("invocation_preview"):
+        match["invocation_preview"] = row["invocation_preview"]
+    if row.get("arguments"):
+        match["arguments"] = row["arguments"]
+    return match
 
 
 def file_mutation_match(row: dict[str, Any]) -> dict[str, Any]:

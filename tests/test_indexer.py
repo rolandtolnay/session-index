@@ -132,6 +132,26 @@ def test_full_index_populates_file_mutations_idempotently(tmp_path, monkeypatch)
     conn.close()
 
 
+def test_no_summary_index_populates_skill_invocations_idempotently(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path)
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.NO_SUMMARY_INDEX_OPTIONS)
+
+    conn = db.get_connection()
+    names = [row[0] for row in conn.execute(
+        "SELECT skill_name FROM skill_invocations WHERE session_id=? ORDER BY sequence",
+        (result.session_id,),
+    )]
+    conn.close()
+    assert names == ["verify", "analyze-problem"]
+
+    indexer.index_source_transcript("claude", str(parent), indexer.NO_SUMMARY_INDEX_OPTIONS)
+    conn = db.get_connection()
+    assert conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE session_id=?", (result.session_id,)).fetchone()[0] == 2
+    conn.close()
+
+
 def test_no_summary_index_populates_file_mutations(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     parent = _copy_parent(tmp_path)
@@ -241,9 +261,11 @@ def test_metadata_only_index_does_not_write_fact_tables(tmp_path, monkeypatch):
 
     conn = db.get_connection()
     n = conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (result.session_id,)).fetchone()[0]
+    skills = conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE session_id=?", (result.session_id,)).fetchone()[0]
     mutations = conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id=?", (result.session_id,)).fetchone()[0]
     conn.close()
     assert n == 0  # fact tables track the tool-log stage, absent here
+    assert skills == 0
     assert mutations == 0
 
 

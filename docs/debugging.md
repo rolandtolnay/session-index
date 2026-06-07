@@ -25,6 +25,7 @@ Pi extension
 
 Shared full pass:
     parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► Clean Transcript + Tool Log ─► DB upsert + fact tables
+                                                                                     └─► Skill Invocations from slash commands, skill envelopes, Skill tools, and exact SKILL.md reads
 
 Canonical evidence path:
     find/query ──► Inspection Reference ──► inspect ──► artifact metadata + scoped Evidence Snippets
@@ -58,6 +59,7 @@ Current-session lookup:
 | `inspect_refs.py` | Inspection Reference parsing/formatting |
 | `transcript.py` | Clean Transcript writer + Evidence Snippet selector |
 | `tool_log.py` | Per-session Markdown Tool Log writer and section extractor |
+| `skill_facts.py` | Canonical Skill Invocation extraction and row building |
 | `summarizer.py` | LLM summary generator using headless Pi, with legacy Gemini/Ollama fallback |
 | `logger.py` | Structured logging with monthly rotation |
 | `client.py` | Standalone Ollama HTTP client for fallback summaries (pure stdlib) |
@@ -147,11 +149,19 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - Project filter is prefix match: `--project ghostty` matches `ghostty-peon`.
 - Date filters are inclusive for bare dates.
 - For exact File Mutation trails or aggregates, use `query --schema` then SQL over `file_mutations`.
+- For skill audits, `find --skill NAME` and SQL should use `skill_invocations`; `tool_calls` intentionally has no `skill_name` column.
+
+**Skill Invocation rows are stale or missing:**
+- Confirm the deterministic facts exist: `uv run cli.py query "SELECT skill_name, COUNT(*) AS n FROM skill_invocations GROUP BY skill_name ORDER BY n DESC LIMIT 20" --json`.
+- Regenerate one known session first: `uv run cli.py backfill --source all --session SESSION_ID --no-summary --force`.
+- If scoped repair works, run the full deterministic repair: `uv run cli.py backfill --source all --no-summary --force`.
+- Historical repair is a deterministic reindex/backfill, not a transcript-only migration, because Skill Invocations depend on parser metadata, combined Tool Call sequences, and subagent transcript locality.
 
 **Evidence Inspect fails:**
 - Invalid refs, missing sessions, stale refs, and missing generated artifacts return JSON errors.
 - `inspect --ref session/<id>` works without `--q` and returns generated artifact metadata plus subagent refs.
 - `inspect --ref session/<id> --q TEXT` requires the Clean Transcript file to exist, because snippets cannot be produced without it.
+- `inspect --ref skill/<id>/<sequence>` returns primary transcript artifact metadata and locator/preview fields only; it does not inline full Clean Transcripts or subagent transcripts.
 - Tool/question inspect requires the Tool Log file and sequence section.
 - Subagent inspect requires the selected Subagent Run transcript.
 

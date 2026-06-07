@@ -17,7 +17,7 @@ from evidence_model import (
     tool_call_match,
     topic_match,
 )
-from inspect_refs import QuestionRef, SessionRef, SubagentRef, ToolRef, format_ref
+from inspect_refs import QuestionRef, SessionRef, SkillRef, SubagentRef, ToolRef, format_ref
 
 
 def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = "s") -> list[str]:
@@ -87,7 +87,7 @@ def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dic
     clauses = ["(LOWER(t.tool) = :tool OR LOWER(t.tool_name) = :tool)"]
     rows = _query(conn, f"""
         {cte}
-        SELECT s.*, t.sequence, t.timestamp, t.tool_name, t.tool, t.scope, t.is_error, t.skill_name
+        SELECT s.*, t.sequence, t.timestamp, t.tool_name, t.tool, t.scope, t.is_error
         FROM tool_calls t JOIN scoped_sessions s ON s.session_id = t.session_id
         {_where(clauses)}
         ORDER BY {_event_order(args, "t.sequence ASC")}
@@ -103,21 +103,19 @@ def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dic
 def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "skill": (args.get("skill") or "").lower()}
     cte = _scoped_sessions_cte(args, params)
-    clauses = ["LOWER(t.skill_name) = :skill"]
-    if args.get("tool"):
-        params["tool"] = args["tool"].lower()
-        clauses.append("(LOWER(t.tool) = :tool OR LOWER(t.tool_name) = :tool)")
+    clauses = ["LOWER(k.skill_name) = :skill"]
     rows = _query(conn, f"""
         {cte}
-        SELECT s.*, t.sequence, t.timestamp, t.tool_name, t.tool, t.scope, t.skill_name
-        FROM tool_calls t JOIN scoped_sessions s ON s.session_id = t.session_id
+        SELECT s.*, k.sequence, k.timestamp, k.skill_name, k.invocation_preview, k.arguments,
+               k.transcript_message_index, k.tool_sequence, k.child_index, k.subagent_transcript_path
+        FROM skill_invocations k JOIN scoped_sessions s ON s.session_id = k.session_id
         {_where(clauses)}
-        ORDER BY {_event_order(args, "t.sequence ASC")}
+        ORDER BY {_event_order(args, "k.sequence ASC")}
         LIMIT :limit
     """, params)
     out = []
     for row in rows:
-        ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
+        ref = format_ref(SkillRef(session_id=row["session_id"], sequence=row["sequence"]))
         out.append(candidate(ref, session_summary(row), skill_invocation_match(row)))
     return out
 
@@ -255,6 +253,8 @@ def find_candidates(
     }
     if question_recommended is not None and (tool or "").lower() != "question":
         raise ValueError("--question-recommended requires --tool question")
+    if skill and tool:
+        raise ValueError("Cannot combine --skill with --tool; Skill Invocations are not Tool Calls")
     incompatible = [name for name, value in (("--skill", skill), ("--mutated", mutated), ("--subagent", subagent)) if value]
     if len(incompatible) > 1:
         raise ValueError(f"Cannot combine event criteria: {', '.join(incompatible)}")

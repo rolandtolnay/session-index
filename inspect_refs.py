@@ -54,6 +54,17 @@ class QuestionRef:
 
 
 @dataclass(frozen=True)
+class SkillRef:
+    session_id: str
+    sequence: int
+    kind: Literal["skill"] = field(init=False, default="skill")
+
+    def __post_init__(self) -> None:
+        _validate_session_id(self.session_id)
+        _validate_non_negative(self.sequence, "sequence")
+
+
+@dataclass(frozen=True)
 class SubagentRef:
     session_id: str
     child_index: int
@@ -64,7 +75,7 @@ class SubagentRef:
         _validate_non_negative(self.child_index, "child_index")
 
 
-InspectionRef: TypeAlias = SessionRef | ToolRef | QuestionRef | SubagentRef
+InspectionRef: TypeAlias = SessionRef | ToolRef | QuestionRef | SkillRef | SubagentRef
 
 
 def _parse_int(value: str, label: str) -> int:
@@ -98,6 +109,7 @@ def parse_ref(value: str) -> InspectionRef:
       - session/<session_id>
       - tool/<session_id>/<sequence>
       - question/<session_id>/<sequence>/<question_index>
+      - skill/<session_id>/<sequence>
       - subagent/<session_id>/<child_index>
     """
     if not value or not isinstance(value, str):
@@ -122,6 +134,13 @@ def parse_ref(value: str) -> InspectionRef:
             sequence=_parse_int(parts[-2], "sequence"),
             question_index=_parse_int(parts[-1], "question_index"),
         )
+    if kind == "skill":
+        if len(parts) < 3:
+            raise InspectionRefError("Expected skill/<session_id>/<sequence>")
+        return SkillRef(
+            session_id=_join_session_id(parts, 1, -1),
+            sequence=_parse_int(parts[-1], "sequence"),
+        )
     if kind == "subagent":
         if len(parts) < 3:
             raise InspectionRefError("Expected subagent/<session_id>/<child_index>")
@@ -141,6 +160,8 @@ def format_ref(ref: InspectionRef) -> str:
         return f"tool/{ref.session_id}/{ref.sequence}"
     if isinstance(ref, QuestionRef):
         return f"question/{ref.session_id}/{ref.sequence}/{ref.question_index}"
+    if isinstance(ref, SkillRef):
+        return f"skill/{ref.session_id}/{ref.sequence}"
     if isinstance(ref, SubagentRef):
         return f"subagent/{ref.session_id}/{ref.child_index}"
     raise InspectionRefError(f"Unknown inspection ref type: {type(ref).__name__}")

@@ -9,6 +9,7 @@ from db import SCHEMA
 _REVIEWED_TABLES = {
     "sessions": "one row per indexed conversation. Source Transcript paths are ingestion metadata, not the normal evidence path.",
     "tool_calls": "one row per indexed tool call. The pair (session_id, sequence) constructs a Tool Inspection Reference.",
+    "skill_invocations": "one row per named reusable prompt/workflow template invocation. The pair (session_id, sequence) constructs a Skill Invocation Reference.",
     "file_mutations": "one row per successful write/edit path. This is the precise File Mutation table; sessions.files_touched is broad metadata.",
     "subagent_runs": "one row per Subagent Run requested by a parent session. Use requested_agent_type as the canonical agent label.",
     "question_answers": "one row per asked question. was_recommended is NULL for unanswered or multi-select rows.",
@@ -56,6 +57,7 @@ Tables and semantics
 Construct Inspection References
 
 tool/<session_id>/<sequence> for rows from tool_calls or file_mutations.
+skill/<session_id>/<sequence> for rows from skill_invocations.
 question/<session_id>/<sequence>/<question_index> for rows from question_answers.
 subagent/<parent_session_id>/<child_index> for rows from subagent_runs with child_index.
 session/<session_id> for session-level inspection and generated artifact metadata.
@@ -69,7 +71,10 @@ Recommended answer rate:
 SELECT was_recommended, COUNT(*) AS n FROM question_answers WHERE was_recommended IS NOT NULL AND multi_select=0 GROUP BY was_recommended;
 
 Find skill invocations and build inspect refs:
-SELECT 'tool/' || t.session_id || '/' || t.sequence AS ref, t.session_id, s.project, s.started_at FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id WHERE t.skill_name='review' ORDER BY s.started_at DESC LIMIT 20;
+SELECT 'skill/' || k.session_id || '/' || k.sequence AS ref, k.skill_name, s.project, s.started_at FROM skill_invocations k JOIN sessions s ON s.session_id=k.session_id WHERE k.skill_name='review' ORDER BY s.started_at DESC LIMIT 20;
+
+Aggregate Skill Invocation use:
+SELECT skill_name, COUNT(*) AS n FROM skill_invocations GROUP BY skill_name ORDER BY n DESC LIMIT 20;
 
 Subagent runs with inspect refs:
 SELECT 'subagent/' || parent_session_id || '/' || child_index AS ref, requested_agent_type, task_preview FROM subagent_runs WHERE child_index IS NOT NULL ORDER BY parent_session_id, child_index LIMIT 20;

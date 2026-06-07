@@ -12,12 +12,11 @@ from tool_facts import (
     build_question_rows,
     build_subagent_run_rows,
     build_tool_call_rows,
-    extract_skill_name,
     normalize_tool_name,
 )
 
 
-# ── normalize_tool_name / extract_skill_name ────────────────────────────────
+# ── normalize_tool_name ─────────────────────────────────────────────────────
 
 def test_normalize_tool_name_strips_namespace_and_lowercases():
     assert normalize_tool_name("Agent") == "agent"
@@ -25,12 +24,6 @@ def test_normalize_tool_name_strips_namespace_and_lowercases():
     assert normalize_tool_name("bash") == "bash"
     assert normalize_tool_name("mcp.namespace.subagent_run") == "subagent_run"
     assert normalize_tool_name("") == ""
-
-
-def test_extract_skill_name_only_for_skill_tool():
-    assert extract_skill_name(ParsedToolCall(tool_name="Skill", arguments={"skill": "update-config"})) == "update-config"
-    assert extract_skill_name(ParsedToolCall(tool_name="bash", arguments={"skill": "x"})) is None
-    assert extract_skill_name(ParsedToolCall(tool_name="Skill", arguments={})) is None
 
 
 # ── build_tool_call_rows ────────────────────────────────────────────────────
@@ -46,8 +39,7 @@ def test_build_tool_call_rows_normalizes_and_flags():
     assert [r["tool"] for r in rows] == ["agent", "bash", "skill"]
     assert [r["scope"] for r in rows] == ["main", "agent-x", "main"]
     assert [r["is_error"] for r in rows] == [0, 1, 0]
-    assert rows[2]["skill_name"] == "review"
-    assert rows[0]["skill_name"] is None
+    assert "skill_name" not in rows[2]
     assert all(r["session_id"] == "sess-1" and r["source"] == "claude" for r in rows)
 
 

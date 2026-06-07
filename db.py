@@ -80,12 +80,27 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     timestamp TEXT,
     tool_name TEXT,
     tool TEXT,
-    is_error INTEGER,
-    skill_name TEXT
+    is_error INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool);
-CREATE INDEX IF NOT EXISTS idx_tool_calls_skill ON tool_calls(skill_name);
+
+-- Canonical user-facing skill/prompt-template invocation facts.
+CREATE TABLE IF NOT EXISTS skill_invocations (
+    session_id TEXT NOT NULL,
+    source TEXT,
+    sequence INTEGER,
+    timestamp TEXT,
+    skill_name TEXT NOT NULL,
+    invocation_preview TEXT,
+    arguments TEXT,
+    transcript_message_index INTEGER,
+    tool_sequence INTEGER,
+    child_index INTEGER,
+    subagent_transcript_path TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_skill_invocations_session ON skill_invocations(session_id);
+CREATE INDEX IF NOT EXISTS idx_skill_invocations_name ON skill_invocations(skill_name);
 
 -- One row per successful write/edit file mutation event. Paths are stored exactly
 -- as supplied to the tool call; non-mutating tools and failed mutations are excluded.
@@ -155,6 +170,42 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _drop_tool_calls_skill_name(conn: sqlite3.Connection) -> None:
+    """Remove the obsolete tool_calls.skill_name audit surface if present."""
+    try:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(tool_calls)").fetchall()]
+    except sqlite3.OperationalError:
+        return
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_tool_calls_skill")
+    except sqlite3.OperationalError:
+        pass
+    if "skill_name" not in columns:
+        conn.commit()
+        return
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tool_calls_new (
+            session_id TEXT NOT NULL,
+            source TEXT,
+            scope TEXT,
+            sequence INTEGER,
+            timestamp TEXT,
+            tool_name TEXT,
+            tool TEXT,
+            is_error INTEGER
+        )
+    """)
+    conn.execute("""
+        INSERT INTO tool_calls_new (session_id, source, scope, sequence, timestamp, tool_name, tool, is_error)
+        SELECT session_id, source, scope, sequence, timestamp, tool_name, tool, is_error FROM tool_calls
+    """)
+    conn.execute("DROP TABLE tool_calls")
+    conn.execute("ALTER TABLE tool_calls_new RENAME TO tool_calls")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(tool)")
+    conn.commit()
+
+
 def init_db(conn: sqlite3.Connection | None = None) -> None:
     """Initialize the database schema."""
     close = conn is None
@@ -162,6 +213,8 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         conn = get_connection()
     conn.executescript(SCHEMA)
     conn.commit()
+
+    _drop_tool_calls_skill_name(conn)
 
     # Migrations — add columns that don't exist in older schemas.
     migrations = [
@@ -529,6 +582,12 @@ def replace_tool_calls(
     _replace_rows(conn, "tool_calls", "session_id", session_id, rows, commit=commit)
 
 
+def replace_skill_invocations(
+    conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]], *, commit: bool = True,
+) -> None:
+    _replace_rows(conn, "skill_invocations", "session_id", session_id, rows, commit=commit)
+
+
 def replace_subagent_runs(
     conn: sqlite3.Connection, session_id: str, rows: list[dict[str, Any]], *, commit: bool = True,
 ) -> None:
@@ -555,6 +614,7 @@ def delete_sessions(conn: sqlite3.Connection, session_ids: list[str], *, commit:
     placeholders = ", ".join("?" for _ in ids)
     fact_owners = (
         ("tool_calls", "session_id"),
+        ("skill_invocations", "session_id"),
         ("question_answers", "session_id"),
         ("file_mutations", "session_id"),
         ("subagent_runs", "parent_session_id"),

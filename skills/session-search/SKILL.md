@@ -52,6 +52,7 @@ Run `query --schema` for a curated LLM-oriented reference: table purposes, key c
 Key tables:
 
 - `tool_calls` — one row per tool call. Construct `tool/<session_id>/<sequence>`.
+- `skill_invocations` — canonical Skill Invocation audit table for reusable prompt/workflow template use, including slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads. Construct `skill/<session_id>/<sequence>`.
 - `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and event trails.
 - `subagent_runs` — one row per Subagent Run. Construct `subagent/<parent_session_id>/<child_index>` when `child_index` is present.
 - `question_answers` — one row per asked question. Construct `question/<session_id>/<sequence>/<question_index>`.
@@ -67,12 +68,12 @@ Criteria:
 
 - `--topic TEXT` — session/topic candidates with `session/<session_id>` refs.
 - `--tool NAME` — Tool Call candidates with `tool/<session_id>/<sequence>` refs.
-- `--skill NAME` — skill invocation candidates with tool refs.
+- `--skill NAME` — Skill Invocation candidates with `skill/<session_id>/<sequence>` refs from `skill_invocations`.
 - `--mutated PATH_FRAGMENT` — File Mutation candidates from `file_mutations` with tool refs.
 - `--subagent NAME` — Subagent Run candidates with `subagent/<session_id>/<child_index>` refs and parent-call refs when available.
 - `--tool question --question-recommended true|false` — question-answer candidates with question refs.
 
-Filters compose with criteria: `--project`, `--since`, `--until`, `--session`, and `--limit`.
+Filters compose with criteria: `--project`, `--since`, `--until`, `--session`, and `--limit`. `--skill` does not compose with `--tool` because Skill Invocations are not Tool Calls.
 
 `find` emits compact JSON only. Each candidate includes `ref`, `inspect_refs`, `session`, and `match`. `session.summary` is retained because it is high-signal candidate-selection metadata. `find` does not return Evidence Snippets or broad top-level artifact inventories such as repeated Clean Transcript paths, Tool Log paths, or subagent transcript lists.
 
@@ -98,6 +99,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref REF [--q TEXT]
 Use refs copied unchanged from `find` or constructed from `query --schema` guidance:
 
 - `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata, structured subagent refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets.
+- `skill/<session_id>/<sequence>` — returns Skill Invocation metadata, locator/preview fields, and primary transcript artifact metadata without inlining the full transcript. Parent invocations use the Clean Transcript as primary; subagent-scope invocations use the subagent transcript as primary and include the parent Clean Transcript as context when available.
 - `tool/<session_id>/<sequence>` — returns the matching Tool Log section plus associated File Mutation paths.
 - `question/<session_id>/<sequence>/<question_index>` — returns question-answer metadata plus the Tool Log section.
 - `subagent/<session_id>/<child_index>` — returns task/prompt-area evidence by default; with `--q`, returns query-focused Subagent Run Evidence Snippets.
@@ -117,6 +119,7 @@ Examples:
 ```bash
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref session/pi:abc
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref session/pi:abc --q "session index"
+uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref skill/pi:abc/1
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref tool/pi:abc/12
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref subagent/pi:abc/0 --q "task result"
 ```

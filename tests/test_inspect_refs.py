@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SubagentRef, ToolRef, format_ref, parse_ref
+from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SkillRef, SubagentRef, ToolRef, format_ref, parse_ref
 
 
 def test_parse_session_ref_with_pi_canonical_id():
@@ -26,6 +26,12 @@ def test_parse_question_ref():
     assert format_ref(ref) == "question/pi:abc/12/0"
 
 
+def test_parse_skill_ref():
+    ref = parse_ref("skill/pi:abc/2")
+    assert ref == SkillRef(session_id="pi:abc", sequence=2)
+    assert format_ref(ref) == "skill/pi:abc/2"
+
+
 def test_parse_subagent_ref():
     ref = parse_ref("subagent/pi:abc/2")
     assert ref == SubagentRef(session_id="pi:abc", child_index=2)
@@ -38,6 +44,7 @@ def test_parse_subagent_ref():
     ("tool/pi:abc/not-int", "Invalid sequence"),
     ("tool/pi:abc", "Expected tool"),
     ("question/pi:abc/1/nope", "Invalid question_index"),
+    ("skill/pi:abc/nope", "Invalid sequence"),
     ("subagent/pi:abc/-1", "non-negative"),
 ])
 def test_invalid_refs_raise_clear_errors(value, message):

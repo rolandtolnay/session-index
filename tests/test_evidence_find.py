@@ -47,7 +47,7 @@ def test_find_skill_mutation_question_and_subagent_candidates(tmp_path):
     question = find_candidates(conn, tool="question", question_recommended=True)["results"][0]
     subagent = find_candidates(conn, subagent="scout")["results"][0]
 
-    assert skill["ref"] == "tool/pi:abc/13"
+    assert skill["ref"] == "skill/pi:abc/1"
     assert skill["match"]["kind"] == "skill_invocation"
     assert mutation["ref"] == "tool/pi:abc/12"
     assert mutation["match"]["kind"] == "file_mutation"
@@ -69,7 +69,8 @@ def test_find_event_filters_compose_or_fail_clearly(tmp_path):
     assert find_candidates(conn, mutated="example.md", tool="edit")["results"][0]["match"]["tool"] == "edit"
     assert find_candidates(conn, mutated="example.md", tool="bash")["results"] == []
     assert find_candidates(conn, subagent="scout", tool="subagent_run")["results"][0]["ref"] == "subagent/pi:abc/0"
-    assert find_candidates(conn, skill="review", tool="skill")["results"][0]["ref"] == "tool/pi:abc/13"
+    with pytest.raises(ValueError, match="Skill Invocations are not Tool Calls"):
+        find_candidates(conn, skill="review", tool="skill")
     with pytest.raises(ValueError, match="Cannot combine event criteria"):
         find_candidates(conn, mutated="example.md", subagent="scout")
 
@@ -79,6 +80,7 @@ def test_find_filters_compose(tmp_path):
     seed_evidence_graph(conn, tmp_path)
 
     assert find_candidates(conn, tool="edit", project="session", since="2026-05-01", until="2026-05-31", session="pi:abc")["results"]
+    assert find_candidates(conn, skill="review", topic="evidence workflow", project="session", since="2026-05-01", until="2026-05-31", session="pi:abc")["results"][0]["ref"] == "skill/pi:abc/1"
     assert find_candidates(conn, tool="edit", project="other")["results"] == []
 
 
@@ -114,7 +116,7 @@ def test_find_topic_event_filters_use_scoped_sessions(tmp_path):
     )
     db.replace_tool_calls(conn, "pi:other", [{
         "session_id": "pi:other", "source": "pi", "scope": "main", "sequence": 1,
-        "timestamp": None, "tool_name": "edit", "tool": "edit", "is_error": 0, "skill_name": None,
+        "timestamp": None, "tool_name": "edit", "tool": "edit", "is_error": 0,
     }])
 
     data = find_candidates(conn, topic="evidence workflow", tool="edit", limit=5)

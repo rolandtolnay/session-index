@@ -66,7 +66,9 @@ def test_cmd_query_schema_prints_curated_reference_without_creating_db(tmp_path,
     out = capsys.readouterr().out
     assert "Session Index query reference" in out
     assert "tool_calls" in out
+    assert "skill_invocations" in out
     assert "Construct Inspection References" in out
+    assert "skill/<session_id>/<sequence>" in out
     assert "SELECT DISTINCT path FROM file_mutations" in out
     assert "CREATE TABLE" not in out
     assert "--" not in out
@@ -80,7 +82,7 @@ def test_cmd_query_runs_select(tmp_path, monkeypatch, capsys):
     upsert_session(conn, session_id="s1", project="proj")
     db.replace_tool_calls(conn, "s1", [{
         "session_id": "s1", "source": "claude", "scope": "main", "sequence": 1,
-        "timestamp": None, "tool_name": "Bash", "tool": "bash", "is_error": 0, "skill_name": None,
+        "timestamp": None, "tool_name": "Bash", "tool": "bash", "is_error": 0,
     }])
     conn.close()
 

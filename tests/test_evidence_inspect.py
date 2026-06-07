@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -71,6 +72,47 @@ def test_inspect_question_returns_metadata_and_tool_log_section(tmp_path, monkey
     assert packet["match"]["question"] == "Which approach?"
     assert packet["match"]["was_recommended"] is True
     assert packet["evidence"][0]["locator"]["sequence"] == 14
+
+
+def test_inspect_parent_skill_invocation_returns_transcript_artifact_without_inlining(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    conn = make_memory_conn()
+    paths = seed_evidence_graph(conn, tmp_path, write_artifacts=True, summary="summary")
+
+    packet = inspect_ref(conn, "skill/pi:abc/1")
+
+    assert packet["ref"] == "skill/pi:abc/1"
+    assert packet["match"]["kind"] == "skill_invocation"
+    assert packet["match"]["skill_name"] == "review"
+    assert packet["artifacts"]["primary_transcript"] == {"path": paths["transcript_path"], "exists": True}
+    assert "clean_transcript" not in packet["artifacts"]
+    assert packet["locator"] == {"tool_sequence": 13}
+    assert packet["evidence"] == []
+    assert "Discuss session index evidence" not in json.dumps(packet)
+
+
+def test_inspect_subagent_skill_invocation_uses_subagent_primary_and_parent_context(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    conn = make_memory_conn()
+    paths = seed_evidence_graph(conn, tmp_path, write_artifacts=True, summary="summary")
+    conn.execute(
+        """
+        INSERT INTO skill_invocations (
+            session_id, source, sequence, timestamp, skill_name, invocation_preview, arguments,
+            transcript_message_index, tool_sequence, child_index, subagent_transcript_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("pi:abc", "pi", 2, "2026-05-31T10:04:00Z", "diagnose", None, None, None, 16, 0, paths["subagent_path"]),
+    )
+
+    packet = inspect_ref(conn, "skill/pi:abc/2")
+
+    assert packet["match"]["skill_name"] == "diagnose"
+    assert packet["artifacts"]["primary_transcript"] == {"path": paths["subagent_path"], "exists": True}
+    assert packet["artifacts"]["clean_transcript"] == {"path": paths["transcript_path"], "exists": True}
+    assert packet["locator"] == {"tool_sequence": 16, "child_index": 0}
+    assert packet["evidence"] == []
+    assert "Found scoped evidence details" not in json.dumps(packet)
 
 
 def test_inspect_subagent_default_and_query_focused(tmp_path, monkeypatch):

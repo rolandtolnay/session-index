@@ -10,13 +10,14 @@ from db import get_session
 from evidence_model import (
     snippet_payload,
     question_answer_match,
+    skill_invocation_match,
     session_packet,
     session_query_match,
     subagent_run_match,
     tool_call_match,
     tool_log_payload,
 )
-from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SubagentRef, ToolRef, format_ref, parse_ref
+from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SkillRef, SubagentRef, ToolRef, format_ref, parse_ref
 from tool_log import extract_tool_log_section
 from transcript import extract_evidence_snippets
 
@@ -150,6 +151,51 @@ def _inspect_tool(conn: sqlite3.Connection, raw_ref: str, ref: ToolRef) -> dict[
     }
 
 
+def _skill_row(conn: sqlite3.Connection, session_id: str, sequence: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM skill_invocations WHERE session_id = ? AND sequence = ?",
+        (session_id, sequence),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _skill_locator(row: dict[str, Any]) -> dict[str, Any]:
+    locator: dict[str, Any] = {}
+    for key in ("transcript_message_index", "tool_sequence", "child_index"):
+        if row.get(key) is not None:
+            locator[key] = row[key]
+    if row.get("invocation_preview"):
+        locator["invocation_preview"] = row["invocation_preview"]
+    return locator
+
+
+def _inspect_skill(conn: sqlite3.Connection, raw_ref: str, ref: SkillRef) -> dict[str, Any]:
+    session = _require_session(conn, ref.session_id, raw_ref)
+    row = _skill_row(conn, ref.session_id, ref.sequence)
+    if not row:
+        raise EvidenceInspectError("Skill Invocation not found", code="stale_ref", ref=raw_ref)
+
+    clean_path = session.get("transcript_path")
+    subagent_path = row.get("subagent_transcript_path")
+    if subagent_path and os.path.exists(subagent_path):
+        primary_path = subagent_path
+    else:
+        primary_path = clean_path
+
+    artifacts: dict[str, Any] = {"primary_transcript": _path_metadata(primary_path)}
+    if primary_path != clean_path:
+        artifacts["clean_transcript"] = _path_metadata(clean_path)
+
+    return {
+        "ref": raw_ref,
+        "session": session_packet(session),
+        "match": skill_invocation_match(row),
+        "artifacts": artifacts,
+        "locator": _skill_locator(row),
+        "evidence": [],
+    }
+
+
 def _inspect_question(conn: sqlite3.Connection, raw_ref: str, ref: QuestionRef) -> dict[str, Any]:
     session = _require_session(conn, ref.session_id, raw_ref)
     row = conn.execute(
@@ -238,6 +284,8 @@ def inspect_ref(
         return _inspect_tool(conn, canonical, ref)
     if isinstance(ref, QuestionRef):
         return _inspect_question(conn, canonical, ref)
+    if isinstance(ref, SkillRef):
+        return _inspect_skill(conn, canonical, ref)
     if isinstance(ref, SubagentRef):
         return _inspect_subagent(conn, canonical, ref, q, max_snippets)
     raise EvidenceInspectError(f"Unsupported inspection ref type: {type(ref).__name__}", code="invalid_ref", ref=raw_ref)
