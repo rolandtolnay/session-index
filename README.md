@@ -91,7 +91,8 @@ From the terminal:
 
 ```bash
 uv run cli.py find --topic "token refresh" --limit 5
-uv run cli.py find --mutated "etc/prd" --project session-index
+uv run cli.py find --mutated "etc/prd" --project session-index          # file conversation history by session
+uv run cli.py find --mutated "etc/prd" --mutation-mode event            # exact File Mutation rows
 uv run cli.py inspect --ref session/pi:abc
 uv run cli.py inspect --ref session/pi:abc --q "token refresh"
 uv run cli.py inspect --ref tool/pi:abc/12
@@ -171,7 +172,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--no-summary]` | Process JSONL files; `--no-summary` skips the LLM summary (regenerates transcripts, tool logs, and fact tables only) |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
-`find --mutated` uses `file_mutations` for evidence candidates. Raw SQL over `file_mutations` remains the path for exact lists and aggregates, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.
+`find --mutated` is file conversation history by default: it returns one session-collapsed candidate per Canonical Session ID, with representative matching paths and related tool refs for drill-down. Use `find --mutated PATH --mutation-mode event` for exact File Mutation audit rows. Raw SQL over `file_mutations` remains available for custom aggregates and exact lists, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.
 
 ## Data locations
 

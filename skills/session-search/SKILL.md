@@ -65,16 +65,21 @@ uv run ~/.pi/agent/skills/session-search/scripts/find.py [criteria] [filters]
 
 Criteria:
 
-- `--topic TEXT` — session/topic candidates with `session/<session_id>` refs.
+- `--topic TEXT` — session/topic candidates with `session/<session_id>` refs. Exact topic FTS is primary; if exact topic scope is empty, deterministic fuzzy fallback ranks already-indexed session metadata and still honors `--project`, `--since`, `--until`, and `--session`.
 - `--tool NAME` — Tool Call candidates with `tool/<session_id>/<sequence>` refs.
 - `--skill NAME` — skill invocation candidates with tool refs.
-- `--mutated PATH_FRAGMENT` — File Mutation candidates from `file_mutations` with tool refs.
+- `--mutated PATH_FRAGMENT` — session-collapsed File Mutation candidates by default, one `session/<session_id>` ref per Canonical Session ID that mutated matching paths.
+- `--mutation-mode event` — with `--mutated`, return exact event-level File Mutation rows with `tool/<session_id>/<sequence>` refs.
 - `--subagent NAME` — Subagent Run candidates with `subagent/<session_id>/<child_index>` refs and parent-call refs when available.
 - `--tool question --question-recommended true|false` — question-answer candidates with question refs.
 
 Filters compose with criteria: `--project`, `--since`, `--until`, `--session`, and `--limit`.
 
 `find` emits compact JSON only. Each candidate includes `ref`, `inspect_refs`, `session`, and `match`. `session.summary` is retained because it is high-signal candidate-selection metadata. `find` does not return Evidence Snippets or broad top-level artifact inventories such as repeated Clean Transcript paths, Tool Log paths, or subagent transcript lists.
+
+For default `find --mutated ...` results, `match.kind` is `file_mutation_session`; `match.match_count`, `match.distinct_path_count`, and `match.representative_paths` summarize only matching File Mutation rows. `inspect_refs.related_tools` contains up to five exact `tool/<session>/<sequence>` refs for drill-down without making the default result event-level again.
+
+When topic fallback scopes a non-topic criterion, the result keeps its primary `match.kind` and includes `match.topic_scope` with `match_mode: "fuzzy_fallback"` and a score.
 
 Candidate-specific artifact handles may appear when they shorten the path to scoped context. In particular, `find --subagent ...` keeps `match.transcript_path` for the exact matched Subagent Run.
 
@@ -85,6 +90,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/find.py --topic "session index"
 uv run ~/.pi/agent/skills/session-search/scripts/find.py --tool edit --project session-index
 uv run ~/.pi/agent/skills/session-search/scripts/find.py --skill review
 uv run ~/.pi/agent/skills/session-search/scripts/find.py --mutated "etc/prd" --since 2026-05-01
+uv run ~/.pi/agent/skills/session-search/scripts/find.py --mutated "etc/prd" --mutation-mode event
 uv run ~/.pi/agent/skills/session-search/scripts/find.py --subagent scout
 uv run ~/.pi/agent/skills/session-search/scripts/find.py --tool question --question-recommended false
 ```
@@ -97,7 +103,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref REF [--q TEXT]
 
 Use refs copied unchanged from `find` or constructed from `query --schema` guidance:
 
-- `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata, structured subagent refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets.
+- `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata (including the Clean Transcript artifact path/existence), structured subagent refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets.
 - `tool/<session_id>/<sequence>` — returns the matching Tool Log section plus associated File Mutation paths.
 - `question/<session_id>/<sequence>/<question_index>` — returns question-answer metadata plus the Tool Log section.
 - `subagent/<session_id>/<child_index>` — returns task/prompt-area evidence by default; with `--q`, returns query-focused Subagent Run Evidence Snippets.
