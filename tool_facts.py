@@ -11,6 +11,7 @@ from typing import Any
 
 from parser import ParsedToolCall
 from subagent_runs import ParsedSubagentRun
+from tool_events import iter_tool_use_candidates
 
 _QUESTION_TOOLS = {"askuserquestion", "question"}
 _FILE_MUTATION_TOOLS = {"write", "edit"}
@@ -108,23 +109,6 @@ def _append_file_mutation_rows(
         })
 
 
-def _mutation_candidates(call: ParsedToolCall) -> list[tuple[str, dict[str, Any]]]:
-    args = call.arguments if isinstance(call.arguments, dict) else {}
-    candidates = [(call.tool_name, args)]
-
-    tool_uses = args.get("tool_uses")
-    if isinstance(tool_uses, list):
-        for nested in tool_uses:
-            if not isinstance(nested, dict):
-                continue
-            nested_tool_name = nested.get("recipient_name")
-            if not isinstance(nested_tool_name, str):
-                continue
-            nested_args = nested.get("parameters")
-            candidates.append((nested_tool_name, nested_args if isinstance(nested_args, dict) else {}))
-    return candidates
-
-
 def build_file_mutation_rows(
     session_id: str, source: str, combined_calls: list[ParsedToolCall],
 ) -> list[dict[str, Any]]:
@@ -134,16 +118,16 @@ def build_file_mutation_rows(
         if call.is_error:
             continue
 
-        for tool_name, args in _mutation_candidates(call):
-            tool = normalize_tool_name(tool_name)
+        for candidate in iter_tool_use_candidates(call):
+            tool = normalize_tool_name(candidate.tool_name)
             _append_file_mutation_rows(
                 rows,
                 session_id=session_id,
                 source=source,
                 call=call,
-                tool_name=tool_name,
+                tool_name=candidate.tool_name,
                 tool=tool,
-                paths=_mutation_paths(tool, args),
+                paths=_mutation_paths(tool, candidate.arguments),
             )
     return rows
 

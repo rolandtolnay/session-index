@@ -82,6 +82,30 @@ def test_slash_commands_canonicalize_names_and_exclude_lifecycle_commands(tmp_pa
     ]
 
 
+def test_message_invocations_preserve_source_order_within_same_timestamp():
+    rows = build_skill_invocation_rows(
+        "s1",
+        "pi",
+        [{"role": "user", "timestamp": "2026-01-01T00:00:00Z", "content": "/review changed\n<skill name=\"plan-quick\">body</skill>"}],
+        [],
+        [],
+    )
+
+    assert [(row["sequence"], row["skill_name"]) for row in rows] == [(1, "review"), (2, "plan-quick")]
+
+
+def test_bracket_command_examples_inside_prose_are_not_invocations():
+    rows = build_skill_invocation_rows(
+        "s1",
+        "pi",
+        [{"role": "user", "timestamp": "2026-01-01T00:00:00Z", "content": "Example syntax: [/review] changed files"}],
+        [],
+        [],
+    )
+
+    assert rows == []
+
+
 def test_provider_skill_tool_call_builds_canonical_invocation_row():
     rows = build_skill_invocation_rows(
         "s1",
@@ -106,6 +130,20 @@ def test_provider_skill_tool_call_builds_canonical_invocation_row():
     }]
 
 
+def test_provider_skill_tool_call_in_subagent_scope_keeps_locator_metadata():
+    rows = build_skill_invocation_rows(
+        "s1",
+        "claude",
+        [],
+        [ParsedToolCall(sequence=7, timestamp="2026-01-01T00:00:00Z", scope="agent-child", tool_name="Skill", arguments={"skill": "Review"})],
+        [ParsedSubagentRun(parent_session_id="s1", source="claude", requested_agent_type="worker", child_index=0, agent_id="child", transcript_path="/tmp/child.md", call_tool="Agent")],
+    )
+
+    assert [(row["skill_name"], row["tool_sequence"], row["child_index"], row["subagent_transcript_path"]) for row in rows] == [
+        ("review", 7, 0, "/tmp/child.md"),
+    ]
+
+
 def test_exact_skill_md_reads_build_invocations_and_subagent_locator_metadata():
     rows = build_skill_invocation_rows(
         "s1",
@@ -122,3 +160,23 @@ def test_exact_skill_md_reads_build_invocations_and_subagent_locator_metadata():
         (1, "review", 2, None, None),
         (2, "diagnose", 3, 0, "/tmp/child.md"),
     ]
+
+
+def test_nested_tool_use_exact_skill_md_read_builds_invocation():
+    rows = build_skill_invocation_rows(
+        "s1",
+        "pi",
+        [],
+        [ParsedToolCall(
+            sequence=9,
+            timestamp="2026-01-01T00:00:00Z",
+            tool_name="multi_tool_use.parallel",
+            arguments={"tool_uses": [{
+                "recipient_name": "functions.read",
+                "parameters": {"path": "/Users/me/.pi/agent/skills/review/SKILL.md"},
+            }]},
+        )],
+        [],
+    )
+
+    assert [(row["skill_name"], row["tool_sequence"]) for row in rows] == [("review", 9)]

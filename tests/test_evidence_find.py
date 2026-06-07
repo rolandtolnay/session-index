@@ -42,7 +42,7 @@ def test_find_skill_mutation_question_and_subagent_candidates(tmp_path):
     conn = make_memory_conn()
     seed_evidence_graph(conn, tmp_path)
 
-    skill = find_candidates(conn, skill="review")["results"][0]
+    skill = find_candidates(conn, skill="/skill:Review")["results"][0]
     mutation = find_candidates(conn, mutated="prd/example")["results"][0]
     question = find_candidates(conn, tool="question", question_recommended=True)["results"][0]
     subagent = find_candidates(conn, subagent="scout")["results"][0]

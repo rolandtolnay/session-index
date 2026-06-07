@@ -18,6 +18,7 @@ from evidence_model import (
     topic_match,
 )
 from inspect_refs import QuestionRef, SessionRef, SkillRef, SubagentRef, ToolRef, format_ref
+from skill_facts import canonical_skill_name
 
 
 def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = "s") -> list[str]:
@@ -101,7 +102,7 @@ def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dic
 
 
 def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
-    params: dict[str, Any] = {"limit": args["limit"], "skill": (args.get("skill") or "").lower()}
+    params: dict[str, Any] = {"limit": args["limit"], "skill": canonical_skill_name(args.get("skill") or "")}
     cte = _scoped_sessions_cte(args, params)
     clauses = ["LOWER(k.skill_name) = :skill"]
     rows = _query(conn, f"""

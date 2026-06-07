@@ -115,6 +115,27 @@ def test_inspect_subagent_skill_invocation_uses_subagent_primary_and_parent_cont
     assert "Found scoped evidence details" not in json.dumps(packet)
 
 
+def test_inspect_subagent_skill_invocation_reports_missing_subagent_primary(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    conn = make_memory_conn()
+    paths = seed_evidence_graph(conn, tmp_path, write_artifacts=True, summary="summary")
+    missing_subagent = str(tmp_path / "missing-agent.md")
+    conn.execute(
+        """
+        INSERT INTO skill_invocations (
+            session_id, source, sequence, timestamp, skill_name, invocation_preview, arguments,
+            transcript_message_index, tool_sequence, child_index, subagent_transcript_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("pi:abc", "pi", 2, "2026-05-31T10:04:00Z", "diagnose", None, None, None, 16, 0, missing_subagent),
+    )
+
+    packet = inspect_ref(conn, "skill/pi:abc/2")
+
+    assert packet["artifacts"]["primary_transcript"] == {"path": missing_subagent, "exists": False}
+    assert packet["artifacts"]["clean_transcript"] == {"path": paths["transcript_path"], "exists": True}
+
+
 def test_inspect_subagent_default_and_query_focused(tmp_path, monkeypatch):
     monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
     conn = make_memory_conn()

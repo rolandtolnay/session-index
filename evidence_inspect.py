@@ -177,10 +177,7 @@ def _inspect_skill(conn: sqlite3.Connection, raw_ref: str, ref: SkillRef) -> dic
 
     clean_path = session.get("transcript_path")
     subagent_path = row.get("subagent_transcript_path")
-    if subagent_path and os.path.exists(subagent_path):
-        primary_path = subagent_path
-    else:
-        primary_path = clean_path
+    primary_path = subagent_path or clean_path
 
     artifacts: dict[str, Any] = {"primary_transcript": _path_metadata(primary_path)}
     if primary_path != clean_path:
