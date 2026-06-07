@@ -1,7 +1,7 @@
 # Session Index — Project Conventions
 
 ## Runtime
-- Python 3.11+, stdlib only (no pip dependencies)
+- Python 3.11+; runtime dependencies are intentionally minimal. `rapidfuzz` is allowed for deterministic Evidence Find fuzzy fallback (see `docs/adr/0001-rapidfuzz-for-evidence-find.md`).
 - Run scripts with `uv run` (not `python3`)
 - Summaries use headless Pi by default (`openai-codex/gpt-5.4-mini`, low thinking); `client.py` is legacy Ollama fallback
 
