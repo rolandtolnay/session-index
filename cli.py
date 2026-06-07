@@ -50,6 +50,7 @@ def cmd_find(args: argparse.Namespace) -> None:
             tool=args.tool,
             skill=args.skill,
             mutated=args.mutated,
+            mutation_mode=args.mutation_mode,
             subagent=args.subagent,
             question_recommended=args.question_recommended,
             project=args.project,
@@ -84,7 +85,8 @@ def add_find_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--topic", help="Session/topic candidate discovery; returns session/<id> refs with summaries, not evidence text")
     parser.add_argument("--tool", help="Tool Call candidate discovery; returns tool/<session_id>/<sequence> refs")
     parser.add_argument("--skill", help="Skill Invocation candidates; returns skill/<session_id>/<sequence> refs")
-    parser.add_argument("--mutated", help="File Mutation path fragment from file_mutations; returns tool refs")
+    parser.add_argument("--mutated", help="File Mutation path fragment; returns session-collapsed candidates by default")
+    parser.add_argument("--mutation-mode", choices=("session", "event"), default="session", help="For --mutated, return session-collapsed candidates (default) or exact event rows")
     parser.add_argument("--subagent", help="Requested/observed subagent type; returns subagent refs with candidate-specific transcript_path")
     parser.add_argument(
         "--question-recommended",

@@ -108,7 +108,8 @@ From the terminal:
 
 ```bash
 uv run cli.py find --topic "token refresh" --limit 5
-uv run cli.py find --mutated "etc/prd" --project session-index
+uv run cli.py find --mutated "etc/prd" --project session-index          # file conversation history by session
+uv run cli.py find --mutated "etc/prd" --mutation-mode event            # exact File Mutation rows
 uv run cli.py find --skill review --project session-index
 uv run cli.py inspect --ref session/pi:abc
 uv run cli.py inspect --ref skill/pi:abc/1
@@ -190,7 +191,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
-`find --mutated` uses `file_mutations` for evidence candidates. Raw SQL over `file_mutations` remains the path for exact lists and aggregates, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.
+`find --mutated` is file conversation history by default: it returns one session-collapsed candidate per Canonical Session ID, with representative matching paths and related tool refs for drill-down. Use `find --mutated PATH --mutation-mode event` for exact File Mutation audit rows. Raw SQL over `file_mutations` remains available for custom aggregates and exact lists, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.
 
 `find --skill NAME` uses the canonical `skill_invocations` table and returns `skill/<session_id>/<sequence>` refs. SQL audits should aggregate `skill_invocations.skill_name`, not `tool_calls`, because Skill Invocations may originate from slash commands, Pi skill envelopes, provider Skill tools, or exact `SKILL.md` reads.
 

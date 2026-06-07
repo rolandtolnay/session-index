@@ -1,0 +1,8 @@
+[project]
+name = "session-index"
+version = "0.1.0"
+description = "Local session indexing and evidence retrieval"
+requires-python = ">=3.11"
+dependencies = [
+    "rapidfuzz>=3.0",
+]

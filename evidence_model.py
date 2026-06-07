@@ -37,7 +37,7 @@ def candidate(
     session: dict[str, Any],
     match: dict[str, Any],
     *,
-    inspect_refs: dict[str, str] | None = None,
+    inspect_refs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     refs = {"primary": ref, "context": format_ref(SessionRef(session_id=session["session_id"]))}
     if inspect_refs:
@@ -89,6 +89,20 @@ def file_mutation_match(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def file_mutation_session_match(
+    *,
+    match_count: int,
+    distinct_path_count: int,
+    representative_paths: list[str],
+) -> dict[str, Any]:
+    return {
+        "kind": "file_mutation_session",
+        "match_count": match_count,
+        "distinct_path_count": distinct_path_count,
+        "representative_paths": representative_paths,
+    }
+
+
 def question_answer_match(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "kind": "question_answer",
@@ -123,8 +137,11 @@ def subagent_run_match(row: dict[str, Any]) -> dict[str, Any]:
     return match
 
 
-def topic_match(topic: str) -> dict[str, Any]:
-    return {"kind": "topic", "topic": topic}
+def topic_match(topic: str, *, match_mode: str = "exact", score: float | None = None) -> dict[str, Any]:
+    match: dict[str, Any] = {"kind": "topic", "topic": topic, "match_mode": match_mode}
+    if score is not None:
+        match["score"] = score
+    return match
 
 
 def session_filter_match(*, project: str | None, since: str | None, until: str | None, session: str | None) -> dict[str, Any]:

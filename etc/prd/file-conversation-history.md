@@ -64,7 +64,7 @@ Add deterministic fuzzy topic fallback for any Evidence Find query that uses `--
 
 - Fuzzy fallback strictly honors structured filters such as project, date range, and explicit session. It must not expand beyond caller-supplied constraints.
 
-- Fuzzy fallback results use the normal topic match shape with metadata identifying `match_mode` as fuzzy fallback and including a numeric score. Exact topic results should remain identifiable as exact/default topic matches.
+- Fuzzy fallback results use the normal topic match shape with metadata identifying `match_mode` as fuzzy fallback and including a numeric score. Exact topic results should remain identifiable as exact/default topic matches. When fuzzy fallback scopes a non-topic result, keep the primary match kind and expose the fallback details under `match.topic_scope`.
 
 - Use a conservative initial fuzzy threshold. Prefer returning no fallback candidates over flooding Evidence Find with weak broad matches. Do not expose a threshold flag in the first version.
 
