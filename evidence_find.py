@@ -9,6 +9,7 @@ from db import build_fts_query, find_session_candidates
 from evidence_model import (
     candidate,
     file_mutation_match,
+    file_mutation_session_match,
     question_answer_match,
     session_filter_match,
     session_summary,
@@ -17,7 +18,11 @@ from evidence_model import (
     tool_call_match,
     topic_match,
 )
+from fuzzy_topic import find_fuzzy_topic_candidates
 from inspect_refs import QuestionRef, SessionRef, SubagentRef, ToolRef, format_ref
+
+
+FUZZY_TOPIC_SCOPE_LIMIT = 1000
 
 
 def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = "s") -> list[str]:
@@ -40,17 +45,83 @@ def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = 
     return clauses
 
 
-def _scoped_sessions_cte(args: dict[str, Any], params: dict[str, Any]) -> str:
+def _exact_topic_has_sessions(conn: sqlite3.Connection, args: dict[str, Any]) -> bool:
+    params: dict[str, Any] = {"topic_query": build_fts_query(args["topic"])}
+    clauses = _session_filters(args, params)
+    where = "WHERE sessions_fts MATCH :topic_query"
+    if clauses:
+        where += " AND " + " AND ".join(clauses)
+    row = conn.execute(f"""
+        SELECT 1
+        FROM sessions_fts fts
+        JOIN sessions s ON s.rowid = fts.rowid
+        {where}
+        LIMIT 1
+    """, params).fetchone()
+    return row is not None
+
+
+def _empty_scoped_sessions_cte() -> str:
+    return """
+        WITH scoped_sessions AS (
+            SELECT s.*, NULL AS topic_rank, NULL AS topic_match_mode, NULL AS fuzzy_score
+            FROM sessions s
+            WHERE 0
+        )
+    """
+
+
+def _fuzzy_scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params: dict[str, Any]) -> str:
+    rows = find_fuzzy_topic_candidates(
+        conn,
+        query=args["topic"],
+        project=args.get("project"),
+        since=args.get("since"),
+        until=args.get("until"),
+        session=args.get("session"),
+        limit=max(args["limit"], FUZZY_TOPIC_SCOPE_LIMIT),
+    )
+    args["_topic_scope_mode"] = "fuzzy_fallback"
+    if not rows:
+        return _empty_scoped_sessions_cte()
+
+    selects = []
+    for index, row in enumerate(rows):
+        params[f"fuzzy_sid_{index}"] = row["session_id"]
+        params[f"fuzzy_rank_{index}"] = row["topic_rank"]
+        params[f"fuzzy_score_{index}"] = row["fuzzy_score"]
+        selects.append(
+            f"SELECT :fuzzy_sid_{index} AS session_id, :fuzzy_rank_{index} AS topic_rank, :fuzzy_score_{index} AS fuzzy_score"
+        )
+    values = "\n                UNION ALL\n                ".join(selects)
+    return f"""
+        WITH fuzzy_scope AS (
+                {values}
+            ),
+            scoped_sessions AS (
+                SELECT s.*, f.topic_rank, 'fuzzy_fallback' AS topic_match_mode, f.fuzzy_score
+                FROM fuzzy_scope f
+                JOIN sessions s ON s.session_id = f.session_id
+            )
+    """
+
+
+def _scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params: dict[str, Any]) -> str:
     """Return a CTE containing the sessions in scope for candidate queries."""
     clauses = _session_filters(args, params)
+    args["_topic_scope_mode"] = None
     if args.get("topic"):
+        if not _exact_topic_has_sessions(conn, args):
+            return _fuzzy_scoped_sessions_cte(conn, args, params)
+
+        args["_topic_scope_mode"] = "exact"
         params["topic_query"] = build_fts_query(args["topic"])
         where = "WHERE sessions_fts MATCH :topic_query"
         if clauses:
             where += " AND " + " AND ".join(clauses)
         return f"""
             WITH scoped_sessions AS (
-                SELECT s.*, rank AS topic_rank
+                SELECT s.*, rank AS topic_rank, 'exact' AS topic_match_mode, NULL AS fuzzy_score
                 FROM sessions_fts fts
                 JOIN sessions s ON s.rowid = fts.rowid
                 {where}
@@ -60,7 +131,7 @@ def _scoped_sessions_cte(args: dict[str, Any], params: dict[str, Any]) -> str:
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return f"""
         WITH scoped_sessions AS (
-            SELECT s.*, NULL AS topic_rank
+            SELECT s.*, NULL AS topic_rank, NULL AS topic_match_mode, NULL AS fuzzy_score
             FROM sessions s
             {where}
         )
@@ -69,6 +140,8 @@ def _scoped_sessions_cte(args: dict[str, Any], params: dict[str, Any]) -> str:
 
 def _event_order(args: dict[str, Any], event_order: str) -> str:
     if args.get("topic"):
+        if args.get("_topic_scope_mode") == "fuzzy_fallback":
+            return f"s.topic_rank DESC, s.started_at DESC, {event_order}"
         return f"s.topic_rank ASC, s.started_at DESC, {event_order}"
     return f"s.started_at DESC, {event_order}"
 
@@ -81,9 +154,20 @@ def _query(conn: sqlite3.Connection, sql: str, params: dict[str, Any]) -> list[d
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def _with_topic_scope(args: dict[str, Any], row: dict[str, Any], match: dict[str, Any]) -> dict[str, Any]:
+    if args.get("topic") and row.get("topic_match_mode") == "fuzzy_fallback":
+        match = dict(match)
+        match["topic_scope"] = {
+            "topic": args["topic"],
+            "match_mode": "fuzzy_fallback",
+            "score": row.get("fuzzy_score"),
+        }
+    return match
+
+
 def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "tool": (args.get("tool") or "").lower()}
-    cte = _scoped_sessions_cte(args, params)
+    cte = _scoped_sessions_cte(conn, args, params)
     clauses = ["(LOWER(t.tool) = :tool OR LOWER(t.tool_name) = :tool)"]
     rows = _query(conn, f"""
         {cte}
@@ -96,13 +180,13 @@ def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dic
     out = []
     for row in rows:
         ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), tool_call_match(row)))
+        out.append(candidate(ref, session_summary(row), _with_topic_scope(args, row, tool_call_match(row))))
     return out
 
 
 def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "skill": (args.get("skill") or "").lower()}
-    cte = _scoped_sessions_cte(args, params)
+    cte = _scoped_sessions_cte(conn, args, params)
     clauses = ["LOWER(t.skill_name) = :skill"]
     if args.get("tool"):
         params["tool"] = args["tool"].lower()
@@ -118,13 +202,13 @@ def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
     out = []
     for row in rows:
         ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), skill_invocation_match(row)))
+        out.append(candidate(ref, session_summary(row), _with_topic_scope(args, row, skill_invocation_match(row))))
     return out
 
 
-def _mutation_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
+def _mutation_event_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "path": f"%{args.get('mutated')}%"}
-    cte = _scoped_sessions_cte(args, params)
+    cte = _scoped_sessions_cte(conn, args, params)
     clauses = ["m.path LIKE :path"]
     if args.get("tool"):
         params["tool"] = args["tool"].lower()
@@ -140,13 +224,95 @@ def _mutation_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
     out = []
     for row in rows:
         ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), file_mutation_match(row)))
+        out.append(candidate(ref, session_summary(row), _with_topic_scope(args, row, file_mutation_match(row))))
+    return out
+
+
+def _mutation_clauses(args: dict[str, Any], params: dict[str, Any], alias: str = "m") -> list[str]:
+    clauses = [f"{alias}.path LIKE :path"]
+    if args.get("tool"):
+        params["tool"] = args["tool"].lower()
+        clauses.append(f"(LOWER({alias}.tool) = :tool OR LOWER({alias}.tool_name) = :tool)")
+    return clauses
+
+
+def _mutation_session_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {"limit": args["limit"], "path": f"%{args.get('mutated')}%"}
+    cte = _scoped_sessions_cte(conn, args, params)
+    clauses = _mutation_clauses(args, params)
+    selected_sessions = _query(conn, f"""
+        {cte}
+        SELECT s.*
+        FROM scoped_sessions s
+        WHERE EXISTS (
+            SELECT 1 FROM file_mutations m
+            WHERE m.session_id = s.session_id AND {' AND '.join(clauses)}
+        )
+        ORDER BY s.started_at DESC, s.session_id ASC
+        LIMIT :limit
+    """, params)
+    if not selected_sessions:
+        return []
+
+    session_ids = [row["session_id"] for row in selected_sessions]
+    fetch_params = dict(params)
+    placeholders = []
+    for index, session_id in enumerate(session_ids):
+        key = f"selected_sid_{index}"
+        fetch_params[key] = session_id
+        placeholders.append(f":{key}")
+    mutation_rows = _query(conn, f"""
+        SELECT m.*
+        FROM file_mutations m
+        WHERE m.session_id IN ({', '.join(placeholders)}) AND {' AND '.join(clauses)}
+        ORDER BY m.session_id ASC, m.sequence ASC, m.path ASC
+    """, fetch_params)
+
+    rows_by_session: dict[str, list[dict[str, Any]]] = {session_id: [] for session_id in session_ids}
+    for row in mutation_rows:
+        rows_by_session[row["session_id"]].append(row)
+
+    out = []
+    for session_row in selected_sessions:
+        sid = session_row["session_id"]
+        rows = rows_by_session[sid]
+        path_counts: dict[str, int] = {}
+        first_sequence: dict[str, int] = {}
+        sequence_counts: dict[int, int] = {}
+        for row in rows:
+            path = row["path"]
+            sequence = row["sequence"]
+            path_counts[path] = path_counts.get(path, 0) + 1
+            first_sequence[path] = min(first_sequence.get(path, sequence), sequence)
+            sequence_counts[sequence] = sequence_counts.get(sequence, 0) + 1
+        representative_paths = [
+            path for path, _count in sorted(
+                path_counts.items(),
+                key=lambda item: (-item[1], first_sequence[item[0]], item[0]),
+            )[:5]
+        ]
+        related_tools = [
+            format_ref(ToolRef(session_id=sid, sequence=sequence))
+            for sequence, _count in sorted(sequence_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ]
+        ref = format_ref(SessionRef(session_id=sid))
+        match = file_mutation_session_match(
+            match_count=len(rows),
+            distinct_path_count=len(path_counts),
+            representative_paths=representative_paths,
+        )
+        out.append(candidate(
+            ref,
+            session_summary(session_row),
+            _with_topic_scope(args, session_row, match),
+            inspect_refs={"related_tools": related_tools},
+        ))
     return out
 
 
 def _question_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"]}
-    cte = _scoped_sessions_cte(args, params)
+    cte = _scoped_sessions_cte(conn, args, params)
     clauses: list[str] = []
     if args.get("question_recommended") is not None:
         params["recommended"] = 1 if args["question_recommended"] else 0
@@ -168,13 +334,13 @@ def _question_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
             question_index=row["question_index"],
         ))
         tool_ref = format_ref(ToolRef(session_id=row["session_id"], sequence=row["sequence"]))
-        out.append(candidate(ref, session_summary(row), question_answer_match(row), inspect_refs={"tool": tool_ref}))
+        out.append(candidate(ref, session_summary(row), _with_topic_scope(args, row, question_answer_match(row)), inspect_refs={"tool": tool_ref}))
     return out
 
 
 def _subagent_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "agent": (args.get("subagent") or "").lower()}
-    cte = _scoped_sessions_cte(args, params)
+    cte = _scoped_sessions_cte(conn, args, params)
     clauses = ["(LOWER(r.requested_agent_type) = :agent OR LOWER(r.observed_agent_type) = :agent)"]
     if args.get("tool"):
         params["tool"] = args["tool"].lower()
@@ -196,11 +362,28 @@ def _subagent_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
         if row["call_sequence"] is not None:
             refs["parent_call"] = format_ref(ToolRef(session_id=row["session_id"], sequence=row["call_sequence"]))
         match_row = {**row, "transcript_path": row["run_transcript_path"]}
-        out.append(candidate(ref, session_summary(row), subagent_run_match(match_row), inspect_refs=refs))
+        out.append(candidate(ref, session_summary(row), _with_topic_scope(args, row, subagent_run_match(match_row)), inspect_refs=refs))
     return out
 
 
 def _topic_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
+    if args.get("topic") and not _exact_topic_has_sessions(conn, args):
+        rows = find_fuzzy_topic_candidates(
+            conn,
+            query=args["topic"],
+            project=args.get("project"),
+            since=args.get("since"),
+            until=args.get("until"),
+            limit=args["limit"],
+            session=args.get("session"),
+        )
+        out = []
+        for row_dict in rows[:args["limit"]]:
+            ref = format_ref(SessionRef(session_id=row_dict["session_id"]))
+            match = topic_match(args["topic"], match_mode="fuzzy_fallback", score=row_dict.get("fuzzy_score"))
+            out.append(candidate(ref, session_summary(row_dict), match))
+        return out
+
     rows = find_session_candidates(
         conn,
         query=args.get("topic"),
@@ -238,6 +421,7 @@ def find_candidates(
     until: str | None = None,
     session: str | None = None,
     limit: int = 20,
+    mutation_mode: str = "session",
 ) -> dict[str, list[dict[str, Any]]]:
     """Return compact JSON-ready Evidence Find candidates."""
     args: dict[str, Any] = {
@@ -252,7 +436,12 @@ def find_candidates(
         "until": until,
         "session": session,
         "limit": max(1, limit),
+        "mutation_mode": mutation_mode,
     }
+    if mutation_mode not in {"session", "event"}:
+        raise ValueError("--mutation-mode must be one of: session, event")
+    if mutation_mode != "session" and not mutated:
+        raise ValueError("--mutation-mode requires --mutated")
     if question_recommended is not None and (tool or "").lower() != "question":
         raise ValueError("--question-recommended requires --tool question")
     incompatible = [name for name, value in (("--skill", skill), ("--mutated", mutated), ("--subagent", subagent)) if value]
@@ -264,7 +453,10 @@ def find_candidates(
     if subagent:
         results = _subagent_candidates(conn, args)
     elif mutated:
-        results = _mutation_candidates(conn, args)
+        if mutation_mode == "event":
+            results = _mutation_event_candidates(conn, args)
+        else:
+            results = _mutation_session_candidates(conn, args)
     elif question_recommended is not None and (tool or "").lower() == "question":
         results = _question_candidates(conn, args)
     elif skill:
