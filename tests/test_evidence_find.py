@@ -271,6 +271,23 @@ def test_find_topic_scoped_mutation_applies_limit_after_exact_mutation_criterion
     assert [result["ref"] for result in results] == ["session/pi:fuzzy-target"]
 
 
+def test_find_topic_scoped_mutation_handles_more_than_500_fuzzy_sessions(tmp_path):
+    conn = make_memory_conn()
+    for index in range(600):
+        seed_session_with_mutations(
+            conn,
+            tmp_path,
+            session_id=f"pi:fuzzy-{index:03d}",
+            started_at=f"2026-05-31T10:{index // 60:02d}:{index % 60:02d}Z",
+            summary="Implemented deterministic file history retrieval for session-collapsed mutations.",
+            mutations=[(1, "edit", "etc/prd/file-conversation-history.md")] if index == 599 else [],
+        )
+
+    results = find_candidates(conn, topic="deterministc file hystory", mutated="file-conversation", limit=1)["results"]
+
+    assert [result["ref"] for result in results] == ["session/pi:fuzzy-599"]
+
+
 def test_find_mutation_event_mode_preserves_event_level_file_mutations(tmp_path):
     conn = make_memory_conn()
     seed_evidence_graph(conn, tmp_path)

@@ -140,10 +140,8 @@ def find_fuzzy_topic_candidates(
         candidate["topic_rank"] = score
         scored.append(candidate)
 
-    scored.sort(key=lambda row: (-row["fuzzy_score"], _descending_text(row.get("started_at")), row["session_id"]))
+    # Stable sorts express the contract directly: score desc, started_at desc, session_id asc.
+    scored.sort(key=lambda row: row["session_id"])
+    scored.sort(key=lambda row: row.get("started_at") or "", reverse=True)
+    scored.sort(key=lambda row: row["fuzzy_score"], reverse=True)
     return scored[:max(1, limit)]
-
-
-def _descending_text(value: Any) -> tuple[int, ...]:
-    """Return a key that sorts text descending when used in ascending tuple sort."""
-    return tuple(-ord(ch) for ch in str(value or ""))

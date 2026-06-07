@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
 from typing import Any
 
 from db import build_fts_query, find_session_candidates
@@ -71,6 +72,10 @@ def _empty_scoped_sessions_cte() -> str:
     """
 
 
+def _sql_string(value: Any) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _fuzzy_scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params: dict[str, Any]) -> str:
     rows = find_fuzzy_topic_candidates(
         conn,
@@ -81,22 +86,16 @@ def _fuzzy_scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], p
         session=args.get("session"),
         limit=max(args["limit"], FUZZY_TOPIC_SCOPE_LIMIT),
     )
-    args["_topic_scope_mode"] = "fuzzy_fallback"
     if not rows:
         return _empty_scoped_sessions_cte()
 
-    selects = []
-    for index, row in enumerate(rows):
-        params[f"fuzzy_sid_{index}"] = row["session_id"]
-        params[f"fuzzy_rank_{index}"] = row["topic_rank"]
-        params[f"fuzzy_score_{index}"] = row["fuzzy_score"]
-        selects.append(
-            f"SELECT :fuzzy_sid_{index} AS session_id, :fuzzy_rank_{index} AS topic_rank, :fuzzy_score_{index} AS fuzzy_score"
-        )
-    values = "\n                UNION ALL\n                ".join(selects)
+    values = ",\n                ".join(
+        f"({_sql_string(row['session_id'])}, {float(row['topic_rank'])}, {float(row['fuzzy_score'])})"
+        for row in rows
+    )
     return f"""
-        WITH fuzzy_scope AS (
-                {values}
+        WITH fuzzy_scope(session_id, topic_rank, fuzzy_score) AS (
+                VALUES {values}
             ),
             scoped_sessions AS (
                 SELECT s.*, f.topic_rank, 'fuzzy_fallback' AS topic_match_mode, f.fuzzy_score
@@ -106,15 +105,13 @@ def _fuzzy_scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], p
     """
 
 
-def _scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params: dict[str, Any]) -> str:
+def _scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params: dict[str, Any]) -> tuple[str, str | None]:
     """Return a CTE containing the sessions in scope for candidate queries."""
     clauses = _session_filters(args, params)
-    args["_topic_scope_mode"] = None
     if args.get("topic"):
         if not _exact_topic_has_sessions(conn, args):
-            return _fuzzy_scoped_sessions_cte(conn, args, params)
+            return _fuzzy_scoped_sessions_cte(conn, args, params), "fuzzy_fallback"
 
-        args["_topic_scope_mode"] = "exact"
         params["topic_query"] = build_fts_query(args["topic"])
         where = "WHERE sessions_fts MATCH :topic_query"
         if clauses:
@@ -126,7 +123,7 @@ def _scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params:
                 JOIN sessions s ON s.rowid = fts.rowid
                 {where}
             )
-        """
+        """, "exact"
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return f"""
@@ -135,12 +132,12 @@ def _scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params:
             FROM sessions s
             {where}
         )
-    """
+    """, None
 
 
-def _event_order(args: dict[str, Any], event_order: str) -> str:
+def _event_order(args: dict[str, Any], topic_scope_mode: str | None, event_order: str) -> str:
     if args.get("topic"):
-        if args.get("_topic_scope_mode") == "fuzzy_fallback":
+        if topic_scope_mode == "fuzzy_fallback":
             return f"s.topic_rank DESC, s.started_at DESC, {event_order}"
         return f"s.topic_rank ASC, s.started_at DESC, {event_order}"
     return f"s.started_at DESC, {event_order}"
@@ -167,14 +164,14 @@ def _with_topic_scope(args: dict[str, Any], row: dict[str, Any], match: dict[str
 
 def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "tool": (args.get("tool") or "").lower()}
-    cte = _scoped_sessions_cte(conn, args, params)
+    cte, topic_scope_mode = _scoped_sessions_cte(conn, args, params)
     clauses = ["(LOWER(t.tool) = :tool OR LOWER(t.tool_name) = :tool)"]
     rows = _query(conn, f"""
         {cte}
         SELECT s.*, t.sequence, t.timestamp, t.tool_name, t.tool, t.scope, t.is_error, t.skill_name
         FROM tool_calls t JOIN scoped_sessions s ON s.session_id = t.session_id
         {_where(clauses)}
-        ORDER BY {_event_order(args, "t.sequence ASC")}
+        ORDER BY {_event_order(args, topic_scope_mode, "t.sequence ASC")}
         LIMIT :limit
     """, params)
     out = []
@@ -186,7 +183,7 @@ def _tool_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dic
 
 def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "skill": (args.get("skill") or "").lower()}
-    cte = _scoped_sessions_cte(conn, args, params)
+    cte, topic_scope_mode = _scoped_sessions_cte(conn, args, params)
     clauses = ["LOWER(t.skill_name) = :skill"]
     if args.get("tool"):
         params["tool"] = args["tool"].lower()
@@ -196,7 +193,7 @@ def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
         SELECT s.*, t.sequence, t.timestamp, t.tool_name, t.tool, t.scope, t.skill_name
         FROM tool_calls t JOIN scoped_sessions s ON s.session_id = t.session_id
         {_where(clauses)}
-        ORDER BY {_event_order(args, "t.sequence ASC")}
+        ORDER BY {_event_order(args, topic_scope_mode, "t.sequence ASC")}
         LIMIT :limit
     """, params)
     out = []
@@ -208,17 +205,14 @@ def _skill_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
 
 def _mutation_event_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "path": f"%{args.get('mutated')}%"}
-    cte = _scoped_sessions_cte(conn, args, params)
-    clauses = ["m.path LIKE :path"]
-    if args.get("tool"):
-        params["tool"] = args["tool"].lower()
-        clauses.append("(LOWER(m.tool) = :tool OR LOWER(m.tool_name) = :tool)")
+    cte, topic_scope_mode = _scoped_sessions_cte(conn, args, params)
+    clauses = _mutation_clauses(args, params)
     rows = _query(conn, f"""
         {cte}
         SELECT s.*, m.sequence, m.timestamp, m.tool_name, m.tool, m.scope, m.path
         FROM file_mutations m JOIN scoped_sessions s ON s.session_id = m.session_id
         {_where(clauses)}
-        ORDER BY {_event_order(args, "m.sequence ASC, m.path ASC")}
+        ORDER BY {_event_order(args, topic_scope_mode, "m.sequence ASC, m.path ASC")}
         LIMIT :limit
     """, params)
     out = []
@@ -238,53 +232,46 @@ def _mutation_clauses(args: dict[str, Any], params: dict[str, Any], alias: str =
 
 def _mutation_session_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "path": f"%{args.get('mutated')}%"}
-    cte = _scoped_sessions_cte(conn, args, params)
+    cte, _topic_scope_mode = _scoped_sessions_cte(conn, args, params)
     clauses = _mutation_clauses(args, params)
-    selected_sessions = _query(conn, f"""
-        {cte}
-        SELECT s.*
-        FROM scoped_sessions s
-        WHERE EXISTS (
-            SELECT 1 FROM file_mutations m
-            WHERE m.session_id = s.session_id AND {' AND '.join(clauses)}
+    rows = _query(conn, f"""
+        {cte},
+        selected_sessions AS (
+            SELECT s.*
+            FROM scoped_sessions s
+            WHERE EXISTS (
+                SELECT 1 FROM file_mutations m
+                WHERE m.session_id = s.session_id AND {' AND '.join(clauses)}
+            )
+            ORDER BY s.started_at DESC, s.session_id ASC
+            LIMIT :limit
         )
-        ORDER BY s.started_at DESC, s.session_id ASC
-        LIMIT :limit
+        SELECT ss.*, m.sequence AS mutation_sequence, m.path AS mutation_path
+        FROM selected_sessions ss
+        JOIN file_mutations m ON m.session_id = ss.session_id
+        WHERE {' AND '.join(clauses)}
+        ORDER BY ss.started_at DESC, ss.session_id ASC, m.sequence ASC, m.path ASC
     """, params)
-    if not selected_sessions:
+    if not rows:
         return []
 
-    session_ids = [row["session_id"] for row in selected_sessions]
-    fetch_params = dict(params)
-    placeholders = []
-    for index, session_id in enumerate(session_ids):
-        key = f"selected_sid_{index}"
-        fetch_params[key] = session_id
-        placeholders.append(f":{key}")
-    mutation_rows = _query(conn, f"""
-        SELECT m.*
-        FROM file_mutations m
-        WHERE m.session_id IN ({', '.join(placeholders)}) AND {' AND '.join(clauses)}
-        ORDER BY m.session_id ASC, m.sequence ASC, m.path ASC
-    """, fetch_params)
-
-    rows_by_session: dict[str, list[dict[str, Any]]] = {session_id: [] for session_id in session_ids}
-    for row in mutation_rows:
-        rows_by_session[row["session_id"]].append(row)
+    session_rows: dict[str, dict[str, Any]] = {}
+    rows_by_session: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        sid = row["session_id"]
+        session_rows.setdefault(sid, row)
+        rows_by_session.setdefault(sid, []).append(row)
 
     out = []
-    for session_row in selected_sessions:
-        sid = session_row["session_id"]
+    for sid, session_row in session_rows.items():
         rows = rows_by_session[sid]
-        path_counts: dict[str, int] = {}
+        path_counts = Counter(row["mutation_path"] for row in rows)
+        sequence_counts = Counter(row["mutation_sequence"] for row in rows)
         first_sequence: dict[str, int] = {}
-        sequence_counts: dict[int, int] = {}
         for row in rows:
-            path = row["path"]
-            sequence = row["sequence"]
-            path_counts[path] = path_counts.get(path, 0) + 1
+            path = row["mutation_path"]
+            sequence = row["mutation_sequence"]
             first_sequence[path] = min(first_sequence.get(path, sequence), sequence)
-            sequence_counts[sequence] = sequence_counts.get(sequence, 0) + 1
         representative_paths = [
             path for path, _count in sorted(
                 path_counts.items(),
@@ -312,7 +299,7 @@ def _mutation_session_candidates(conn: sqlite3.Connection, args: dict[str, Any])
 
 def _question_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"]}
-    cte = _scoped_sessions_cte(conn, args, params)
+    cte, topic_scope_mode = _scoped_sessions_cte(conn, args, params)
     clauses: list[str] = []
     if args.get("question_recommended") is not None:
         params["recommended"] = 1 if args["question_recommended"] else 0
@@ -323,7 +310,7 @@ def _question_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
                q.was_recommended, q.is_other, q.option_count, q.multi_select
         FROM question_answers q JOIN scoped_sessions s ON s.session_id = q.session_id
         {_where(clauses)}
-        ORDER BY {_event_order(args, "q.sequence ASC, q.question_index ASC")}
+        ORDER BY {_event_order(args, topic_scope_mode, "q.sequence ASC, q.question_index ASC")}
         LIMIT :limit
     """, params)
     out = []
@@ -340,7 +327,7 @@ def _question_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
 
 def _subagent_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"limit": args["limit"], "agent": (args.get("subagent") or "").lower()}
-    cte = _scoped_sessions_cte(conn, args, params)
+    cte, topic_scope_mode = _scoped_sessions_cte(conn, args, params)
     clauses = ["(LOWER(r.requested_agent_type) = :agent OR LOWER(r.observed_agent_type) = :agent)"]
     if args.get("tool"):
         params["tool"] = args["tool"].lower()
@@ -352,7 +339,7 @@ def _subagent_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list
                r.task_preview, r.match_confidence, r.tool_call_count
         FROM subagent_runs r JOIN scoped_sessions s ON s.session_id = r.parent_session_id
         {_where(clauses)}
-        ORDER BY {_event_order(args, "r.child_index ASC")}
+        ORDER BY {_event_order(args, topic_scope_mode, "r.child_index ASC")}
         LIMIT :limit
     """, params)
     out = []
