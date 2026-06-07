@@ -65,11 +65,13 @@ Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy fallba
 
 ## Backfill existing conversations
 
+By default, backfill regenerates only deterministic artifacts and facts: Clean Transcripts, Tool Logs, Subagent Run transcripts, and structured fact tables. It does not run the LLM summarizer.
+
 ```bash
 uv run cli.py backfill --source all
 ```
 
-Source-specific backfill:
+Source-specific deterministic backfill:
 
 ```bash
 uv run cli.py backfill --source claude
@@ -78,13 +80,19 @@ uv run cli.py backfill --source pi
 
 Progress is per-session and idempotent — safe to interrupt and resume. Pi rows are stored with `pi:<uuid>` DB IDs.
 
-To regenerate deterministic artifacts and fact tables, including historical Skill Invocations, without new LLM summaries:
+To force-regenerate deterministic artifacts and fact tables, including historical Skill Invocations:
 
 ```bash
-uv run cli.py backfill --source all --no-summary --force
+uv run cli.py backfill --source all --force
 ```
 
 For scoped validation, run the same command with `--session SESSION_ID` before a full backfill.
+
+Summary regeneration is opt-in:
+
+```bash
+uv run cli.py backfill --source all --with-summary
+```
 
 ## Evidence retrieval
 
@@ -179,7 +187,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
 | `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |
 | `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with generated artifact metadata and scoped Clean Transcript, Tool Log, or Subagent Run Evidence Snippets |
-| `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--no-summary]` | Process JSONL files; `--no-summary` skips the LLM summary (regenerates transcripts, tool logs, and fact tables only) |
+| `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
 `find --mutated` uses `file_mutations` for evidence candidates. Raw SQL over `file_mutations` remains the path for exact lists and aggregates, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.

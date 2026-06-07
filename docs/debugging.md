@@ -153,8 +153,8 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 
 **Skill Invocation rows are stale or missing:**
 - Confirm the deterministic facts exist: `uv run cli.py query "SELECT skill_name, COUNT(*) AS n FROM skill_invocations GROUP BY skill_name ORDER BY n DESC LIMIT 20" --json`.
-- Regenerate one known session first: `uv run cli.py backfill --source all --session SESSION_ID --no-summary --force`.
-- If scoped repair works, run the full deterministic repair: `uv run cli.py backfill --source all --no-summary --force`.
+- Regenerate one known session first: `uv run cli.py backfill --source all --session SESSION_ID --force`.
+- If scoped repair works, run the full deterministic repair: `uv run cli.py backfill --source all --force`.
 - Historical repair is a deterministic reindex/backfill, not a transcript-only migration, because Skill Invocations depend on parser metadata, combined Tool Call sequences, and subagent transcript locality.
 
 **Evidence Inspect fails:**
@@ -168,7 +168,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 **Transcript not generated:**
 - `worker | transcript written` should appear — if missing, check for errors before it.
 - Run `uv run cli.py status --fix` to identify and repair dangling paths.
-- Run `uv run cli.py backfill --no-summary --force --session SESSION_ID` to regenerate deterministic artifacts/fact tables for one session.
+- Run `uv run cli.py backfill --force --session SESSION_ID` to regenerate deterministic artifacts/fact tables for one session.
 
 **Current session lookup fails:**
 - `uv run cli.py current` works only inside an active runtime that exposes exact Session Index identity.

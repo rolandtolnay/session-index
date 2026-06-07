@@ -135,10 +135,10 @@ def cmd_current(args: argparse.Namespace) -> None:
 
 
 def _backfill_options(args: argparse.Namespace):
-    """Pick the indexing pass: deterministic-only (--no-summary) or full (+ LLM summary)."""
+    """Pick the indexing pass: deterministic-only by default, summaries opt-in."""
     from indexer import FULL_INDEX_OPTIONS, NO_SUMMARY_INDEX_OPTIONS
 
-    return NO_SUMMARY_INDEX_OPTIONS if args.no_summary else FULL_INDEX_OPTIONS
+    return FULL_INDEX_OPTIONS if getattr(args, "with_summary", False) else NO_SUMMARY_INDEX_OPTIONS
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
@@ -186,7 +186,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     # fact tables (no tools at all, or never got a tool log) so they get caught up.
     existing = set()
     if not args.force:
-        done_column = "transcript_path" if args.no_summary else "summary"
+        done_column = "summary" if IndexStage.SUMMARY in options.stages else "transcript_path"
         cursor = conn.execute(
             f"SELECT session_id FROM sessions WHERE {done_column} IS NOT NULL "
             "AND (tools_used IS NULL OR tools_used = '' OR tool_log_path IS NOT NULL)"
@@ -480,7 +480,7 @@ def cmd_status(args: argparse.Namespace) -> None:
             unrecoverable = len(issues["missing_summary"]) - recoverable
             parts = []
             if recoverable:
-                parts.append(f"{recoverable} recoverable via backfill")
+                parts.append(f"{recoverable} recoverable via `backfill --with-summary`")
             if unrecoverable:
                 parts.append(f"{unrecoverable} unrecoverable (JSONL deleted)")
             print(f"  Missing summary: {len(issues['missing_summary'])} ({', '.join(parts)})")
@@ -489,7 +489,7 @@ def cmd_status(args: argparse.Namespace) -> None:
             unrecoverable = len(issues["missing_transcript"]) - recoverable
             parts = []
             if recoverable:
-                parts.append(f"{recoverable} recoverable via `backfill --no-summary --force`")
+                parts.append(f"{recoverable} recoverable via `backfill --force`")
             if unrecoverable:
                 parts.append(f"{unrecoverable} unrecoverable (JSONL deleted)")
             print(f"  Missing transcript: {len(issues['missing_transcript'])} ({', '.join(parts)})")
@@ -510,7 +510,7 @@ def cmd_status(args: argparse.Namespace) -> None:
                 print(f"\n  Run `status --fix` to repair {total_issues} issue(s)")
 
         if issues["recoverable"]:
-            print(f"  Run `backfill` to regenerate {len(issues['recoverable'])} missing summary/summaries")
+            print(f"  Run `backfill --with-summary` to regenerate {len(issues['recoverable'])} missing summary/summaries")
 
     conn.close()
 
@@ -610,9 +610,9 @@ def main() -> None:
     sp_backfill.add_argument("--pi-session-dir", help="Override Pi session directory")
     sp_backfill.add_argument("--project", help="Only process sessions for this project name")
     sp_backfill.add_argument("--session", help="Only process this specific session ID")
-    sp_backfill.add_argument("--no-summary", action="store_true",
-                             help="Skip the LLM summary; regenerate transcripts, tool logs, "
-                                  "subagent transcripts, and fact tables only (fast, no network)")
+    sp_backfill.add_argument("--with-summary", action="store_true",
+                             help="Also regenerate LLM summaries (slower; may use network/local LLM)")
+    sp_backfill.add_argument("--no-summary", action="store_true", help=argparse.SUPPRESS)
     sp_backfill.set_defaults(func=cmd_backfill)
 
     # query

@@ -68,7 +68,7 @@ END;
 -- ── Structured fact tables ────────────────────────────────────────────────
 -- Owned by sessions and rebuilt with delete-then-insert (idempotent).
 -- Coverage tracks the tool-log indexing stage; older rows are populated by
--- `cli.py backfill --no-summary --force`.
+-- `cli.py backfill --force`.
 
 -- One row per tool call (main + subagent scope). `tool` is lexically normalized
 -- (namespace-stripped, lowercased); raw provider names remain in `tool_name`.

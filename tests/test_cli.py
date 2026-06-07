@@ -172,6 +172,18 @@ def test_main_help_teaches_find_inspect_query_decision_tree(monkeypatch, capsys)
     assert "inspect" in out
 
 
+def test_backfill_help_makes_summary_regeneration_opt_in(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "backfill", "--help"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--with-summary" in out
+    assert "--no-summary" not in out
+
+
 def test_search_is_not_registered_as_primary_cli_command(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cli.py", "search", "token"])
 

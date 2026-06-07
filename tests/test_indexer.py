@@ -295,17 +295,20 @@ def test_pi_question_answer_recovered_into_fact_table(tmp_path, monkeypatch):
 def test_cli_backfill_options_select_pass():
     from cli import _backfill_options
 
-    full = _backfill_options(argparse.Namespace(no_summary=False))
-    assert full.stages == indexer.FULL_INDEX_OPTIONS.stages
-    assert indexer.IndexStage.SUMMARY in full.stages
+    default = _backfill_options(argparse.Namespace(with_summary=False, no_summary=False))
+    assert default.stages == indexer.NO_SUMMARY_INDEX_OPTIONS.stages
+    # Default drops only the LLM summary; deterministic artifacts + fact tables remain.
+    assert indexer.IndexStage.SUMMARY not in default.stages
+    assert indexer.IndexStage.CLEAN_TRANSCRIPT in default.stages
+    assert indexer.IndexStage.SUBAGENT_TRANSCRIPTS in default.stages
+    assert indexer.IndexStage.TOOL_LOG in default.stages
 
-    no_summary = _backfill_options(argparse.Namespace(no_summary=True))
-    assert no_summary.stages == indexer.NO_SUMMARY_INDEX_OPTIONS.stages
-    # Drops only the LLM summary; deterministic artifacts + fact tables remain.
-    assert indexer.IndexStage.SUMMARY not in no_summary.stages
-    assert indexer.IndexStage.CLEAN_TRANSCRIPT in no_summary.stages
-    assert indexer.IndexStage.SUBAGENT_TRANSCRIPTS in no_summary.stages
-    assert indexer.IndexStage.TOOL_LOG in no_summary.stages
+    with_summary = _backfill_options(argparse.Namespace(with_summary=True, no_summary=False))
+    assert with_summary.stages == indexer.FULL_INDEX_OPTIONS.stages
+    assert indexer.IndexStage.SUMMARY in with_summary.stages
+
+    deprecated_no_summary = _backfill_options(argparse.Namespace(with_summary=False, no_summary=True))
+    assert deprecated_no_summary.stages == indexer.NO_SUMMARY_INDEX_OPTIONS.stages
 
 
 def test_summary_stage_preserves_old_summary_when_generation_fails(tmp_path, monkeypatch):
