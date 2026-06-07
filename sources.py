@@ -64,9 +64,11 @@ def discover_pi_sessions(
     pattern = os.path.join(root, "**", "*.jsonl")
     matches: list[SourceSessionFile] = []
     for path in sorted(glob.glob(pattern, recursive=True)):
+        basename = os.path.basename(path)
         # Nested pi-subagents are stored as .../<parent>/<run-group>/run-N/session.jsonl.
         # They are linked from parent transcripts, not indexed as top-level sessions.
-        if os.path.basename(path) == "session.jsonl":
+        # events.jsonl files are subagent runner lifecycle logs, not conversations.
+        if basename in {"session.jsonl", "events.jsonl"}:
             continue
         if session_id and session_id not in os.path.basename(path):
             # Pi's filename includes the native UUID, but callers may pass a DB id pi:<uuid>.
