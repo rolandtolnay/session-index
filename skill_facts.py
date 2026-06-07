@@ -19,8 +19,9 @@ from tool_facts import normalize_tool_name
 
 _MAX_TEXT = 240
 _SKILL_ENVELOPE_RE = re.compile(r"<skill\b[^>]*\bname=[\"']([^\"']+)[\"'][^>]*>", re.IGNORECASE)
-_BRACKET_COMMAND_RE = re.compile(r"(?m)^\s*\[/([^\]\s]+)\]\s*([^\n]*)")
-_SLASH_COMMAND_RE = re.compile(r"(?m)^\s*/([^\s]+)\s*([^\n]*)")
+_COMMAND_NAME = r"[\w:_-]+"
+_BRACKET_COMMAND_RE = re.compile(rf"(?m)^\s*\[/({_COMMAND_NAME})\](?:\s+([^\n]*))?\s*$")
+_SLASH_COMMAND_RE = re.compile(rf"(?m)^\s*/({_COMMAND_NAME})(?:\s+([^\n]*))?\s*$")
 _SKILL_MD_RE = re.compile(r"/skills/([^/]+)/SKILL\.md$")
 _LIFECYCLE_COMMANDS = CLAUDE_NOISE_COMMANDS | {
     "/clear", "/exit", "/compact", "/resume", "/new", "/fork", "/clone",

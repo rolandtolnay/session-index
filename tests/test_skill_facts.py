@@ -94,6 +94,18 @@ def test_message_invocations_preserve_source_order_within_same_timestamp():
     assert [(row["sequence"], row["skill_name"]) for row in rows] == [(1, "review"), (2, "plan-quick")]
 
 
+def test_absolute_paths_are_not_slash_command_invocations():
+    rows = build_skill_invocation_rows(
+        "s1",
+        "pi",
+        [{"role": "user", "timestamp": "2026-01-01T00:00:00Z", "content": "/Users/rolandtolnay/Desktop/Screenshot\\ 2026-06-07\\ at\\ 10.36.01.png"}],
+        [],
+        [],
+    )
+
+    assert rows == []
+
+
 def test_bracket_command_examples_inside_prose_are_not_invocations():
     rows = build_skill_invocation_rows(
         "s1",
