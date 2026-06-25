@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["rapidfuzz>=3.0"]
+# ///
 """Evidence Find wrapper — resolves repo root via symlink, runs CLI find."""
 from _bootstrap import repo_root
 
