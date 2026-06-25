@@ -14,7 +14,7 @@ from subagent_runs import ParsedSubagentRun
 from tool_events import iter_tool_use_candidates
 
 _QUESTION_TOOLS = {"askuserquestion", "question"}
-_FILE_MUTATION_TOOLS = {"write", "edit"}
+_FILE_MUTATION_TOOLS = {"write", "edit", "apply_patch"}
 _RECOMMENDED_MARKER = "(Recommended)"
 
 
@@ -66,6 +66,28 @@ def _edit_batch_paths(arguments: dict[str, Any]) -> list[str]:
     return paths
 
 
+def _apply_patch_paths(arguments: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    changes = arguments.get("changes")
+    if isinstance(changes, dict):
+        for path, change in changes.items():
+            if isinstance(path, str) and path:
+                paths.append(path)
+            if isinstance(change, dict) and isinstance(change.get("move_path"), str) and change["move_path"]:
+                paths.append(change["move_path"])
+    elif isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            path = change.get("path")
+            move_path = change.get("move_path")
+            if isinstance(path, str) and path:
+                paths.append(path)
+            if isinstance(move_path, str) and move_path:
+                paths.append(move_path)
+    return paths
+
+
 def _unique_in_order(paths: list[str]) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
@@ -79,6 +101,8 @@ def _unique_in_order(paths: list[str]) -> list[str]:
 def _mutation_paths(tool: str, arguments: dict[str, Any]) -> list[str]:
     if tool not in _FILE_MUTATION_TOOLS:
         return []
+    if tool == "apply_patch":
+        return _unique_in_order(_apply_patch_paths(arguments))
 
     paths = _top_level_paths(arguments)
     if tool == "edit":

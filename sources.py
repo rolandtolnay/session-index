@@ -1,4 +1,4 @@
-"""Session source discovery for Claude Code and Pi."""
+"""Session source discovery for Claude Code, Pi, and Codex."""
 
 from __future__ import annotations
 
@@ -79,15 +79,55 @@ def discover_pi_sessions(
     return matches
 
 
+def get_codex_session_roots(
+    session_dir: str | None = None,
+    archived_dir: str | None = None,
+) -> tuple[str, str]:
+    codex_home = os.path.expanduser("~/.codex")
+    active_root = os.path.expanduser(session_dir) if session_dir else os.path.join(codex_home, "sessions")
+    archive_root = os.path.expanduser(archived_dir) if archived_dir else os.path.join(codex_home, "archived_sessions")
+    return active_root, archive_root
+
+
+def discover_codex_sessions(
+    session_id: str | None = None,
+    *,
+    session_dir: str | None = None,
+    archived_dir: str | None = None,
+) -> list[SourceSessionFile]:
+    active_root, archive_root = get_codex_session_roots(session_dir, archived_dir)
+    wanted = session_id.split(":", 1)[-1] if session_id else ""
+
+    patterns = []
+    if os.path.exists(active_root):
+        patterns.append(os.path.join(active_root, "**", "rollout-*.jsonl"))
+    if os.path.exists(archive_root):
+        patterns.append(os.path.join(archive_root, "**", "rollout-*.jsonl"))
+
+    seen: set[str] = set()
+    matches: list[SourceSessionFile] = []
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern, recursive=True)):
+            if wanted and wanted not in os.path.basename(path):
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            matches.append(SourceSessionFile("codex", path))
+    return matches
+
+
 def discover_sessions(
     source: str = "all",
     *,
     session_id: str | None = None,
     pi_session_dir: str | None = None,
+    codex_session_dir: str | None = None,
+    codex_archived_dir: str | None = None,
 ) -> list[SourceSessionFile]:
-    """Discover session JSONL files for a source: claude, pi, or all."""
+    """Discover session JSONL files for a source: claude, pi, codex, or all."""
     source = source.lower()
-    if source not in {"claude", "pi", "all"}:
+    if source not in {"claude", "pi", "codex", "all"}:
         raise ValueError(f"Unsupported source: {source}")
 
     files: list[SourceSessionFile] = []
@@ -95,4 +135,10 @@ def discover_sessions(
         files.extend(discover_claude_sessions(session_id))
     if source in {"pi", "all"}:
         files.extend(discover_pi_sessions(session_id, session_dir=pi_session_dir))
+    if source in {"codex", "all"}:
+        files.extend(discover_codex_sessions(
+            session_id,
+            session_dir=codex_session_dir,
+            archived_dir=codex_archived_dir,
+        ))
     return files

@@ -1,6 +1,6 @@
 ---
 name: session-search
-description: Search past Claude Code and Pi conversations by topic, file, project, decision, tool use, skill use, subagent runs, questions, and File Mutations
+description: Search past Claude Code, Pi, and Codex conversations by topic, file, project, decision, tool use, skill use, subagent runs, questions, and File Mutations
 user_invocable: true
 arguments:
   - name: query
@@ -138,7 +138,7 @@ Generated artifacts are the normal evidence path:
 - `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, and capped result text.
 - `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
 
-These are more compact than raw JSONL at `~/.claude/projects/` or `~/.pi/agent/sessions/`. Prefer them as fallback when `inspect` is insufficient.
+These are more compact than raw JSONL at `~/.claude/projects/`, `~/.pi/agent/sessions/`, or Codex rollout files under `~/.codex/sessions/` and `~/.codex/archived_sessions/`. Prefer them as fallback when `inspect` is insufficient.
 
 ## When to use this skill
 

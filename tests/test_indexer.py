@@ -292,6 +292,36 @@ def test_pi_question_answer_recovered_into_fact_table(tmp_path, monkeypatch):
     assert row["option_count"] == 2
 
 
+def test_codex_index_persists_patch_mutation_and_subagent_request(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", "/tmp/no-codex-home")
+    fixture = os.path.join(FIXTURES, "codex_sample.jsonl")
+
+    result = indexer.index_source_transcript("codex", fixture, indexer.NO_SUMMARY_INDEX_OPTIONS)
+
+    conn = db.get_connection()
+    session_row = conn.execute(
+        "SELECT source, native_session_id, transcript_path, tool_log_path FROM sessions WHERE session_id=?",
+        (result.session_id,),
+    ).fetchone()
+    mutation = conn.execute(
+        "SELECT tool_name, tool, path FROM file_mutations WHERE session_id=?",
+        (result.session_id,),
+    ).fetchone()
+    run = conn.execute(
+        "SELECT requested_agent_type, call_tool, task_preview, match_confidence FROM subagent_runs WHERE parent_session_id=?",
+        (result.session_id,),
+    ).fetchone()
+    conn.close()
+
+    assert session_row["source"] == "codex"
+    assert session_row["native_session_id"] == "019codex-0000-7000-8000-000000000001"
+    assert session_row["transcript_path"] and os.path.exists(session_row["transcript_path"])
+    assert session_row["tool_log_path"] and os.path.exists(session_row["tool_log_path"])
+    assert tuple(mutation) == ("apply_patch", "apply_patch", "/Users/test/project/app.py")
+    assert tuple(run) == ("explorer", "spawn_agent", "Inspect parser edge cases", "request_only")
+
+
 def test_cli_backfill_options_select_pass():
     from cli import _backfill_options
 

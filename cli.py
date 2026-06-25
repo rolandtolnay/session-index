@@ -144,7 +144,7 @@ def _backfill_options(args: argparse.Namespace):
 
 
 def cmd_backfill(args: argparse.Namespace) -> None:
-    """Process JSONL files from Claude Code and/or Pi."""
+    """Process JSONL files from Claude Code, Pi, and/or Codex."""
     from indexer import (
         IndexStage,
         index_source_transcript,
@@ -158,6 +158,8 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             source,
             session_id=getattr(args, "session", None),
             pi_session_dir=getattr(args, "pi_session_dir", None),
+            codex_session_dir=getattr(args, "codex_session_dir", None),
+            codex_archived_dir=getattr(args, "codex_archived_dir", None),
         )
     except ValueError as e:
         print(str(e))
@@ -350,6 +352,8 @@ def _check_integrity(conn) -> dict:
     }
 
     projects_dir = os.path.expanduser("~/.claude/projects")
+    codex_session_dir = os.path.expanduser("~/.codex/sessions")
+    codex_archived_dir = os.path.expanduser("~/.codex/archived_sessions")
 
     def source_jsonl_exists(row) -> bool:
         source_path = row["source_path"] if "source_path" in row.keys() else None
@@ -357,8 +361,14 @@ def _check_integrity(conn) -> dict:
             return True
         sid = row["session_id"]
         native = row["native_session_id"] if "native_session_id" in row.keys() else sid
-        if (row["source"] if "source" in row.keys() else "claude") == "claude":
+        source = row["source"] if "source" in row.keys() else "claude"
+        if source == "claude":
             return bool(glob.glob(os.path.join(projects_dir, "*", f"{native}.jsonl")))
+        if source == "codex":
+            return bool(
+                glob.glob(os.path.join(codex_session_dir, "**", f"*{native}.jsonl"), recursive=True)
+                or glob.glob(os.path.join(codex_archived_dir, "**", f"*{native}.jsonl"), recursive=True)
+            )
         return False
 
     # Missing summaries
@@ -608,8 +618,10 @@ def main() -> None:
     sp_backfill = subparsers.add_parser("backfill", help="Process all JSONL files")
     sp_backfill.add_argument("--force", action="store_true", help="Re-process sessions already indexed (skip the skip-if-done check)")
     sp_backfill.add_argument("--prune", action="store_true", help="Delete noise sessions before processing")
-    sp_backfill.add_argument("--source", choices=("claude", "pi", "all"), default="all", help="Conversation source to process (default: all)")
+    sp_backfill.add_argument("--source", choices=("claude", "pi", "codex", "all"), default="all", help="Conversation source to process (default: all)")
     sp_backfill.add_argument("--pi-session-dir", help="Override Pi session directory")
+    sp_backfill.add_argument("--codex-session-dir", help="Override Codex active session directory")
+    sp_backfill.add_argument("--codex-archived-dir", help="Override Codex archived session directory")
     sp_backfill.add_argument("--project", help="Only process sessions for this project name")
     sp_backfill.add_argument("--session", help="Only process this specific session ID")
     sp_backfill.add_argument("--with-summary", action="store_true",

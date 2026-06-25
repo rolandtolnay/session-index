@@ -48,6 +48,26 @@ def test_pi_subagent_parallel_creates_one_fact_per_child_task():
     assert [fact.task_preview for fact in facts] == ["Map files", "Implement change"]
 
 
+def test_codex_spawn_agent_creates_requested_agent_fact():
+    facts = build_subagent_runs(
+        parent_session_id="codex:parent-1",
+        source="codex",
+        tool_calls=[ParsedToolCall(
+            tool_call_id="call-agent",
+            tool_name="spawn_agent",
+            arguments={"agent_type": "explorer", "message": "Inspect parser edge cases"},
+        )],
+        subagents=[],
+    )
+
+    assert len(facts) == 1
+    assert facts[0].requested_agent_type == "explorer"
+    assert facts[0].call_tool == "spawn_agent"
+    assert facts[0].call_tool_id == "call-agent"
+    assert facts[0].task_preview == "Inspect parser edge cases"
+    assert facts[0].match_confidence == "request_only"
+
+
 def test_pi_generic_child_artifacts_keep_parent_requested_names_when_matched():
     facts = build_subagent_runs(
         parent_session_id="pi:parent-1",
@@ -91,6 +111,8 @@ def test_management_tools_do_not_create_subagent_run_facts():
         tool_calls=[
             ParsedToolCall(tool_name="subagents_list", arguments={}),
             ParsedToolCall(tool_name="subagent_status", arguments={"id": "run"}),
+            ParsedToolCall(tool_name="wait_agent", arguments={"ids": ["run"]}),
+            ParsedToolCall(tool_name="close_agent", arguments={"id": "run"}),
         ],
         subagents=[],
     )

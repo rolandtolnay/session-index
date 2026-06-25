@@ -20,6 +20,10 @@ _Avoid_: Refresh, backfill, transcript generation
 The Session Index identifier for a session, including any provider namespace prefix required for uniqueness.
 _Avoid_: Native ID, raw provider ID
 
+Provider namespace examples:
+Claude sessions normally use the native session id directly; Pi uses `pi:<uuid>`;
+Codex uses `codex:<uuid>`.
+
 **Clean Transcript**:
 The generated markdown conversation artifact for a session, excluding detailed tool-call logs.
 _Avoid_: Raw transcript, source transcript
@@ -27,6 +31,11 @@ _Avoid_: Raw transcript, source transcript
 **Source Transcript**:
 The provider-owned raw session log consumed by Session Index.
 _Avoid_: Clean transcript, markdown transcript
+
+Codex Source Transcripts are the `rollout-*.jsonl` files under
+`~/.codex/sessions/YYYY/MM/DD/` and `~/.codex/archived_sessions/`; Codex
+metadata files such as `session_index.jsonl` and `state_5.sqlite` can enrich
+rows but are not Source Transcripts.
 
 **Tool Log**:
 The generated markdown artifact containing detailed tool-call records for a session.

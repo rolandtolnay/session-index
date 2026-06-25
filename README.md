@@ -1,17 +1,18 @@
 # session-index
 
-Automatic indexing, summarization, and search for Claude Code and Pi conversations.
+Automatic indexing, summarization, and search for Claude Code, Pi, and Codex conversations.
 
 ## What it does
 
 - **Claude Code hooks** — index metadata on Stop, summarize/write transcripts on SessionEnd, inject recent context on SessionStart
 - **Pi extension** — indexes Pi sessions after turns/shutdown and injects recent context before the first prompt in a session
-- **Unified DB** — stores both sources in `~/.session-index/sessions.db`
+- **Codex backfill** — indexes Codex rollout JSONL transcripts from active and archived session directories
+- **Unified DB** — stores all supported sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
 - **Skill Invocation audits** — normalizes slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads into the canonical `skill_invocations` table
 - **CLI** — `find`, `inspect`, `query`, backfill, status, and current-session lookup from the terminal
-- **Skill** — `session-search` skill for Claude Code and Pi
+- **Skill** — `session-search` skill for Claude Code, Pi, and Codex-indexed history
 
 ## Prerequisites
 
@@ -76,9 +77,25 @@ Source-specific deterministic backfill:
 ```bash
 uv run cli.py backfill --source claude
 uv run cli.py backfill --source pi
+uv run cli.py backfill --source codex
 ```
 
-Progress is per-session and idempotent — safe to interrupt and resume. Pi rows are stored with `pi:<uuid>` DB IDs.
+Progress is per-session and idempotent — safe to interrupt and resume. Pi rows are stored with `pi:<uuid>` DB IDs; Codex rows are stored with `codex:<uuid>` DB IDs.
+
+Codex defaults:
+
+```text
+~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+~/.codex/archived_sessions/rollout-*.jsonl
+```
+
+Override those roots when needed:
+
+```bash
+uv run cli.py backfill --source codex \
+  --codex-session-dir /path/to/sessions \
+  --codex-archived-dir /path/to/archived_sessions
+```
 
 To force-regenerate deterministic artifacts and fact tables, including historical Skill Invocations:
 
@@ -136,9 +153,9 @@ In Pi TUI, use `/current-session` to display the active Current Session metadata
 
 `current --json` uses Session Index terminology:
 
-- `session_id` — Canonical Session ID. Pi sessions use the `pi:<uuid>` namespace; Claude sessions use the native UUID.
+- `session_id` — Canonical Session ID. Pi sessions use the `pi:<uuid>` namespace, Codex sessions use `codex:<uuid>`, and Claude sessions use the native UUID.
 - `native_session_id` — provider-native session ID without Session Index namespacing.
-- `source` — provider source, currently `claude` or `pi`.
+- `source` — provider source, currently `claude`, `pi`, or `codex`.
 - `source_path` — raw provider Source Transcript path.
 - `transcript_path` — generated Clean Transcript Markdown artifact path.
 - `tool_log_path` — generated Tool Log Markdown artifact path.
@@ -153,7 +170,7 @@ The Session Index-owned runtime environment contract is:
 |----------|----------|---------|
 | `SESSION_INDEX_SESSION_ID` | yes | Canonical Session ID |
 | `SESSION_INDEX_NATIVE_SESSION_ID` | yes | Provider-native session ID |
-| `SESSION_INDEX_SOURCE` | yes | Provider source (`claude` or `pi`) |
+| `SESSION_INDEX_SOURCE` | yes | Provider source (`claude`, `pi`, or `codex`) |
 | `SESSION_INDEX_SOURCE_PATH` | yes | Raw provider Source Transcript path |
 | `SESSION_INDEX_LEAF_ID` | no | Optional Pi leaf metadata |
 
@@ -178,7 +195,7 @@ decisions, or discussions from another project. Do NOT read raw JSONL files.
 
 ## Important: raw session cleanup
 
-Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). Pi session files remain under `~/.pi/agent/sessions/` unless deleted. The session-index DB, cleaned transcripts, and generated tool logs persist independently, so indexed data survives raw-log cleanup/deletion. Cleaned transcripts intentionally omit detailed tool calls; use the `.tools.md` artifact when debugging commands, tool parameters, or returned results.
+Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). Pi session files remain under `~/.pi/agent/sessions/` unless deleted. Codex rollout JSONL files live under `~/.codex/sessions/` and `~/.codex/archived_sessions/`; `~/.codex/session_index.jsonl` and `~/.codex/state_5.sqlite` provide metadata but are not the Source Transcript. The session-index DB, cleaned transcripts, and generated tool logs persist independently, so indexed data survives raw-log cleanup/deletion. Cleaned transcripts intentionally omit detailed tool calls; use the `.tools.md` artifact when debugging commands, tool parameters, or returned results.
 
 ## CLI Commands
 
@@ -188,7 +205,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
 | `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |
 | `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with generated artifact metadata and scoped Clean Transcript, Tool Log, or Subagent Run Evidence Snippets |
-| `backfill [--source claude\|pi\|all] [--force] [--prune] [--project NAME] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries |
+| `backfill [--source claude\|pi\|codex\|all] [--force] [--prune] [--project NAME] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
 `find --mutated` is file conversation history by default: it returns one session-collapsed candidate per Canonical Session ID, with representative matching paths and related tool refs for drill-down. Use `find --mutated PATH --mutation-mode event` for exact File Mutation audit rows. Raw SQL over `file_mutations` remains available for custom aggregates and exact lists, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.
@@ -203,6 +220,9 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 - Logs: `~/.session-index/logs/session-index.log`
 - Claude source JSONL: `~/.claude/projects/{encoded_path}/{session_id}.jsonl`
 - Pi source JSONL: `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`
+- Codex source JSONL: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+- Codex archived source JSONL: `~/.codex/archived_sessions/rollout-*.jsonl`
+- Codex metadata: `~/.codex/session_index.jsonl`, `~/.codex/state_5.sqlite`
 
 ## Reset data
 

@@ -85,6 +85,21 @@ def test_resolve_pi_env_adds_canonical_prefix_and_strips_native_prefix(tmp_path,
     assert current.tool_log_path == str(tmp_path / "pi:019pi-session.tools.md")
 
 
+def test_resolve_codex_env_adds_canonical_prefix_and_strips_native_prefix(tmp_path, monkeypatch):
+    current = resolve_current_session(_env(
+        session_id="019codex-session",
+        native_session_id="codex:019codex-session",
+        source="codex",
+        source_path=str(tmp_path / "missing.jsonl"),
+    ))
+
+    assert current.session_id == "codex:019codex-session"
+    assert current.native_session_id == "019codex-session"
+    assert current.source == "codex"
+    assert current.transcript_path == str(tmp_path / "codex:019codex-session.md")
+    assert current.tool_log_path == str(tmp_path / "codex:019codex-session.tools.md")
+
+
 def test_resolve_claude_env_keeps_canonical_and_native_equal(tmp_path, monkeypatch):
     tool_log_path = tmp_path / "claude-session.tools.md"
     tool_log_path.write_text("tools")

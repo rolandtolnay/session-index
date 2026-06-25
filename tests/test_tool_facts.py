@@ -114,6 +114,28 @@ def test_edit_top_level_and_nested_paths_are_both_preserved_when_distinct():
     assert [r["path"] for r in rows] == ["src/top.py", "src/nested.py"]
 
 
+def test_codex_apply_patch_changes_produce_file_mutation_rows():
+    call = ParsedToolCall(
+        sequence=4,
+        tool_name="apply_patch",
+        arguments={
+            "changes": [
+                {"path": "src/app.py", "type": "update"},
+                {"path": "src/old.py", "type": "move", "move_path": "src/new.py"},
+            ],
+            "success": True,
+        },
+    )
+
+    rows = build_file_mutation_rows("codex:sess-1", "codex", [call])
+
+    assert [(r["tool_name"], r["tool"], r["path"]) for r in rows] == [
+        ("apply_patch", "apply_patch", "src/app.py"),
+        ("apply_patch", "apply_patch", "src/old.py"),
+        ("apply_patch", "apply_patch", "src/new.py"),
+    ]
+
+
 def test_wrapper_write_and_edit_mutations_use_wrapper_attribution_and_nested_tool_names():
     call = ParsedToolCall(
         scope="main",

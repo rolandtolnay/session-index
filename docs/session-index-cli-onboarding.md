@@ -28,7 +28,7 @@ There are four important things in Session Index.
 
 ### 1. Session
 
-A **session** is one past conversation with Claude Code or Pi.
+A **session** is one past conversation with Claude Code, Pi, or Codex.
 
 It has metadata like:
 
@@ -43,9 +43,10 @@ Example session ID:
 
 ```text
 pi:abc123...
+codex:019efb69...
 ```
 
-Pi sessions usually start with `pi:`.
+Pi sessions start with `pi:`. Codex sessions start with `codex:`.
 
 ### 2. Clean Transcript
 

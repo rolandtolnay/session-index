@@ -141,20 +141,21 @@ def _fail(detail: str) -> CurrentSessionError:
 
 
 def _normalize_identity(source: str, session_id: str, native_session_id: str) -> tuple[str, str]:
-    if source == "pi":
-        native = native_session_id.removeprefix("pi:")
-        canonical = session_id if session_id.startswith("pi:") else f"pi:{session_id}"
-        expected = f"pi:{native}"
+    if source in {"pi", "codex"}:
+        prefix = f"{source}:"
+        native = native_session_id.removeprefix(prefix)
+        canonical = session_id if session_id.startswith(prefix) else f"{prefix}{session_id}"
+        expected = f"{prefix}{native}"
         if canonical != expected:
             raise _fail(
                 "inconsistent SESSION_INDEX_SESSION_ID and "
-                "SESSION_INDEX_NATIVE_SESSION_ID for pi source"
+                f"SESSION_INDEX_NATIVE_SESSION_ID for {source} source"
             )
         return canonical, native
 
     if source == "claude":
-        if session_id.startswith("pi:") or native_session_id.startswith("pi:"):
-            raise _fail("inconsistent pi-prefixed ID for claude source")
+        if any(value.startswith(("pi:", "codex:")) for value in (session_id, native_session_id)):
+            raise _fail("inconsistent provider-prefixed ID for claude source")
         if session_id != native_session_id:
             raise _fail(
                 "inconsistent SESSION_INDEX_SESSION_ID and "

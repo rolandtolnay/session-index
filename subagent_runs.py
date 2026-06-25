@@ -43,6 +43,8 @@ _MANAGEMENT_TOOLS = {
     "subagent_inspect",
     "subagent_resume",
     "subagent_interrupt",
+    "wait_agent",
+    "close_agent",
 }
 
 _REQUEST_TOOLS = {
@@ -51,6 +53,7 @@ _REQUEST_TOOLS = {
     "subagent_run",
     "subagent_parallel",
     "subagent_chain",
+    "spawn_agent",
 }
 
 
@@ -111,7 +114,7 @@ def _expand_call(parent_session_id: str, source: str, call: ParsedToolCall) -> l
     if name in _MANAGEMENT_TOOLS or name not in _REQUEST_TOOLS:
         return []
 
-    if name in {"Agent", "subagent", "subagent_run"}:
+    if name in {"Agent", "subagent", "subagent_run", "spawn_agent"}:
         default = "Agent" if name == "Agent" else "subagent"
         return [
             _request_fact(

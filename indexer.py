@@ -1,10 +1,11 @@
-"""Shared staged session indexing pipeline for Claude Code and Pi."""
+"""Shared staged session indexing pipeline for Claude Code, Pi, and Codex."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
 
+from codex_parser import parse_codex_jsonl
 from parser import ParsedSession, ParsedToolCall, clean_user_messages, parse_jsonl as parse_claude_jsonl
 from pi_parser import parse_pi_jsonl, discover_pi_subagents, parse_pi_subagent_jsonl
 from subagent_parser import discover_subagents, parse_subagent_jsonl, ParsedSubagent, SubagentInfo
@@ -47,7 +48,7 @@ class IndexResult:
     stages: frozenset[IndexStage] = field(default_factory=frozenset)
 
 
-SUPPORTED_SOURCES = {"claude", "pi"}
+SUPPORTED_SOURCES = {"claude", "pi", "codex"}
 
 _METADATA_FIELDS = {
     "source",
@@ -89,6 +90,8 @@ def parse_session_file(source: str, path: str) -> ParsedSession:
     source = normalize_source(source)
     if source == "pi":
         return parse_pi_jsonl(path)
+    if source == "codex":
+        return parse_codex_jsonl(path)
     return parse_claude_jsonl(path)
 
 
@@ -96,6 +99,8 @@ def discover_session_subagents(source: str, path: str) -> list[SubagentInfo]:
     source = normalize_source(source)
     if source == "pi":
         return discover_pi_subagents(path)
+    if source == "codex":
+        return []
     return discover_subagents(path)
 
 
@@ -103,6 +108,8 @@ def parse_session_subagent(source: str, info: SubagentInfo) -> ParsedSubagent:
     source = normalize_source(source)
     if source == "pi":
         return parse_pi_subagent_jsonl(info.jsonl_path, info.agent_id, info.agent_type)
+    if source == "codex":
+        return ParsedSubagent(agent_id=info.agent_id, agent_type=info.agent_type, source_path=info.jsonl_path)
     return parse_subagent_jsonl(info.jsonl_path, info.meta_path)
 
 
@@ -130,7 +137,12 @@ def upsert_parsed_session(
     from db import upsert_session
 
     source = normalize_source(source)
-    native_session_id = session.session_id.split(":", 1)[1] if source == "pi" and session.session_id.startswith("pi:") else session.session_id
+    source_prefix = f"{source}:"
+    native_session_id = (
+        session.session_id.split(":", 1)[1]
+        if session.session_id.startswith(source_prefix)
+        else session.session_id
+    )
     effective_files = files_touched if files_touched is not None else session.files_touched
 
     upsert_session(
