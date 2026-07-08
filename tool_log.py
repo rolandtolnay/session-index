@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,8 +17,72 @@ from parser import ParsedToolCall
 from transcript import TRANSCRIPT_DIR
 
 TOOL_RESULT_CHAR_LIMIT = 20_000
+READ_ONLY_RESULT_CHAR_LIMIT = 2_000
 _HALF_RESULT_LIMIT = TOOL_RESULT_CHAR_LIMIT // 2
+_HALF_READ_ONLY_RESULT_LIMIT = READ_ONLY_RESULT_CHAR_LIMIT // 2
 _TOOL_HEADING_RE = re.compile(r"^## (\d+) — .+ — .+ — .+$")
+_READ_ONLY_TOOLS = {
+    "read",
+    "grep",
+    "glob",
+    "ls",
+    "find",
+    "search",
+    "open",
+    "screenshot",
+    "view_image",
+}
+_AUDIT_RESULT_TOOLS = {
+    "write",
+    "edit",
+    "apply_patch",
+    "update",
+    "question",
+    "askuserquestion",
+}
+_SHELL_READ_COMMANDS = {
+    "awk",
+    "cat",
+    "fd",
+    "find",
+    "grep",
+    "head",
+    "ls",
+    "nl",
+    "pwd",
+    "rg",
+    "sed",
+    "tail",
+    "tree",
+    "wc",
+}
+_GIT_READ_SUBCOMMANDS = {
+    "branch",
+    "diff",
+    "grep",
+    "log",
+    "ls-files",
+    "rev-parse",
+    "show",
+    "status",
+}
+_SHELL_WRITE_MARKERS = {">", ">>", "2>", "2>>", "&>", "| tee "}
+_SHELL_MUTATING_COMMANDS = {
+    "apply_patch",
+    "cp",
+    "dd",
+    "edit",
+    "mv",
+    "perl",
+    "python",
+    "python3",
+    "rm",
+    "ruby",
+    "tee",
+    "touch",
+    "truncate",
+    "write",
+}
 
 
 @dataclass(frozen=True)
@@ -57,6 +122,77 @@ def _truncate_result(text: str) -> str:
         + f"\n\n[truncated: showing first {_HALF_RESULT_LIMIT} and last {_HALF_RESULT_LIMIT} of {total} characters]\n\n"
         + text[-_HALF_RESULT_LIMIT:]
     )
+
+
+def _compact_read_only_result(text: str) -> str:
+    if len(text) <= READ_ONLY_RESULT_CHAR_LIMIT:
+        return text
+    total = len(text)
+    omitted = total - READ_ONLY_RESULT_CHAR_LIMIT
+    return (
+        text[:_HALF_READ_ONLY_RESULT_LIMIT]
+        + f"\n\n[compact read-only result: showing first {_HALF_READ_ONLY_RESULT_LIMIT} "
+        + f"and last {_HALF_READ_ONLY_RESULT_LIMIT} of {total} characters; {omitted} omitted]\n\n"
+        + text[-_HALF_READ_ONLY_RESULT_LIMIT:]
+    )
+
+
+def _normalize_tool_name(name: str) -> str:
+    return (name or "").rsplit(".", 1)[-1].lower()
+
+
+def _shell_words(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.split()
+
+
+def _looks_like_read_only_shell(command: str) -> bool:
+    command = (command or "").strip()
+    if not command:
+        return False
+    lowered = command.lower()
+    if any(marker in lowered for marker in _SHELL_WRITE_MARKERS):
+        return False
+
+    words = _shell_words(command)
+    if not words:
+        return False
+    if any(os.path.basename(word).lower() in _SHELL_MUTATING_COMMANDS for word in words):
+        return False
+
+    first = os.path.basename(words[0]).lower()
+    if first == "sed" and "-i" in words:
+        return False
+    if first == "find" and "-delete" in words:
+        return False
+    if first == "git":
+        return len(words) > 1 and words[1].lower() in _GIT_READ_SUBCOMMANDS
+    return first in _SHELL_READ_COMMANDS
+
+
+def _is_read_only_call(call: ParsedToolCall) -> bool:
+    tool = _normalize_tool_name(call.tool_name)
+    if tool in _READ_ONLY_TOOLS:
+        return True
+    if tool in _AUDIT_RESULT_TOOLS:
+        return False
+
+    args = call.arguments if isinstance(call.arguments, dict) else {}
+    command = args.get("command") or args.get("cmd")
+    if tool in {"bash", "exec_command", "shell"} and isinstance(command, str):
+        return _looks_like_read_only_shell(command)
+    return False
+
+
+def _format_result(call: ParsedToolCall) -> str:
+    text = _stringify_result(call.result)
+    if not text:
+        return "[empty result]"
+    if not call.is_error and _is_read_only_call(call):
+        return _compact_read_only_result(text)
+    return _truncate_result(text)
 
 
 def _fence_text(text: str) -> str:
@@ -173,7 +309,7 @@ def write_tool_log(
             "",
             "Result:",
             "```text",
-            _fence_text(_truncate_result(_stringify_result(call.result)) or "[empty result]"),
+            _fence_text(_format_result(call)),
             "```",
             "",
         ])

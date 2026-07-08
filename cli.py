@@ -172,16 +172,10 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     conn = get_connection()
     init_db(conn)
 
-    # Prune noise sessions before processing
     if args.prune:
-        prune_rows = conn.execute(
-            "SELECT session_id FROM sessions WHERE summary IS NOT NULL "
-            "AND (summary LIKE '%no coding%' OR summary LIKE '%no changes%' "
-            "OR summary LIKE '%no active%')"
-        ).fetchall()
-        pruned = delete_sessions(conn, [row[0] for row in prune_rows])
-        if pruned:
-            print(f"Pruned {pruned} noise session(s)")
+        conn.close()
+        print("backfill --prune is disabled; run `prune SESSION_ID...` for audit-first confirmed deletion.", file=sys.stderr)
+        raise SystemExit(2)
 
     options = _backfill_options(args)
 
@@ -334,6 +328,443 @@ def cmd_query(args: argparse.Namespace) -> None:
             f"or add LIMIT / aggregation to the query]",
             file=sys.stderr,
         )
+
+
+# ── Footprint / Prune ───────────────────────────────────────────────────────
+
+_LOW_VALUE_SUMMARY_MARKERS = (
+    "no active",
+    "no changes",
+    "no code",
+    "no coding",
+    "no files",
+    "no implementation",
+    "no substantive",
+    "did not make changes",
+)
+_HIGH_VALUE_FACT_TABLES = ("file_mutations", "skill_invocations", "subagent_runs", "question_answers")
+
+
+def _split_artifact_paths(value: str | None) -> list[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def _format_bytes(size: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB")
+    value = float(max(size, 0))
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{int(size)} B"
+
+
+def _path_size(path: str) -> int:
+    if not path or not os.path.exists(path):
+        return 0
+    if os.path.isfile(path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            fpath = os.path.join(root, name)
+            try:
+                total += os.path.getsize(fpath)
+            except OSError:
+                pass
+    return total
+
+
+def _is_generated_artifact_path(path: str) -> bool:
+    if not path:
+        return False
+    try:
+        root = os.path.realpath(TRANSCRIPT_DIR)
+        candidate = os.path.realpath(os.path.expanduser(path))
+        return os.path.commonpath([root, candidate]) == root
+    except (OSError, ValueError):
+        return False
+
+
+def _session_rows_by_id(conn, session_ids: list[str]) -> dict[str, dict]:
+    rows: dict[str, dict] = {}
+    if not session_ids:
+        return rows
+    placeholders = ", ".join("?" for _ in session_ids)
+    cursor = conn.execute(f"SELECT * FROM sessions WHERE session_id IN ({placeholders})", session_ids)
+    for row in cursor.fetchall():
+        rows[row["session_id"]] = dict(row)
+    return rows
+
+
+def _fact_counts(conn, session_id: str) -> dict[str, int]:
+    counts = {
+        "tool_calls": conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (session_id,)).fetchone()[0],
+        "file_mutations": conn.execute("SELECT COUNT(*) FROM file_mutations WHERE session_id=?", (session_id,)).fetchone()[0],
+        "skill_invocations": conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE session_id=?", (session_id,)).fetchone()[0],
+        "question_answers": conn.execute("SELECT COUNT(*) FROM question_answers WHERE session_id=?", (session_id,)).fetchone()[0],
+        "subagent_runs": conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id=?", (session_id,)).fetchone()[0],
+    }
+    return counts
+
+
+def _other_session_references_path(conn, path: str, session_id: str) -> bool:
+    if not path:
+        return False
+    rows = conn.execute(
+        """
+        SELECT session_id, transcript_path, tool_log_path, subagent_transcripts
+        FROM sessions
+        WHERE session_id != ?
+        """,
+        (session_id,),
+    ).fetchall()
+    for row in rows:
+        if path in {row["transcript_path"], row["tool_log_path"]}:
+            return True
+        if path in _split_artifact_paths(row["subagent_transcripts"]):
+            return True
+
+    row = conn.execute(
+        "SELECT 1 FROM subagent_runs WHERE parent_session_id != ? AND transcript_path = ? LIMIT 1",
+        (session_id, path),
+    ).fetchone()
+    return row is not None
+
+
+def _other_session_references_inside_dir(conn, path: str, session_id: str) -> bool:
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        root = os.path.realpath(path)
+    except OSError:
+        return False
+
+    rows = conn.execute(
+        """
+        SELECT session_id, transcript_path, tool_log_path, subagent_transcripts
+        FROM sessions
+        WHERE session_id != ?
+        """,
+        (session_id,),
+    ).fetchall()
+    candidates: list[str] = []
+    for row in rows:
+        candidates.extend([row["transcript_path"], row["tool_log_path"]])
+        candidates.extend(_split_artifact_paths(row["subagent_transcripts"]))
+    candidates.extend(
+        row["transcript_path"]
+        for row in conn.execute("SELECT transcript_path FROM subagent_runs WHERE parent_session_id != ?", (session_id,))
+        if row["transcript_path"]
+    )
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            if os.path.commonpath([root, os.path.realpath(candidate)]) == root:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _artifact_record(conn, session_id: str, kind: str, path: str) -> dict:
+    exists = bool(path and os.path.exists(path))
+    owned = _is_generated_artifact_path(path)
+    shared = False
+    if owned:
+        shared = _other_session_references_inside_dir(conn, path, session_id) if os.path.isdir(path) else _other_session_references_path(conn, path, session_id)
+    return {
+        "kind": kind,
+        "path": path,
+        "exists": exists,
+        "bytes": _path_size(path),
+        "owned_generated_artifact": owned,
+        "shared_with_other_session": shared,
+        "deletable": bool(exists and owned and not shared),
+    }
+
+
+def _session_artifacts(conn, session: dict) -> list[dict]:
+    session_id = session["session_id"]
+    candidates: list[tuple[str, str]] = [
+        ("clean_transcript", session.get("transcript_path") or ""),
+        ("tool_log", session.get("tool_log_path") or ""),
+    ]
+    candidates.extend(("subagent_transcript", path) for path in _split_artifact_paths(session.get("subagent_transcripts")))
+    candidates.extend(
+        ("subagent_transcript", row["transcript_path"])
+        for row in conn.execute(
+            "SELECT transcript_path FROM subagent_runs WHERE parent_session_id=? AND transcript_path IS NOT NULL",
+            (session_id,),
+        )
+    )
+    candidates.extend([
+        ("deterministic_clean_transcript", os.path.join(TRANSCRIPT_DIR, f"{session_id}.md")),
+        ("deterministic_tool_log", os.path.join(TRANSCRIPT_DIR, f"{session_id}.tools.md")),
+        ("deterministic_subagent_dir", os.path.join(TRANSCRIPT_DIR, session_id)),
+    ])
+
+    records: list[dict] = []
+    seen: set[str] = set()
+    for kind, path in candidates:
+        if not path:
+            continue
+        key = os.path.realpath(os.path.expanduser(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(_artifact_record(conn, session_id, kind, path))
+    return records
+
+
+def _prune_decision(session: dict, facts: dict[str, int]) -> dict:
+    blocking: list[str] = []
+    summary = (session.get("summary") or "").strip().lower()
+    if not summary:
+        blocking.append("missing_summary")
+    elif not any(marker in summary for marker in _LOW_VALUE_SUMMARY_MARKERS):
+        blocking.append("no_low_value_summary_signal")
+    for table in _HIGH_VALUE_FACT_TABLES:
+        if facts.get(table, 0):
+            blocking.append(f"{table}_present")
+    if (session.get("files_touched") or "").strip():
+        blocking.append("files_touched_present")
+
+    eligible = not blocking
+    return {
+        "eligible": eligible,
+        "decision": "delete_confirmable" if eligible else "keep",
+        "reason": "low_value_summary_with_no_durable_facts" if eligible else "uncertain_or_high_value",
+        "blocking": blocking,
+    }
+
+
+def _session_footprint(conn, session: dict) -> dict:
+    facts = _fact_counts(conn, session["session_id"])
+    artifacts = _session_artifacts(conn, session)
+    source_path = session.get("source_path") or ""
+    return {
+        "session_id": session["session_id"],
+        "source": session.get("source"),
+        "project": session.get("project"),
+        "started_at": session.get("started_at"),
+        "summary_preview": (session.get("summary") or "")[:160],
+        "artifact_bytes": sum(item["bytes"] for item in artifacts if item["owned_generated_artifact"]),
+        "artifacts": artifacts,
+        "facts": facts,
+        "source_jsonl": {"path": source_path or None, "exists": bool(source_path and os.path.exists(source_path)), "retained": True},
+        "prune": _prune_decision(session, facts),
+    }
+
+
+def build_footprint_audit(
+    conn,
+    *,
+    session_ids: list[str] | None = None,
+    project: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 20,
+) -> dict:
+    session_ids = session_ids or []
+    missing = []
+    if session_ids:
+        rows_by_id = _session_rows_by_id(conn, session_ids)
+        rows = []
+        for session_id in session_ids:
+            row = rows_by_id.get(session_id)
+            if row:
+                rows.append(row)
+            else:
+                missing.append(session_id)
+    else:
+        params: dict[str, object] = {"limit": max(1, limit)}
+        clauses: list[str] = []
+        if project:
+            clauses.append("project LIKE :project")
+            params["project"] = f"{project}%"
+        if since:
+            clauses.append("started_at >= :since")
+            params["since"] = since
+        if until:
+            if len(until) == 10:
+                until = f"{until}T23:59:59.999999"
+            clauses.append("started_at <= :until")
+            params["until"] = until
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"SELECT * FROM sessions {where} ORDER BY started_at DESC LIMIT :limit",
+                params,
+            ).fetchall()
+        ]
+
+    sessions = [_session_footprint(conn, row) for row in rows]
+    total_bytes = sum(item["artifact_bytes"] for item in sessions)
+    return {
+        "generated_artifacts": {
+            "session_count": len(sessions),
+            "total_bytes": total_bytes,
+            "total_human": _format_bytes(total_bytes),
+        },
+        "missing_sessions": missing,
+        "sessions": sessions,
+    }
+
+
+def _print_footprint_audit(audit: dict) -> None:
+    total = audit["generated_artifacts"]
+    print(f"Generated artifacts: {total['total_human']} across {total['session_count']} session(s)")
+    if audit["missing_sessions"]:
+        print(f"Missing sessions: {', '.join(audit['missing_sessions'])}")
+    for session in audit["sessions"]:
+        prune = session["prune"]
+        print(
+            f"{session['session_id']}: {_format_bytes(session['artifact_bytes'])} "
+            f"{prune['decision']} ({prune['reason']})"
+        )
+        for artifact in session["artifacts"]:
+            if artifact["exists"] or artifact["path"]:
+                flags = []
+                if not artifact["owned_generated_artifact"]:
+                    flags.append("not-owned")
+                if artifact["shared_with_other_session"]:
+                    flags.append("shared")
+                if not artifact["exists"]:
+                    flags.append("missing")
+                suffix = f" [{' '.join(flags)}]" if flags else ""
+                print(f"  {artifact['kind']}: {_format_bytes(artifact['bytes'])} {artifact['path']}{suffix}")
+        if session["source_jsonl"]["path"]:
+            print(f"  source_jsonl retained: {session['source_jsonl']['path']}")
+        if prune["blocking"]:
+            print(f"  keep blockers: {', '.join(prune['blocking'])}")
+
+
+def add_footprint_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--session", action="append", help="Audit one exact Canonical Session ID; repeatable")
+    parser.add_argument("--project", help="Filter by project name prefix")
+    parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
+    parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
+    parser.add_argument("--limit", type=int, default=20, help="Maximum sessions to audit when --session is not used")
+    parser.add_argument("--json", action="store_true", help="Output audit as JSON")
+
+
+def cmd_footprint(args: argparse.Namespace) -> None:
+    if not os.path.exists(DB_PATH):
+        print("No database found. Run `backfill` to create one.")
+        return
+    conn = get_connection()
+    try:
+        init_db(conn)
+        audit = build_footprint_audit(
+            conn,
+            session_ids=args.session or [],
+            project=args.project,
+            since=args.since,
+            until=args.until,
+            limit=args.limit,
+        )
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps(audit, default=str, sort_keys=True))
+    else:
+        _print_footprint_audit(audit)
+
+
+def _delete_owned_generated_artifacts(audit: dict) -> dict:
+    files: list[str] = []
+    dirs: list[str] = []
+    skipped: list[str] = []
+    for session in audit["sessions"]:
+        for artifact in session["artifacts"]:
+            path = artifact["path"]
+            if not artifact["exists"]:
+                continue
+            if not artifact["deletable"]:
+                skipped.append(path)
+                continue
+            if os.path.isdir(path):
+                dirs.append(path)
+            else:
+                files.append(path)
+
+    deleted: list[str] = []
+    for path in sorted(set(files), key=len, reverse=True):
+        try:
+            os.remove(path)
+            deleted.append(path)
+        except OSError:
+            skipped.append(path)
+    for path in sorted(set(dirs), key=len, reverse=True):
+        try:
+            shutil.rmtree(path)
+            deleted.append(path)
+        except OSError:
+            skipped.append(path)
+    return {"deleted_artifacts": deleted, "skipped_artifacts": sorted(set(skipped))}
+
+
+def cmd_prune(args: argparse.Namespace) -> None:
+    if not os.path.exists(DB_PATH):
+        print("No database found. Run `backfill` to create one.")
+        return
+
+    session_ids = list(dict.fromkeys(args.sessions))
+    conn = get_connection()
+    try:
+        init_db(conn)
+        audit = build_footprint_audit(conn, session_ids=session_ids)
+        blocked = [
+            session["session_id"]
+            for session in audit["sessions"]
+            if not session["prune"]["eligible"]
+        ]
+        if args.json and not args.confirm:
+            print(json.dumps({"dry_run": True, "audit": audit}, default=str, sort_keys=True))
+            return
+        if not args.json:
+            _print_footprint_audit(audit)
+            if not args.confirm:
+                print("\nDry run only. Rerun with --confirm and the same explicit session ID(s) to delete eligible sessions.")
+                return
+        else:
+            if not args.confirm:
+                return
+
+        if audit["missing_sessions"] or blocked:
+            payload = {
+                "deleted": False,
+                "missing_sessions": audit["missing_sessions"],
+                "blocked_sessions": blocked,
+                "audit": audit,
+            }
+            if args.json:
+                print(json.dumps(payload, default=str, sort_keys=True))
+            else:
+                if audit["missing_sessions"]:
+                    print(f"Cannot prune missing session(s): {', '.join(audit['missing_sessions'])}", file=sys.stderr)
+                if blocked:
+                    print(f"Cannot prune session(s) classified keep: {', '.join(blocked)}", file=sys.stderr)
+            raise SystemExit(2)
+
+        deletion = _delete_owned_generated_artifacts(audit)
+        deleted_rows = delete_sessions(conn, session_ids, commit=True)
+        payload = {"deleted": True, "deleted_sessions": deleted_rows, "artifact_deletion": deletion, "audit": audit}
+        if args.json:
+            print(json.dumps(payload, default=str, sort_keys=True))
+        else:
+            print(f"\nDeleted {deleted_rows} session(s) and {len(deletion['deleted_artifacts'])} generated artifact path(s).")
+            if deletion["skipped_artifacts"]:
+                print(f"Skipped {len(deletion['skipped_artifacts'])} artifact path(s) that were missing, shared, or outside generated storage.")
+    finally:
+        conn.close()
 
 
 # ── Status / Doctor ──────────────────────────────────────────────────────────
@@ -640,6 +1071,29 @@ def main() -> None:
     )
     add_query_arguments(sp_query)
     sp_query.set_defaults(func=cmd_query)
+
+    # footprint
+    sp_footprint = subparsers.add_parser(
+        "footprint",
+        help="Audit generated artifact disk usage and prune eligibility",
+        description="Audit Session Index generated artifacts without deleting anything.",
+    )
+    add_footprint_arguments(sp_footprint)
+    sp_footprint.set_defaults(func=cmd_footprint)
+
+    # prune
+    sp_prune = subparsers.add_parser(
+        "prune",
+        help="Audit-first deletion for explicitly confirmed low-value sessions",
+        description=(
+            "Dry-run by default. Deletes only explicit session IDs classified as low-value "
+            "and only when --confirm is supplied. Source JSONL is never deleted."
+        ),
+    )
+    sp_prune.add_argument("sessions", nargs="+", help="Exact Canonical Session ID(s) to audit/prune")
+    sp_prune.add_argument("--confirm", action="store_true", help="Delete eligible audited session IDs and owned generated artifacts")
+    sp_prune.add_argument("--json", action="store_true", help="Output audit/deletion result as JSON")
+    sp_prune.set_defaults(func=cmd_prune)
 
     # status
     sp_status = subparsers.add_parser("status", help="Index statistics and integrity check")

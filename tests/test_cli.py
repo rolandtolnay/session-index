@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import cli
 import db
-from cli import _check_integrity, cmd_find, cmd_inspect, cmd_query
+from cli import _check_integrity, cmd_find, cmd_footprint, cmd_inspect, cmd_prune, cmd_query
 from db import init_db, upsert_session
 from tests.evidence_helpers import seed_evidence_graph
 
@@ -216,3 +216,207 @@ def test_cmd_query_rejects_write(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         cmd_query(argparse.Namespace(sql="DELETE FROM sessions", json=False, limit=50, schema=False))
     assert "Only SELECT" in capsys.readouterr().err
+
+
+# ── footprint / prune ─────────────────────────────────────────────────────
+
+
+def _isolate_artifact_storage(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "TRANSCRIPT_DIR", str(tmp_path))
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+
+
+def test_cmd_footprint_reports_generated_artifact_size_and_keep_blockers(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    _isolate_artifact_storage(tmp_path, monkeypatch)
+    transcript = tmp_path / "pi:keep.md"
+    tool_log = tmp_path / "pi:keep.tools.md"
+    transcript.write_text("transcript")
+    tool_log.write_text("tool log")
+
+    conn = db.get_connection()
+    init_db(conn)
+    upsert_session(
+        conn,
+        session_id="pi:keep",
+        source="pi",
+        summary="No changes were made, but the session discussed an important decision.",
+        files_touched="app.py",
+        transcript_path=str(transcript),
+        tool_log_path=str(tool_log),
+    )
+    db.replace_file_mutations(conn, "pi:keep", [{
+        "session_id": "pi:keep",
+        "source": "pi",
+        "scope": "main",
+        "sequence": 1,
+        "timestamp": None,
+        "tool_name": "edit",
+        "tool": "edit",
+        "path": "app.py",
+    }])
+    conn.close()
+
+    cmd_footprint(argparse.Namespace(session=["pi:keep"], project=None, since=None, until=None, limit=20, json=True))
+    data = json.loads(capsys.readouterr().out)
+
+    session = data["sessions"][0]
+    assert session["artifact_bytes"] == len("transcript") + len("tool log")
+    assert session["prune"]["eligible"] is False
+    assert "file_mutations_present" in session["prune"]["blocking"]
+    assert "files_touched_present" in session["prune"]["blocking"]
+
+
+def test_cmd_prune_dry_run_then_confirm_deletes_only_owned_generated_artifacts_and_facts(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    _isolate_artifact_storage(tmp_path, monkeypatch)
+    source_jsonl = tmp_path / "source.jsonl"
+    source_jsonl.write_text("{}\n")
+    transcript = tmp_path / "pi:low.md"
+    tool_log = tmp_path / "pi:low.tools.md"
+    subdir = tmp_path / "pi:low"
+    subagent = subdir / "agent-child.md"
+    unrelated = tmp_path / "pi:other.md"
+    transcript.write_text("low transcript")
+    tool_log.write_text("low tool log")
+    subdir.mkdir()
+    subagent.write_text("subagent")
+    unrelated.write_text("other transcript")
+
+    conn = db.get_connection()
+    init_db(conn)
+    upsert_session(
+        conn,
+        session_id="pi:low",
+        source="pi",
+        source_path=str(source_jsonl),
+        summary="No coding or changes; no active work.",
+        transcript_path=str(transcript),
+        tool_log_path=str(tool_log),
+        subagent_transcripts=str(subagent),
+    )
+    db.replace_tool_calls(conn, "pi:low", [{
+        "session_id": "pi:low",
+        "source": "pi",
+        "scope": "main",
+        "sequence": 1,
+        "timestamp": None,
+        "tool_name": "read",
+        "tool": "read",
+        "is_error": 0,
+    }])
+    db.replace_subagent_runs(conn, "pi:low", [])
+    upsert_session(
+        conn,
+        session_id="pi:other",
+        source="pi",
+        summary="Implemented useful work.",
+        transcript_path=str(unrelated),
+    )
+    conn.close()
+
+    cmd_prune(argparse.Namespace(sessions=["pi:low"], confirm=False, json=True))
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["dry_run"] is True
+    assert dry_run["audit"]["sessions"][0]["prune"]["eligible"] is True
+    assert transcript.exists()
+    assert tool_log.exists()
+    assert subagent.exists()
+    assert unrelated.exists()
+    assert source_jsonl.exists()
+
+    cmd_prune(argparse.Namespace(sessions=["pi:low"], confirm=True, json=True))
+    confirmed = json.loads(capsys.readouterr().out)
+
+    assert confirmed["deleted"] is True
+    assert confirmed["deleted_sessions"] == 1
+    assert not transcript.exists()
+    assert not tool_log.exists()
+    assert not subdir.exists()
+    assert unrelated.exists()
+    assert source_jsonl.exists()
+
+    conn = db.get_connection()
+    assert conn.execute("SELECT 1 FROM sessions WHERE session_id='pi:low'").fetchone() is None
+    assert conn.execute("SELECT 1 FROM sessions WHERE session_id='pi:other'").fetchone() is not None
+    assert conn.execute("SELECT COUNT(*) FROM tool_calls WHERE session_id='pi:low'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_cmd_prune_confirm_blocks_uncertain_or_high_value_sessions(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    _isolate_artifact_storage(tmp_path, monkeypatch)
+    transcript = tmp_path / "pi:block.md"
+    transcript.write_text("important")
+
+    conn = db.get_connection()
+    init_db(conn)
+    upsert_session(
+        conn,
+        session_id="pi:block",
+        source="pi",
+        summary="No changes were made.",
+        transcript_path=str(transcript),
+    )
+    db.replace_skill_invocations(conn, "pi:block", [{
+        "session_id": "pi:block",
+        "source": "pi",
+        "sequence": 1,
+        "timestamp": None,
+        "skill_name": "review",
+        "invocation_preview": None,
+        "arguments": None,
+        "transcript_message_index": None,
+        "tool_sequence": None,
+        "child_index": None,
+        "subagent_transcript_path": None,
+    }])
+    conn.close()
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_prune(argparse.Namespace(sessions=["pi:block"], confirm=True, json=True))
+
+    assert exc.value.code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["deleted"] is False
+    assert payload["blocked_sessions"] == ["pi:block"]
+    assert transcript.exists()
+
+    conn = db.get_connection()
+    assert conn.execute("SELECT 1 FROM sessions WHERE session_id='pi:block'").fetchone() is not None
+    assert conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE session_id='pi:block'").fetchone()[0] == 1
+    conn.close()
+
+
+def test_cmd_prune_confirm_treats_missing_generated_artifacts_as_already_absent(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    _isolate_artifact_storage(tmp_path, monkeypatch)
+    source_jsonl = tmp_path / "source.jsonl"
+    source_jsonl.write_text("{}\n")
+    missing_transcript = tmp_path / "pi:missing.md"
+    missing_tool_log = tmp_path / "pi:missing.tools.md"
+
+    conn = db.get_connection()
+    init_db(conn)
+    upsert_session(
+        conn,
+        session_id="pi:missing",
+        source="pi",
+        source_path=str(source_jsonl),
+        summary="No coding and no changes.",
+        transcript_path=str(missing_transcript),
+        tool_log_path=str(missing_tool_log),
+    )
+    conn.close()
+
+    cmd_prune(argparse.Namespace(sessions=["pi:missing"], confirm=True, json=True))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["deleted"] is True
+    artifacts = payload["audit"]["sessions"][0]["artifacts"]
+    assert any(item["path"] == str(missing_transcript) and item["exists"] is False for item in artifacts)
+    assert source_jsonl.exists()
+
+    conn = db.get_connection()
+    assert conn.execute("SELECT 1 FROM sessions WHERE session_id='pi:missing'").fetchone() is None
+    conn.close()

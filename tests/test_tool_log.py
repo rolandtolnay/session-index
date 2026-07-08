@@ -53,6 +53,60 @@ def test_write_tool_log_truncates_large_result(tmp_path, monkeypatch):
     assert "middle" not in content
 
 
+def test_write_tool_log_compacts_huge_read_only_result(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    result = "a" * 5_000 + "middle" + "z" * 5_000
+    calls = [ParsedToolCall(
+        sequence=1,
+        tool_name="Read",
+        arguments={"file_path": "large.md"},
+        result=result,
+    )]
+
+    path = write_tool_log("session-1", calls)
+    content = open(path).read()
+
+    assert "[compact read-only result: showing first 1000 and last 1000 of 10006 characters; 8006 omitted]" in content
+    assert '"file_path": "large.md"' in content
+    assert "middle" not in content
+    assert len(content) < 3_000
+
+
+def test_write_tool_log_compacts_read_only_shell_command_result(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    result = "line\n" * 3_000
+    calls = [ParsedToolCall(
+        sequence=1,
+        tool_name="functions.exec_command",
+        arguments={"cmd": "sed -n '1,240p' indexer.py"},
+        result=result,
+    )]
+
+    path = write_tool_log("session-1", calls)
+    content = open(path).read()
+
+    assert "[compact read-only result:" in content
+    assert len(content) < 3_500
+
+
+def test_write_tool_log_keeps_mutation_result_on_larger_audit_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    result = "a" * 10_500 + "middle" + "z" * 10_500
+    calls = [ParsedToolCall(
+        sequence=1,
+        tool_name="Edit",
+        arguments={"file_path": "app.py", "old_string": "a", "new_string": "b"},
+        result=result,
+    )]
+
+    path = write_tool_log("session-1", calls)
+    content = open(path).read()
+
+    assert "[compact read-only result:" not in content
+    assert "[truncated: showing first 10000 and last 10000 of 21006 characters]" in content
+    assert '"file_path": "app.py"' in content
+
+
 def test_extract_tool_log_section_returns_exact_section_with_locator(tmp_path, monkeypatch):
     monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
     calls = [

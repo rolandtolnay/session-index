@@ -18,7 +18,9 @@ Use Session Index to move from a user’s vague reference to past work into scop
 2. Use `query` for counts, rankings, aggregates, custom joins, and audits over structured fact tables.
 3. Use `find` for compact Evidence Find candidates when you need likely sessions/events and Inspection References.
 4. Use `inspect` on selected refs copied unchanged from `find` or constructed from SQL rows.
-5. Prefer generated Clean Transcripts, Tool Logs, and Subagent Run transcripts. Do not read raw JSONL unless generated artifacts are insufficient.
+5. Use `footprint` to audit generated artifact disk usage and prune eligibility.
+6. Use `prune` only for explicit low-value session IDs after reviewing dry-run output.
+7. Prefer generated Clean Transcripts, Tool Logs, and Subagent Run transcripts. Do not read raw JSONL unless generated artifacts are insufficient.
 
 Most lookup tasks are either:
 
@@ -130,12 +132,29 @@ uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref tool/pi:abc/12
 uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref subagent/pi:abc/0 --q "task result"
 ```
 
+### footprint — generated artifact audit
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/footprint.py [--session ID] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--limit N] [--json]
+```
+
+Use `footprint` when users ask where Session Index disk usage is going or which sessions are safe prune candidates. It reports generated Clean Transcript, Tool Log, and Subagent Run transcript sizes; missing/dangling generated paths; source JSONL retention; fact counts; and prune blockers. It never deletes anything.
+
+### prune — confirmed low-value deletion
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID ...]
+uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID ...] --confirm
+```
+
+`prune` is dry-run by default. It deletes only exact Canonical Session IDs supplied on the command line, only when `--confirm` is present, and only when the audit classifies every requested session as low-value. Low-value means the summary has an explicit low-value signal and there are no durable facts for File Mutations, Skill Invocations, Subagent Runs, or question answers. Uncertain cases default to keep. Source JSONL is never deleted.
+
 ## Transcript storage
 
 Generated artifacts are the normal evidence path:
 
 - `~/.session-index/transcripts/<session-id>.md` — Clean Transcript.
-- `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, and capped result text.
+- `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, and larger bounded audit excerpts for mutations/errors.
 - `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
 
 These are more compact than raw JSONL at `~/.claude/projects/`, `~/.pi/agent/sessions/`, or Codex rollout files under `~/.codex/sessions/` and `~/.codex/archived_sessions/`. Prefer them as fallback when `inspect` is insufficient.
