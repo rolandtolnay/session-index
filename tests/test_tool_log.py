@@ -1,12 +1,13 @@
 """Tests for per-session tool log writer."""
 
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from parser import ParsedToolCall
-from tool_log import extract_tool_log_section, write_tool_log
+from tool_log import compact_tool_log_file, extract_tool_log_section, write_tool_log
 
 
 def test_write_tool_log_empty(tmp_path, monkeypatch):
@@ -66,10 +67,10 @@ def test_write_tool_log_compacts_huge_read_only_result(tmp_path, monkeypatch):
     path = write_tool_log("session-1", calls)
     content = open(path).read()
 
-    assert "[compact read-only result: showing first 1000 and last 1000 of 10006 characters; 8006 omitted]" in content
+    assert "[compact read-only result: showing first 500 and last 500 of 10006 characters; 9006 omitted]" in content
     assert '"file_path": "large.md"' in content
     assert "middle" not in content
-    assert len(content) < 3_000
+    assert len(content) < 2_000
 
 
 def test_write_tool_log_compacts_read_only_shell_command_result(tmp_path, monkeypatch):
@@ -86,7 +87,7 @@ def test_write_tool_log_compacts_read_only_shell_command_result(tmp_path, monkey
     content = open(path).read()
 
     assert "[compact read-only result:" in content
-    assert len(content) < 3_500
+    assert len(content) < 2_500
 
 
 def test_write_tool_log_keeps_mutation_result_on_larger_audit_cap(tmp_path, monkeypatch):
@@ -105,6 +106,50 @@ def test_write_tool_log_keeps_mutation_result_on_larger_audit_cap(tmp_path, monk
     assert "[compact read-only result:" not in content
     assert "[truncated: showing first 10000 and last 10000 of 21006 characters]" in content
     assert '"file_path": "app.py"' in content
+
+
+def test_write_tool_log_compacts_large_write_content_argument(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    body = "a" * 5_000 + "middle" + "z" * 5_000
+    calls = [ParsedToolCall(
+        sequence=1,
+        tool_name="Write",
+        arguments={"file_path": "large.html", "content": body},
+        result="wrote file",
+    )]
+
+    path = write_tool_log("session-1", calls)
+    content = open(path).read()
+
+    assert '"file_path": "large.html"' in content
+    assert '"__session_index_compacted_text__": true' in content
+    assert '"chars": 10006' in content
+    assert '"sha256":' in content
+    assert '"omitted": 7006' in content
+    assert "middle" not in content
+    assert "wrote file" in content
+    assert len(content) < 4_500
+
+
+def test_write_tool_log_compacts_large_edit_strings_but_keeps_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    old = "old-" * 2_000
+    new = "new-" * 2_000
+    calls = [ParsedToolCall(
+        sequence=1,
+        tool_name="Edit",
+        arguments={"file_path": "app.py", "old_string": old, "new_string": new},
+        result="changed",
+    )]
+
+    path = write_tool_log("session-1", calls)
+    content = open(path).read()
+
+    assert '"file_path": "app.py"' in content
+    assert content.count('"__session_index_compacted_text__": true') == 2
+    assert "old-old-old" in content
+    assert "new-new-new" in content
+    assert "changed" in content
 
 
 def test_extract_tool_log_section_returns_exact_section_with_locator(tmp_path, monkeypatch):
@@ -163,3 +208,60 @@ def test_extract_tool_log_section_missing_file_or_sequence_returns_none(tmp_path
     path = tmp_path / "session.tools.md"
     path.write_text("# Tool log\n\n## 001 — main — Read — unknown\nbody\n")
     assert extract_tool_log_section(str(path), 2) is None
+
+
+def test_compact_tool_log_file_migrates_existing_large_arguments_and_read_results(tmp_path):
+    path = tmp_path / "old.tools.md"
+    body = "a" * 5_000 + "middle" + "z" * 5_000
+    read_result = "r" * 3_000 + "middle-read" + "s" * 3_000
+    path.write_text(
+        "# Tool log — old\n\n---\n\n"
+        "## 001 — main — Write — unknown\n\n"
+        "Status: ok\n"
+        "Tool call ID: tool-1\n\n"
+        "Arguments:\n```json\n"
+        "{\n"
+        "  \"content\": " + json.dumps(body) + ",\n"
+        "  \"file_path\": \"large.md\"\n"
+        "}\n"
+        "```\n\n"
+        "Result:\n```text\nok\n```\n\n"
+        "## 002 — main — Read — unknown\n\n"
+        "Status: ok\n"
+        "Tool call ID: tool-2\n\n"
+        "Arguments:\n```json\n{\"file_path\": \"large.md\"}\n```\n\n"
+        "Result:\n```text\n" + read_result + "\n```\n"
+    )
+
+    result = compact_tool_log_file(str(path))
+    content = path.read_text()
+
+    assert result is not None
+    assert result.changed is True
+    assert result.compacted_bytes < result.original_bytes
+    assert '"file_path": "large.md"' in content
+    assert '"__session_index_compacted_text__": true' in content
+    assert "[compact read-only result: showing first 500 and last 500" in content
+    assert "middle" not in content
+    assert "middle-read" not in content
+
+
+def test_compact_tool_log_file_is_idempotent_for_already_compacted_result(tmp_path):
+    path = tmp_path / "old.tools.md"
+    path.write_text(
+        "# Tool log — old\n\n---\n\n"
+        "## 001 — main — Read — unknown\n\n"
+        "Status: ok\n"
+        "Tool call ID: tool-1\n\n"
+        "Arguments:\n```json\n{\"file_path\": \"large.md\"}\n```\n\n"
+        "Result:\n```text\n"
+        "aaa\n\n[compact read-only result: showing first 1000 and last 1000 of 3000 characters; 1000 omitted]\n\nzzz\n"
+        "```\n"
+    )
+
+    first = compact_tool_log_file(str(path))
+    result = compact_tool_log_file(str(path))
+
+    assert first is not None
+    assert result is not None
+    assert result.changed is False

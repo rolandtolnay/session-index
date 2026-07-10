@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,9 +18,11 @@ from parser import ParsedToolCall
 from transcript import TRANSCRIPT_DIR
 
 TOOL_RESULT_CHAR_LIMIT = 20_000
-READ_ONLY_RESULT_CHAR_LIMIT = 2_000
+READ_ONLY_RESULT_CHAR_LIMIT = 1_000
+ARGUMENT_STRING_CHAR_LIMIT = 4_000
 _HALF_RESULT_LIMIT = TOOL_RESULT_CHAR_LIMIT // 2
 _HALF_READ_ONLY_RESULT_LIMIT = READ_ONLY_RESULT_CHAR_LIMIT // 2
+_HALF_ARGUMENT_STRING_LIMIT = 1_500
 _TOOL_HEADING_RE = re.compile(r"^## (\d+) — .+ — .+ — .+$")
 _READ_ONLY_TOOLS = {
     "read",
@@ -31,6 +34,12 @@ _READ_ONLY_TOOLS = {
     "open",
     "screenshot",
     "view_image",
+    "web_fetch",
+    "web_search",
+    "webfetch",
+    "websearch",
+    "get_app_state",
+    "click",
 }
 _AUDIT_RESULT_TOOLS = {
     "write",
@@ -83,6 +92,14 @@ _SHELL_MUTATING_COMMANDS = {
     "truncate",
     "write",
 }
+_LARGE_TEXT_ARGUMENT_KEYS = {
+    "content",
+    "new_string",
+    "old_string",
+    "replacement",
+    "patch",
+    "text",
+}
 
 
 @dataclass(frozen=True)
@@ -93,6 +110,14 @@ class ToolLogSection:
     line_start: int | None
     line_end: int | None
     text: str
+
+
+@dataclass(frozen=True)
+class ToolLogCompactionResult:
+    path: str
+    changed: bool
+    original_bytes: int
+    compacted_bytes: int
 
 
 def _format_time(timestamp: str) -> str:
@@ -135,6 +160,34 @@ def _compact_read_only_result(text: str) -> str:
         + f"and last {_HALF_READ_ONLY_RESULT_LIMIT} of {total} characters; {omitted} omitted]\n\n"
         + text[-_HALF_READ_ONLY_RESULT_LIMIT:]
     )
+
+
+def _compact_argument_string(text: str) -> dict[str, object]:
+    total = len(text)
+    shown = _HALF_ARGUMENT_STRING_LIMIT * 2
+    return {
+        "__session_index_compacted_text__": True,
+        "chars": total,
+        "sha256": hashlib.sha256(text.encode("utf-8", errors="surrogatepass")).hexdigest(),
+        "head": text[:_HALF_ARGUMENT_STRING_LIMIT],
+        "tail": text[-_HALF_ARGUMENT_STRING_LIMIT:],
+        "omitted": max(0, total - shown),
+    }
+
+
+def _compact_arguments(value: Any, key: str = "") -> Any:
+    if isinstance(value, str):
+        if key.lower() in _LARGE_TEXT_ARGUMENT_KEYS and len(value) > ARGUMENT_STRING_CHAR_LIMIT:
+            return _compact_argument_string(value)
+        return value
+    if isinstance(value, list):
+        return [_compact_arguments(item, key="") for item in value]
+    if isinstance(value, dict):
+        return {
+            item_key: _compact_arguments(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    return value
 
 
 def _normalize_tool_name(name: str) -> str:
@@ -181,7 +234,7 @@ def _is_read_only_call(call: ParsedToolCall) -> bool:
 
     args = call.arguments if isinstance(call.arguments, dict) else {}
     command = args.get("command") or args.get("cmd")
-    if tool in {"bash", "exec_command", "shell"} and isinstance(command, str):
+    if tool in {"bash", "exec_command", "shell", "shell_command"} and isinstance(command, str):
         return _looks_like_read_only_shell(command)
     return False
 
@@ -193,6 +246,11 @@ def _format_result(call: ParsedToolCall) -> str:
     if not call.is_error and _is_read_only_call(call):
         return _compact_read_only_result(text)
     return _truncate_result(text)
+
+
+def _format_arguments(arguments: dict[str, Any]) -> str:
+    compacted = _compact_arguments(arguments or {})
+    return json.dumps(compacted, indent=2, ensure_ascii=False, sort_keys=True)
 
 
 def _fence_text(text: str) -> str:
@@ -212,6 +270,11 @@ def _parse_tool_heading(line: str) -> int | None:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _tool_name_from_heading(line: str) -> str:
+    parts = line.rstrip("\n").split(" — ")
+    return parts[2] if len(parts) >= 4 else ""
 
 
 def _tool_headings(lines: list[str]) -> list[tuple[int, int]]:
@@ -269,6 +332,126 @@ def extract_tool_log_section(path: str, sequence: int) -> ToolLogSection | None:
     )
 
 
+def _replace_fenced_block(section: str, label: str, replacement: str) -> tuple[str, bool]:
+    marker = f"{label}:\n```"
+    start = section.find(marker)
+    if start == -1:
+        return section, False
+    content_start = section.find("\n", start + len(marker))
+    if content_start == -1:
+        return section, False
+    content_start += 1
+    end = section.find("\n```", content_start)
+    if end == -1:
+        return section, False
+    old = section[content_start:end]
+    if old == replacement:
+        return section, False
+    return section[:content_start] + replacement + section[end:], True
+
+
+def _compact_existing_tool_log_section(section: str, tool_name: str) -> tuple[str, bool]:
+    changed = False
+    parsed_args: dict[str, Any] = {}
+
+    args_marker = "Arguments:\n```json\n"
+    args_start = section.find(args_marker)
+    if args_start != -1:
+        args_start += len(args_marker)
+        args_end = section.find("\n```", args_start)
+        if args_end != -1:
+            raw_args = section[args_start:args_end]
+            try:
+                parsed_args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                parsed_args = None
+            if isinstance(parsed_args, dict):
+                new_args = _format_arguments(parsed_args)
+                section, args_changed = _replace_fenced_block(section, "Arguments", new_args)
+                changed = changed or args_changed
+            else:
+                parsed_args = {}
+
+    result_marker = "Result:\n```text\n"
+    result_start = section.find(result_marker)
+    if result_start != -1:
+        result_start += len(result_marker)
+        result_end = section.find("\n```", result_start)
+        if result_end != -1:
+            raw_result = section[result_start:result_end]
+            already_compacted = (
+                "[compact read-only result:" in raw_result
+                or "[truncated: showing first" in raw_result
+            )
+            is_error = "Status: error" in section
+            if not already_compacted:
+                call = ParsedToolCall(
+                    tool_name=tool_name,
+                    arguments=parsed_args,
+                    result=raw_result,
+                    is_error=is_error,
+                )
+                new_result = _fence_text(_format_result(call))
+                section, result_changed = _replace_fenced_block(section, "Result", new_result)
+                changed = changed or result_changed
+
+    return section, changed
+
+
+def compact_tool_log_file(path: str) -> ToolLogCompactionResult | None:
+    """Compact an existing generated Tool Log in place.
+
+    This migrates historical Tool Logs whose source JSONL may no longer be in the
+    current discovery set. It keeps headings, status, paths, and bounded evidence,
+    but compacts large argument strings and un-compacted read-only results.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+
+    original = "".join(lines)
+    offsets: list[int] = []
+    total = 0
+    for line in lines:
+        offsets.append(total)
+        total += len(line)
+    headings = _tool_headings(lines)
+    if not headings:
+        return ToolLogCompactionResult(path, False, len(original.encode()), len(original.encode()))
+
+    out: list[str] = []
+    cursor = 0
+    changed = False
+    for pos, (start_idx, _sequence) in enumerate(headings):
+        start = offsets[start_idx]
+        end_idx = headings[pos + 1][0] if pos + 1 < len(headings) else len(lines)
+        end = offsets[end_idx] if end_idx < len(offsets) else len(original)
+        out.append(original[cursor:start])
+        section = original[start:end]
+        tool_name = _tool_name_from_heading(lines[start_idx])
+        compacted, section_changed = _compact_existing_tool_log_section(section, tool_name)
+        out.append(compacted)
+        changed = changed or section_changed
+        cursor = end
+    out.append(original[cursor:])
+
+    compacted_text = "".join(out)
+    if changed:
+        with open(path, "w") as f:
+            f.write(compacted_text)
+
+    return ToolLogCompactionResult(
+        path=path,
+        changed=changed,
+        original_bytes=len(original.encode()),
+        compacted_bytes=len(compacted_text.encode()),
+    )
+
+
 def write_tool_log(
     session_id: str,
     tool_calls: list[ParsedToolCall],
@@ -304,7 +487,7 @@ def write_tool_log(
             "",
             "Arguments:",
             "```json",
-            json.dumps(call.arguments or {}, indent=2, ensure_ascii=False, sort_keys=True),
+            _format_arguments(call.arguments or {}),
             "```",
             "",
             "Result:",

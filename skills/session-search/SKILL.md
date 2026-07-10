@@ -154,7 +154,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID
 Generated artifacts are the normal evidence path:
 
 - `~/.session-index/transcripts/<session-id>.md` — Clean Transcript.
-- `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, and larger bounded audit excerpts for mutations/errors.
+- `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, compact large write/edit argument text with hashes, and larger bounded audit excerpts for mutations/errors.
 - `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
 
 These are more compact than raw JSONL at `~/.claude/projects/`, `~/.pi/agent/sessions/`, or Codex rollout files under `~/.codex/sessions/` and `~/.codex/archived_sessions/`. Prefer them as fallback when `inspect` is insufficient.
