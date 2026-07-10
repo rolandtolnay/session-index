@@ -6,7 +6,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 
 - **Claude Code hooks** — index metadata on Stop, summarize/write transcripts on SessionEnd, inject recent context on SessionStart
 - **Pi extension** — indexes Pi sessions after turns/shutdown and injects recent context before the first prompt in a session
-- **Codex backfill** — indexes Codex rollout JSONL transcripts from active and archived session directories
+- **Codex hooks** — write deterministic artifacts after each Stop and refresh summaries after 300 idle seconds
 - **Unified DB** — stores all supported sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
@@ -31,16 +31,18 @@ node install.js
 pi          # then run /login and choose a GPT-capable provider such as OpenAI Codex
 ```
 
-By default the installer sets up both integrations:
+By default the installer sets up all three integrations:
 
 - Claude Code: skill symlink in `~/.claude/skills/` and hooks in `~/.claude/settings.json`
 - Pi: skill symlink in `~/.pi/agent/skills/` and extension symlink in `~/.pi/agent/extensions/`
+- Codex: skill symlink in `~/.codex/skills/` and Stop hook in `~/.codex/hooks.json`
 
 Install one target only:
 
 ```bash
 node install.js --target claude
 node install.js --target pi
+node install.js --target codex
 ```
 
 Uninstall:
@@ -48,9 +50,11 @@ Uninstall:
 ```bash
 node install.js --uninstall
 node install.js --uninstall --target pi
+node install.js --uninstall --target codex
 ```
 
 After installing the Pi integration, run `/reload` in Pi or restart Pi.
+After installing the Codex integration, restart Codex and use `/hooks` to review and trust the Session Index Stop hook. Codex skips new or changed non-managed hooks until they are trusted.
 
 ## Summary model configuration
 
@@ -60,11 +64,14 @@ Summaries run in the background through headless Pi print mode. Defaults:
 SESSION_INDEX_SUMMARY_MODEL=openai-codex/gpt-5.4-mini
 SESSION_INDEX_SUMMARY_THINKING=low
 SESSION_INDEX_SUMMARY_TIMEOUT=180
+SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS=300
 ```
 
 Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy fallback path.
 
 ## Backfill existing conversations
+
+Hooks/extensions index new Claude, Pi, and Codex conversations automatically. Backfill remains the historical import and repair path.
 
 By default, backfill regenerates only deterministic artifacts and facts: Clean Transcripts, Tool Logs, Subagent Run transcripts, and structured fact tables. It does not run the LLM summarizer.
 
@@ -88,6 +95,8 @@ Codex defaults:
 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 ~/.codex/archived_sessions/rollout-*.jsonl
 ```
+
+`SESSION_INDEX_CODEX_HOME` overrides Codex discovery for Session Index-specific testing. Otherwise discovery follows `CODEX_HOME`, then `~/.codex`.
 
 Override those roots when needed:
 
@@ -223,6 +232,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 - Codex source JSONL: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - Codex archived source JSONL: `~/.codex/archived_sessions/rollout-*.jsonl`
 - Codex metadata: `~/.codex/session_index.jsonl`, `~/.codex/state_5.sqlite`
+- Codex pending jobs/locks: `~/.session-index/codex-jobs/`
 
 ## Reset data
 

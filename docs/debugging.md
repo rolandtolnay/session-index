@@ -23,6 +23,12 @@ Pi extension
     ├─ /current-session Ctrl+R ─► pi_index.py --mode full for the focused current snapshot
     └─ session_shutdown ───► pi_index.py --mode full
 
+Codex hooks.json
+    │
+    └─ Stop ───────────────► codex_stop.py ──► queue detached _codex_index_worker.py
+                                                   ├─ deterministic pass immediately
+                                                   └─ summary-only pass after 300 idle seconds
+
 Shared full pass:
     parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► Clean Transcript + Tool Log ─► DB upsert + fact tables
                                                                                      └─► Skill Invocations from slash commands, skill envelopes, Skill tools, and exact SKILL.md reads
@@ -46,11 +52,13 @@ Current-session lookup:
 | `hooks/_session_end_worker.py` | Claude detached worker: runs shared full index pass |
 | `hooks/pi_index.py` | Pi extension entry point for fast/full indexing |
 | `hooks/pi_context.py` | Pi extension entry point for recent-context system prompt injection |
+| `hooks/codex_stop.py` | Codex Stop: queue the latest rollout snapshot and exit immediately |
+| `hooks/_codex_index_worker.py` | Codex detached coordinator: deterministic indexing plus idle summary |
 | `pi-extension/index.ts` | Pi extension wiring for lifecycle events |
 | `pi-extension/session-index-env.ts` | Pi runtime environment helper for current-session lookup |
 | `current_session.py` | Exact current-session resolver using Session Index runtime env |
 | `indexer.py` | Shared parse/summarize/transcript/upsert pipeline |
-| `sources.py` | Claude/Pi Source Transcript discovery for backfill |
+| `sources.py` | Claude/Pi/Codex Source Transcript discovery for backfill and hook fallback |
 | `recent_context.py` | Shared recent-session context builder |
 | `cli.py` | CLI entry point: current, find, inspect, query, backfill, status |
 | `db.py` | SQLite operations: provider-aware schema, FTS-backed candidate lookup, read-only query helpers, stats |
@@ -80,6 +88,8 @@ Current-session lookup:
 | Log (previous month) | `~/.session-index/logs/session-index.prev.log` | Overwritten monthly |
 | Claude Source Transcript | `~/.claude/projects/{encoded_path}/{session_id}.jsonl` | Claude Code managed |
 | Pi Source Transcript | `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl` | Pi managed |
+| Codex Source Transcript | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` | Codex managed |
+| Codex hook jobs | `~/.session-index/codex-jobs/<session-id>/` | Removed after each covered summary attempt |
 
 ---
 
@@ -99,7 +109,7 @@ HH:MM:SS.mmm [sid] hook_name          | message
 
 - `HH:MM:SS.mmm` — wall-clock timestamp with millisecond precision
 - `[sid]` — last 6 characters of the session ID, or `??????` if unavailable
-- `hook_name` — left-padded to 18 chars. Common values: `session_start`, `session_end`, `worker`, `stop`, `pi_index`, `pi_context`, `query`
+- `hook_name` — left-padded to 18 chars. Common values: `session_start`, `session_end`, `worker`, `stop`, `pi_index`, `pi_context`, `codex_stop`, `codex_worker`, `query`
 - `message` — free-form, action-oriented
 
 ### Filtering by Session
@@ -135,11 +145,13 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - `stop | skipped (N user, M assistant msgs)` or `pi_index | fast skipped (...)` — needs at least 1 user + 1 assistant message
 - Claude: no `session_end` or `worker` lines — session still active, or SessionEnd hook did not fire
 - Pi: no `pi_index` lines — run `/reload` or restart Pi after installing the extension
+- Codex: no `codex_stop` lines — restart Codex, open `/hooks`, and review/trust the Session Index hook
 - `worker | jsonl not found` / `pi_index | missing session file` — Source Transcript path mismatch
 
 **Summary missing:**
 - Check Pi auth/model availability: default is `openai-codex/gpt-5.4-mini` via `pi -p --no-session --no-tools`.
 - Set `SESSION_INDEX_SUMMARY_MODEL`, `SESSION_INDEX_SUMMARY_THINKING`, or `SESSION_INDEX_SUMMARY_TIMEOUT` to override the default.
+- Codex summaries wait for 300 seconds without another Stop; override with `SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS`.
 - Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to force the legacy fallback path.
 - Run `uv run cli.py status` to find sessions missing summaries.
 
@@ -246,6 +258,14 @@ The script simulates what SessionStart would have injected and checks if those p
 4. Worker upserts all fields to DB and replaces fact-table rows
 5. All failures are caught and logged — worker never crashes silently
 
+### `codex_stop.py` + `_codex_index_worker.py` (Stop)
+
+1. Codex has a turn-level Stop hook but no SessionEnd hook, so every Stop queues the current rollout snapshot.
+2. `codex_stop.py` emits `{}` and exits immediately after launching a detached worker.
+3. Workers serialize per Canonical Session ID and refresh deterministic artifacts whenever a newer Stop arrives.
+4. The worker waits for 300 idle seconds, then runs a summary-only stage and removes the covered jobs.
+5. Summary failures preserve an existing summary and are retried on the next Stop or explicit backfill.
+
 ### settings.json Hook Registration
 
 | Hook Script | Event | Timeout | Async |
@@ -253,3 +273,5 @@ The script simulates what SessionStart would have injected and checks if those p
 | `session_start.py` | `SessionStart` | 5s | yes |
 | `stop.py` | `Stop` | 5s | yes |
 | `session_end.py` | `SessionEnd` | 1s | no |
+
+Codex registers `codex_stop.py` as a 5-second command handler under `Stop` in `~/.codex/hooks.json`. Codex must review and trust the exact hook definition before it runs.

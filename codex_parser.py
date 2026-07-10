@@ -56,7 +56,11 @@ def _load_jsonl(path: str) -> list[dict[str, Any]]:
 
 
 def _codex_home() -> str:
-    return os.path.expanduser(os.environ.get("SESSION_INDEX_CODEX_HOME", "~/.codex"))
+    return os.path.expanduser(
+        os.environ.get("SESSION_INDEX_CODEX_HOME")
+        or os.environ.get("CODEX_HOME")
+        or "~/.codex"
+    )
 
 
 def _native_id_from_filename(path: str) -> str:
@@ -203,7 +207,31 @@ def _parse_arguments(value: Any) -> dict[str, Any]:
 
 def _is_error_output(output: str) -> bool:
     match = _EXIT_CODE_RE.search(output or "")
-    return bool(match and match.group(1) != "0")
+    if match:
+        return match.group(1) != "0"
+    lowered = (output or "").lstrip().lower()
+    return lowered.startswith(("script failed", "error:", "failed:"))
+
+
+def _tool_output_text(output: Any) -> str:
+    if isinstance(output, str):
+        return output
+    text = _content_text(output)
+    if text:
+        return text
+    try:
+        return json.dumps(output, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(output)
+
+
+def _tool_arguments(value: Any) -> dict[str, Any]:
+    arguments = _parse_arguments(value)
+    if arguments:
+        return arguments
+    if isinstance(value, str) and value:
+        return {"input": value}
+    return {}
 
 
 def _top_level_paths(arguments: dict[str, Any]) -> list[str]:
@@ -277,6 +305,7 @@ def parse_codex_jsonl(path: str) -> ParsedSession:
     raw_tool_calls: list[ParsedToolCall] = []
     files_set: set[str] = set()
     tool_counter: Counter[str] = Counter()
+    patch_call_ids: set[str] = set()
     task_complete_fallback = ""
     task_complete_ts = ""
 
@@ -305,13 +334,22 @@ def parse_codex_jsonl(path: str) -> ParsedSession:
             if not session.model and isinstance(payload.get("model"), str):
                 session.model = payload["model"]
 
-        elif entry_type == "response_item" and payload.get("type") == "function_call_output":
+        elif entry_type == "event_msg" and payload.get("type") == "patch_apply_end":
+            call_id = payload.get("call_id", "")
+            if isinstance(call_id, str) and call_id:
+                patch_call_ids.add(call_id)
+
+        elif entry_type == "response_item" and payload.get("type") in {
+            "function_call_output",
+            "custom_tool_call_output",
+        }:
             call_id = payload.get("call_id", "")
             output = payload.get("output", "")
             if isinstance(call_id, str) and call_id:
+                content = _tool_output_text(output)
                 tool_outputs[call_id] = {
-                    "content": output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
-                    "is_error": _is_error_output(output if isinstance(output, str) else ""),
+                    "content": content,
+                    "is_error": _is_error_output(content),
                 }
 
     thread = _thread_metadata(native_id)
@@ -382,12 +420,22 @@ def parse_codex_jsonl(path: str) -> ParsedSession:
                         session.assistant_messages.append(text)
                         session.messages.append({"role": "assistant", "content": text, "timestamp": ts})
 
-            elif payload_type == "function_call":
+            elif payload_type in {"function_call", "custom_tool_call"}:
                 name = payload.get("name", "")
                 if not isinstance(name, str) or not name:
                     continue
                 call_id = payload.get("call_id", "")
-                arguments = _parse_arguments(payload.get("arguments"))
+                if (
+                    payload_type == "custom_tool_call"
+                    and isinstance(call_id, str)
+                    and call_id in patch_call_ids
+                    and name == "apply_patch"
+                ):
+                    # patch_apply_end carries the authoritative file/change and
+                    # success data for this call.
+                    continue
+                raw_arguments = payload.get("input") if payload_type == "custom_tool_call" else payload.get("arguments")
+                arguments = _tool_arguments(raw_arguments)
                 output = tool_outputs.get(call_id if isinstance(call_id, str) else "", {})
                 tool_counter[name] += 1
                 files_set.update(_top_level_paths(arguments))
@@ -397,7 +445,7 @@ def parse_codex_jsonl(path: str) -> ParsedSession:
                     tool_name=name,
                     arguments=arguments,
                     result=output.get("content", ""),
-                    is_error=bool(output.get("is_error", False)),
+                    is_error=bool(output.get("is_error", False) or payload.get("status") == "failed"),
                 ))
 
     if not session.assistant_messages and task_complete_fallback:

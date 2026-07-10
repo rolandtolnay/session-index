@@ -83,7 +83,11 @@ def get_codex_session_roots(
     session_dir: str | None = None,
     archived_dir: str | None = None,
 ) -> tuple[str, str]:
-    codex_home = os.path.expanduser("~/.codex")
+    codex_home = os.path.expanduser(
+        os.environ.get("SESSION_INDEX_CODEX_HOME")
+        or os.environ.get("CODEX_HOME")
+        or "~/.codex"
+    )
     active_root = os.path.expanduser(session_dir) if session_dir else os.path.join(codex_home, "sessions")
     archive_root = os.path.expanduser(archived_dir) if archived_dir else os.path.join(codex_home, "archived_sessions")
     return active_root, archive_root

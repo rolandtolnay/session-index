@@ -9,13 +9,16 @@
 - **Hooks never block:** All hooks exit 0, wrap everything in try/except, self-imposed timeouts
 - **Message threshold:** Sessions need at least 1 user + 1 assistant message to be indexed
 - **WAL mode:** SQLite uses WAL journal mode for concurrent read/write safety from hooks
-- **Detached worker:** SessionEnd forks a detached subprocess so the Pi/GPT summary can complete after the hook's ~1.5s timeout
+- **Detached workers:** Claude SessionEnd and Codex Stop fork detached subprocesses so indexing and Pi/GPT summaries never block hook completion
 
 ## Data locations
 - **Database:** `~/.session-index/sessions.db`
 - **Transcripts:** `~/.session-index/transcripts/{session_id}.md`
 - **Logs:** `~/.session-index/logs/session-index.log` (monthly rotation)
-- **Source JSONL:** `~/.Codex/projects/{encoded_path}/{session_id}.jsonl`
+- **Claude Source JSONL:** `~/.claude/projects/{encoded_path}/{session_id}.jsonl`
+- **Pi Source JSONL:** `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`
+- **Codex Source JSONL:** `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`
+- **Codex hook jobs:** `~/.session-index/codex-jobs/<session-id>/`
 
 ## Log format
 ```

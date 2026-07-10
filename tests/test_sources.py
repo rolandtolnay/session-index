@@ -84,3 +84,22 @@ def test_discover_codex_sessions_filters_by_prefixed_session_id(tmp_path):
     ]
 
     assert paths == [str(active_rollout)]
+
+
+def test_discover_codex_sessions_honors_codex_home_precedence(tmp_path, monkeypatch):
+    native_id = "019efb69-5655-72e1-b7c4-95fdde95169e"
+    codex_home = tmp_path / "codex-home"
+    rollout = codex_home / "sessions" / "2026" / "07" / "10" / f"rollout-{native_id}.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text("{}\n")
+
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("SESSION_INDEX_CODEX_HOME", raising=False)
+    assert [item.path for item in discover_codex_sessions(native_id)] == [str(rollout)]
+
+    override_home = tmp_path / "override-home"
+    override_rollout = override_home / "sessions" / f"rollout-{native_id}.jsonl"
+    override_rollout.parent.mkdir(parents=True)
+    override_rollout.write_text("{}\n")
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(override_home))
+    assert [item.path for item in discover_codex_sessions(native_id)] == [str(override_rollout)]

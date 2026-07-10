@@ -31,6 +31,10 @@ FULL_INDEX_OPTIONS = IndexOptions(frozenset(IndexStage))
 # deterministic pass (metadata, clean transcript, subagent transcripts, tool log,
 # and the structured fact tables that ride along with the tool-log stage).
 NO_SUMMARY_INDEX_OPTIONS = IndexOptions(frozenset(IndexStage) - {IndexStage.SUMMARY})
+# Refresh only the non-deterministic summary after deterministic artifacts have
+# already been written. Metadata still flows through the normal upsert path,
+# while Clean Transcript, Tool Log, and fact-table ownership remains untouched.
+SUMMARY_ONLY_INDEX_OPTIONS = IndexOptions(frozenset({IndexStage.SUMMARY}))
 
 
 @dataclass
@@ -427,3 +431,8 @@ def index_fast(source: str, path: str) -> IndexResult:
 def index_full(source: str, path: str) -> IndexResult:
     """Parse, summarize, write transcripts, and upsert a complete row."""
     return index_source_transcript(source, path, FULL_INDEX_OPTIONS)
+
+
+def index_summary(source: str, path: str) -> IndexResult:
+    """Refresh only the LLM summary for an already indexed session snapshot."""
+    return index_source_transcript(source, path, SUMMARY_ONLY_INDEX_OPTIONS)

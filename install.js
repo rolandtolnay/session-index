@@ -2,13 +2,14 @@
 /**
  * session-index installer
  *
- * Installs Claude Code hooks/skill and/or Pi extension/skill.
+ * Installs Claude Code hooks/skill, Pi extension/skill, and/or Codex hooks/skill.
  *
  * Usage:
- *   node install.js                         # Install Claude + Pi integrations
+ *   node install.js                         # Install Claude + Pi + Codex integrations
  *   node install.js --target claude         # Install Claude only
  *   node install.js --target pi             # Install Pi only
- *   node install.js --uninstall             # Remove Claude + Pi integrations
+ *   node install.js --target codex          # Install Codex only
+ *   node install.js --uninstall             # Remove all integrations
  *   node install.js --uninstall --target pi # Remove Pi only
  */
 
@@ -30,10 +31,16 @@ const PI_AGENT_DIR = path.join(os.homedir(), ".pi", "agent");
 const PI_MANIFEST_DIR = path.join(PI_AGENT_DIR, TOOLKIT_NAME);
 const PI_MANIFEST_PATH = path.join(PI_MANIFEST_DIR, ".manifest.json");
 
+const CODEX_DIR = path.join(os.homedir(), ".codex");
+const CODEX_HOOKS_PATH = path.join(CODEX_DIR, "hooks.json");
+const CODEX_MANIFEST_DIR = path.join(CODEX_DIR, TOOLKIT_NAME);
+const CODEX_MANIFEST_PATH = path.join(CODEX_MANIFEST_DIR, ".manifest.json");
+
 const SKILL_NAME = "session-search";
 const SKILL_SRC = path.join(REPO_ROOT, "skills", SKILL_NAME);
 const CLAUDE_SKILL_DST = path.join(CLAUDE_DIR, "skills", SKILL_NAME);
 const PI_SKILL_DST = path.join(PI_AGENT_DIR, "skills", SKILL_NAME);
+const CODEX_SKILL_DST = path.join(CODEX_DIR, "skills", SKILL_NAME);
 
 const PI_EXTENSION_NAME = "session-index";
 const PI_EXTENSION_SRC = path.join(REPO_ROOT, "pi-extension");
@@ -56,6 +63,13 @@ const CLAUDE_HOOKS = [
     timeout: 5,
   },
 ];
+
+const CODEX_STOP_SCRIPT = path.join(REPO_ROOT, "hooks", "codex_stop.py");
+const CODEX_STOP_HANDLER = {
+  type: "command",
+  command: `uv run --quiet "${CODEX_STOP_SCRIPT.replaceAll('"', '\\"')}"`,
+  timeout: 5,
+};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -127,8 +141,8 @@ function isOurHook(entry, repoRoot = REPO_ROOT) {
 function parseTarget(args) {
   const idx = args.indexOf("--target");
   const target = idx >= 0 ? args[idx + 1] : "all";
-  if (!["claude", "pi", "all"].includes(target)) {
-    console.error(`Invalid --target: ${target}. Use claude, pi, or all.`);
+  if (!["claude", "pi", "codex", "all"].includes(target)) {
+    console.error(`Invalid --target: ${target}. Use claude, pi, codex, or all.`);
     process.exit(1);
   }
   return target;
@@ -247,6 +261,109 @@ function uninstallPi() {
   console.log("  [ok]   Pi manifest removed if present");
 }
 
+// ── Codex install ──────────────────────────────────────────────────────────
+
+function isOurCodexHandler(handler, repoRoot = REPO_ROOT) {
+  if (!handler || typeof handler.command !== "string") return false;
+  return handler.command.includes(path.join(repoRoot, "hooks", "codex_stop.py"));
+}
+
+function validateCodexHooksDocument(document) {
+  if (document.hooks !== undefined && (typeof document.hooks !== "object" || Array.isArray(document.hooks) || document.hooks === null)) {
+    throw new Error(`${CODEX_HOOKS_PATH}: "hooks" must be an object`);
+  }
+  if (document.hooks?.Stop !== undefined && !Array.isArray(document.hooks.Stop)) {
+    throw new Error(`${CODEX_HOOKS_PATH}: "hooks.Stop" must be an array`);
+  }
+}
+
+function installCodex() {
+  console.log("\nCodex integration");
+  linkResource(SKILL_SRC, CODEX_SKILL_DST, `Codex skill: ${SKILL_NAME}`);
+
+  let previousManifest = {};
+  if (fs.existsSync(CODEX_MANIFEST_PATH)) {
+    try { previousManifest = readJson(CODEX_MANIFEST_PATH); } catch {}
+  }
+  const hooksFileCreated = previousManifest.hooksFileCreated ?? !fs.existsSync(CODEX_HOOKS_PATH);
+  const document = readJson(CODEX_HOOKS_PATH, {});
+  validateCodexHooksDocument(document);
+  if (!document.hooks) document.hooks = {};
+  if (!document.hooks.Stop) document.hooks.Stop = [];
+
+  const installed = document.hooks.Stop.some((group) =>
+    Array.isArray(group?.hooks) && group.hooks.some((handler) => isOurCodexHandler(handler))
+  );
+  if (installed) {
+    console.log("  [skip] Hook already registered: Stop");
+  } else {
+    document.hooks.Stop.push({ hooks: [{ ...CODEX_STOP_HANDLER }] });
+    writeJson(CODEX_HOOKS_PATH, document);
+    console.log("  [ok]   Registered hook: Stop");
+  }
+
+  writeJson(CODEX_MANIFEST_PATH, {
+    version: "1.0.0",
+    installedAt: new Date().toISOString(),
+    target: "codex",
+    repoRoot: REPO_ROOT,
+    skill: SKILL_NAME,
+    hookEvents: ["Stop"],
+    hooksFileCreated,
+  });
+  console.log(`  [ok]   Manifest: ${CODEX_MANIFEST_PATH}`);
+}
+
+function uninstallCodex() {
+  console.log("\nCodex integration");
+
+  let manifest = {};
+  if (fs.existsSync(CODEX_MANIFEST_PATH)) {
+    try { manifest = readJson(CODEX_MANIFEST_PATH); } catch {}
+  }
+  const repoRoot = manifest.repoRoot || REPO_ROOT;
+  unlinkResource(CODEX_SKILL_DST, path.join(repoRoot, "skills", SKILL_NAME), `Codex skill: ${SKILL_NAME}`);
+
+  if (fs.existsSync(CODEX_HOOKS_PATH)) {
+    const document = readJson(CODEX_HOOKS_PATH, {});
+    validateCodexHooksDocument(document);
+    const stopGroups = document.hooks?.Stop || [];
+    let removed = false;
+    const remainingGroups = [];
+
+    for (const group of stopGroups) {
+      if (!Array.isArray(group?.hooks)) {
+        remainingGroups.push(group);
+        continue;
+      }
+      const remainingHandlers = group.hooks.filter((handler) => !isOurCodexHandler(handler, repoRoot));
+      if (remainingHandlers.length !== group.hooks.length) removed = true;
+      if (remainingHandlers.length) remainingGroups.push({ ...group, hooks: remainingHandlers });
+    }
+
+    if (removed) {
+      if (remainingGroups.length) document.hooks.Stop = remainingGroups;
+      else delete document.hooks.Stop;
+      if (Object.keys(document.hooks).length === 0) delete document.hooks;
+
+      if (manifest.hooksFileCreated && Object.keys(document).length === 0) {
+        fs.rmSync(CODEX_HOOKS_PATH, { force: true });
+      } else {
+        writeJson(CODEX_HOOKS_PATH, document);
+      }
+      console.log("  [ok]   Removed hook: Stop");
+    } else {
+      console.log("  [skip] Hook not found: Stop");
+    }
+  } else {
+    console.log("  [skip] Hook not found: Stop");
+  }
+
+  fs.rmSync(CODEX_MANIFEST_PATH, { force: true });
+  try { fs.rmdirSync(CODEX_MANIFEST_DIR); } catch {}
+  console.log("  [ok]   Codex manifest removed if present");
+}
+
 // ── Main ────────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
@@ -256,7 +373,7 @@ if (args.includes("--help") || args.includes("-h")) {
 Usage: node install.js [options]
 
 Options:
-  --target <claude|pi|all>  Integration target (default: all)
+  --target <claude|pi|codex|all>  Integration target (default: all)
   --uninstall               Remove installed integrations
   --help                    Show this help
 `);
@@ -271,12 +388,20 @@ console.log(`\n${uninstall ? "Uninstalling" : "Installing"} ${TOOLKIT_NAME} from
 if (uninstall) {
   if (includesTarget(target, "claude")) uninstallClaude();
   if (includesTarget(target, "pi")) uninstallPi();
+  if (includesTarget(target, "codex")) uninstallCodex();
   console.log("\nDone.\n");
 } else {
   if (includesTarget(target, "claude")) installClaude();
   if (includesTarget(target, "pi")) installPi();
+  if (includesTarget(target, "codex")) installCodex();
   console.log(`\nDone! Next steps:`);
-  console.log(`  1. Make sure Ollama is running: ollama pull qwen3.5:4b`);
-  console.log(`  2. Backfill existing sessions: cd ${REPO_ROOT} && uv run cli.py backfill --source all`);
-  console.log(`  3. In Pi, run /reload or restart Pi so the extension and skill load.\n`);
+  let nextStep = 1;
+  console.log(`  ${nextStep++}. Optional historical import/repair: cd ${REPO_ROOT} && uv run cli.py backfill --source all`);
+  if (includesTarget(target, "pi")) {
+    console.log(`  ${nextStep++}. In Pi, run /reload or restart Pi so the extension and skill load.`);
+  }
+  if (includesTarget(target, "codex")) {
+    console.log(`  ${nextStep++}. Restart Codex, open /hooks, and review/trust the Session Index Stop hook.`);
+  }
+  console.log("");
 }

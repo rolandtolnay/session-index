@@ -1,5 +1,6 @@
 """Tests for Codex rollout JSONL parser."""
 
+import json
 import os
 import sys
 
@@ -61,3 +62,63 @@ def test_parse_codex_tools_patch_files_and_subagent_request(monkeypatch):
     assert patch_call.tool_name == "apply_patch"
     assert patch_call.arguments["changes"][0]["path"] == "/Users/test/project/app.py"
     assert patch_call.is_error is False
+
+
+def test_parse_current_custom_tools_outputs_errors_and_patch_dedup(tmp_path, monkeypatch):
+    native_id = "019f4cee-5ac8-73d3-80db-24b6cce8b52d"
+    path = tmp_path / f"rollout-2026-07-10T10-00-00-{native_id}.jsonl"
+    rows = [
+        {"timestamp": "2026-07-10T10:00:00.000Z", "type": "session_meta", "payload": {
+            "id": native_id, "cwd": "/Users/test/project", "timestamp": "2026-07-10T10:00:00.000Z",
+        }},
+        {"timestamp": "2026-07-10T10:00:01.000Z", "type": "event_msg", "payload": {
+            "type": "user_message", "message": "Update app.py",
+        }},
+        {"timestamp": "2026-07-10T10:00:02.000Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "exec", "call_id": "call-ok", "status": "completed",
+            "input": "const r = await tools.exec_command({cmd: 'pwd'});",
+        }},
+        {"timestamp": "2026-07-10T10:00:03.000Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "call-ok", "output": [
+                {"type": "input_text", "text": "Script completed\n"},
+                {"type": "input_text", "text": "Output:\n/Users/test/project"},
+            ],
+        }},
+        {"timestamp": "2026-07-10T10:00:04.000Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "exec", "call_id": "call-failed", "status": "failed",
+            "input": "throw new Error('boom')",
+        }},
+        {"timestamp": "2026-07-10T10:00:05.000Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "call-failed", "output": [
+                {"type": "input_text", "text": "Script failed\nError: boom"},
+            ],
+        }},
+        {"timestamp": "2026-07-10T10:00:06.000Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "apply_patch", "call_id": "call-patch", "status": "completed",
+            "input": "*** Begin Patch",
+        }},
+        {"timestamp": "2026-07-10T10:00:07.000Z", "type": "event_msg", "payload": {
+            "type": "patch_apply_end", "call_id": "call-patch", "success": True, "status": "completed",
+            "changes": {"/Users/test/project/app.py": {"type": "update"}}, "stdout": "Done", "stderr": "",
+        }},
+        {"timestamp": "2026-07-10T10:00:08.000Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "call-patch", "output": [
+                {"type": "input_text", "text": "Success"},
+            ],
+        }},
+        {"timestamp": "2026-07-10T10:00:09.000Z", "type": "response_item", "payload": {
+            "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Updated app.py"}],
+        }},
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", "/tmp/no-codex-home")
+
+    session = parse_codex_jsonl(str(path))
+
+    assert [call.tool_name for call in session.tool_calls] == ["exec", "exec", "apply_patch"]
+    assert session.tool_calls[0].arguments == {"input": "const r = await tools.exec_command({cmd: 'pwd'});"}
+    assert "Output:\n/Users/test/project" in session.tool_calls[0].result
+    assert session.tool_calls[0].is_error is False
+    assert session.tool_calls[1].is_error is True
+    assert session.tools_used == "exec:2, apply_patch:1"
+    assert session.files_touched == ["/Users/test/project/app.py"]

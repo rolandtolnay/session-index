@@ -61,6 +61,22 @@ def test_index_fast_delegates_to_staged_metadata_only(monkeypatch):
     assert calls[0][2].stages == frozenset({indexer.IndexStage.SESSION_METADATA})
 
 
+def test_index_summary_delegates_to_summary_only_stage(monkeypatch):
+    calls = []
+
+    def fake_index_source_transcript(source, path, options):
+        calls.append((source, path, options))
+        return indexer.IndexResult(session_id="codex:s", summary_generated=True)
+
+    monkeypatch.setattr(indexer, "index_source_transcript", fake_index_source_transcript)
+
+    result = indexer.index_summary("codex", "/tmp/rollout.jsonl")
+
+    assert result.summary_generated is True
+    assert calls == [("codex", "/tmp/rollout.jsonl", indexer.SUMMARY_ONLY_INDEX_OPTIONS)]
+    assert calls[0][2].stages == frozenset({indexer.IndexStage.SUMMARY})
+
+
 def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "summary text")
