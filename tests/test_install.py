@@ -59,18 +59,23 @@ def test_codex_install_is_idempotent_and_uninstall_preserves_unrelated_hooks(tmp
     assert document["custom"] == {"keep": True}
     assert document["hooks"]["SessionStart"] == original["hooks"]["SessionStart"]
 
-    skill = codex_dir / "skills" / "session-search"
-    assert skill.is_symlink()
-    assert skill.resolve() == REPO_ROOT / "skills" / "session-search"
+    search_skill = codex_dir / "skills" / "session-search"
+    current_skill = codex_dir / "skills" / "current-session"
+    assert search_skill.is_symlink()
+    assert search_skill.resolve() == REPO_ROOT / "skills" / "session-search"
+    assert current_skill.is_symlink()
+    assert current_skill.resolve() == REPO_ROOT / "skills" / "current-session"
     manifest = json.loads((codex_dir / "session-index" / ".manifest.json").read_text())
     assert manifest["target"] == "codex"
+    assert manifest["skills"] == ["session-search", "current-session"]
     assert manifest["hooksFileCreated"] is False
     assert "review/trust" in first.stdout
 
     removed = _run_installer(tmp_path, "--uninstall", "--target", "codex")
 
     assert removed.returncode == 0, removed.stderr or removed.stdout
-    assert not skill.exists()
+    assert not search_skill.exists()
+    assert not current_skill.exists()
     assert not (codex_dir / "session-index" / ".manifest.json").exists()
     assert json.loads(hooks_path.read_text()) == original
 

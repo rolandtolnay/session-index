@@ -13,7 +13,7 @@ import shutil
 import sys
 import time
 
-from current_session import CurrentSessionError, resolve_current_session
+from current_session import CurrentSession, CurrentSessionError, resolve_current_session
 from db import (
     get_connection,
     init_db,
@@ -116,16 +116,34 @@ def _warn_missing_path(label: str, path: str) -> None:
     print(f"Warning: {label} does not exist yet: {path}", file=sys.stderr)
 
 
-def cmd_current(args: argparse.Namespace) -> None:
-    """Print the exact active runtime session from Session Index env."""
+def _resolve_current_or_exit() -> CurrentSession:
     try:
-        current = resolve_current_session()
+        return resolve_current_session()
     except CurrentSessionError as e:
         print(str(e), file=sys.stderr)
         raise SystemExit(1)
 
+
+def _print_cleaned_paths(current: CurrentSession) -> None:
+    transcript_status = "exists" if current.transcript_exists else "missing"
+    tool_log_status = "exists" if current.tool_log_exists else "missing"
+    print(f"Clean Transcript: {current.transcript_path} [{transcript_status}]")
+    print(f"Tool Log: {current.tool_log_path} [{tool_log_status}]")
+
+
+def cmd_current_cleaned_paths() -> None:
+    """Print the canonical generated paths for the exact active session."""
+    _print_cleaned_paths(_resolve_current_or_exit())
+
+
+def cmd_current(args: argparse.Namespace) -> None:
+    """Print the exact active runtime session from Session Index env."""
+    current = _resolve_current_or_exit()
+
     if args.json:
         print(json.dumps(current.to_json_dict(), sort_keys=True))
+    elif getattr(args, "cleaned_paths", False):
+        _print_cleaned_paths(current)
     elif args.path:
         print(current.transcript_path)
         if not current.transcript_exists:
@@ -1019,6 +1037,11 @@ def main() -> None:
         "--path",
         action="store_true",
         help="Print the deterministic clean transcript path; warn if it does not exist yet",
+    )
+    current_output.add_argument(
+        "--cleaned-paths",
+        action="store_true",
+        help="Print canonical Clean Transcript and Tool Log paths with existence status",
     )
     current_output.add_argument("--native", action="store_true", help="Print the provider-native session ID")
     current_output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")

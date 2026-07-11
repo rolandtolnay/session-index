@@ -19,6 +19,11 @@ output.add_argument(
     action="store_true",
     help="Print the deterministic clean transcript path; warn if it does not exist yet",
 )
+output.add_argument(
+    "--cleaned-paths",
+    action="store_true",
+    help="Print canonical Clean Transcript and Tool Log paths with existence status",
+)
 output.add_argument("--native", action="store_true", help="Print the provider-native session ID")
 output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")
 args = parser.parse_args()

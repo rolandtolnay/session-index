@@ -1,0 +1,4 @@
+interface:
+  display_name: "Current Session"
+  short_description: "Show canonical cleaned conversation paths"
+  default_prompt: "Use $current-session to show the canonical cleaned paths for this conversation."

@@ -34,11 +34,12 @@ Most lookup tasks are either:
 ```bash
 uv run ~/.pi/agent/skills/session-search/scripts/current.py          # Canonical Session ID
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --path   # Clean Transcript path; warns if missing
+uv run ~/.pi/agent/skills/session-search/scripts/current.py --cleaned-paths # Clean Transcript + Tool Log paths and status
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --native # provider-native session ID
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured current-session metadata
 ```
 
-Use `current` only inside an active runtime exposing Session Index environment. It does not guess from latest sessions or the database.
+Use `current` only inside an active runtime exposing exact Session Index or provider-native identity. Codex resolves `CODEX_THREAD_ID` to exactly one active or archived rollout. It does not guess from latest sessions or the database.
 
 ### query — read-only SQL over fact tables
 

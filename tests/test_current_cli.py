@@ -22,6 +22,7 @@ ENV_KEYS = [
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_TRANSCRIPT_PATH",
     "CLAUDE_CODE_TRANSCRIPT_PATH",
+    "CODEX_THREAD_ID",
 ]
 
 
@@ -82,6 +83,42 @@ def test_current_native_prints_provider_native_id(monkeypatch, current_cli_setup
     _run_cli(monkeypatch, ["current", "--native"])
 
     assert capsys.readouterr().out == "019pi-session\n"
+
+
+def test_current_cleaned_paths_marks_both_missing(monkeypatch, current_cli_setup, capsys):
+    _run_cli(monkeypatch, ["current", "--cleaned-paths"])
+
+    captured = capsys.readouterr()
+    assert captured.out == (
+        f"Clean Transcript: {current_cli_setup / 'pi:019pi-session.md'} [missing]\n"
+        f"Tool Log: {current_cli_setup / 'pi:019pi-session.tools.md'} [missing]\n"
+    )
+    assert captured.err == ""
+
+
+def test_current_cleaned_paths_marks_both_existing(monkeypatch, current_cli_setup, capsys):
+    (current_cli_setup / "pi:019pi-session.md").write_text("transcript")
+    (current_cli_setup / "pi:019pi-session.tools.md").write_text("tools")
+
+    _run_cli(monkeypatch, ["current", "--cleaned-paths"])
+
+    captured = capsys.readouterr()
+    assert captured.out.endswith(
+        f"Clean Transcript: {current_cli_setup / 'pi:019pi-session.md'} [exists]\n"
+        f"Tool Log: {current_cli_setup / 'pi:019pi-session.tools.md'} [exists]\n"
+    )
+    assert captured.err == ""
+
+
+def test_current_cleaned_paths_reports_mixed_status(monkeypatch, current_cli_setup, capsys):
+    (current_cli_setup / "pi:019pi-session.md").write_text("transcript")
+
+    _run_cli(monkeypatch, ["current", "--cleaned-paths"])
+
+    captured = capsys.readouterr()
+    assert "Clean Transcript:" in captured.out and "[exists]" in captured.out.splitlines()[0]
+    assert "Tool Log:" in captured.out and "[missing]" in captured.out.splitlines()[1]
+    assert captured.err == ""
 
 
 def test_current_json_prints_structured_metadata(monkeypatch, current_cli_setup, capsys):

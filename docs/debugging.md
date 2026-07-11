@@ -186,6 +186,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - `uv run cli.py current` works only inside an active runtime that exposes exact Session Index identity.
 - Required public env: `SESSION_INDEX_SESSION_ID`, `SESSION_INDEX_NATIVE_SESSION_ID`, `SESSION_INDEX_SOURCE`, and `SESSION_INDEX_SOURCE_PATH`.
 - Optional public env: `SESSION_INDEX_LEAF_ID` for Pi leaf metadata; it is reported as `leaf_id` in JSON when available.
+- Codex compatibility uses `CODEX_THREAD_ID` and requires exactly one matching rollout under the active or archived Codex session directories.
 - `source_path` is the raw provider Source Transcript, `transcript_path` is the generated Clean Transcript artifact, and `tool_log_path` is the generated Tool Log artifact.
 - The Clean Transcript and Tool Log paths are derived from the Canonical Session ID under `~/.session-index/transcripts/`; a database row is not required.
 - Missing or inconsistent runtime identity exits non-zero by design. v1 does not fall back to the latest session, focused terminal, registry state, or the database.

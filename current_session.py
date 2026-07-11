@@ -30,6 +30,7 @@ CLAUDE_ENV_SOURCE_PATHS = (
     "CLAUDE_TRANSCRIPT_PATH",
     "CLAUDE_CODE_TRANSCRIPT_PATH",
 )
+CODEX_ENV_THREAD_ID = "CODEX_THREAD_ID"
 
 REQUIRED_ENV = (
     ENV_SESSION_ID,
@@ -248,6 +249,44 @@ def _resolve_claude_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, s
     return session_id, session_id, "claude", source_path, None
 
 
+def _locate_codex_source_path(thread_id: str) -> str | None:
+    """Locate exactly one Codex rollout for the active thread id."""
+    from sources import discover_codex_sessions
+
+    native_id = thread_id.removeprefix("codex:")
+    expected_suffix = f"-{native_id}.jsonl"
+    matches = [
+        match
+        for match in discover_codex_sessions(native_id)
+        if os.path.basename(match.path).endswith(expected_suffix)
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        paths = ", ".join(match.path for match in matches)
+        raise _fail(
+            f"multiple source transcripts matched codex thread {native_id!r}: {paths}"
+        )
+    return matches[0].path
+
+
+def _resolve_codex_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, str, None]:
+    thread_id = _required_value(env, CODEX_ENV_THREAD_ID)
+    if thread_id is None:
+        raise _fail(f"insufficient codex compatibility env: missing {CODEX_ENV_THREAD_ID}")
+
+    native_id = thread_id.removeprefix("codex:")
+    source_path = _locate_codex_source_path(native_id)
+    if source_path is None:
+        raise _fail(
+            f"could not locate the source transcript for codex thread {native_id!r}: "
+            "ensure the matching rollout exists under the active or archived "
+            "Codex session directories"
+        )
+
+    return f"codex:{native_id}", native_id, "codex", source_path, None
+
+
 def _resolve_env_inputs(env: Mapping[str, str]) -> tuple[str, str, str, str, str | None]:
     if _has_public_env(env):
         return _resolve_public_env(env)
@@ -256,6 +295,11 @@ def _resolve_env_inputs(env: Mapping[str, str]) -> tuple[str, str, str, str, str
         _first_required_value(env, CLAUDE_ENV_SESSION_IDS) is not None
         or _first_required_value(env, CLAUDE_ENV_SOURCE_PATHS) is not None
     )
+    has_codex_compat = _required_value(env, CODEX_ENV_THREAD_ID) is not None
+    if has_claude_compat and has_codex_compat:
+        raise _fail("conflicting claude and codex compatibility env")
+    if has_codex_compat:
+        return _resolve_codex_compat_env(env)
     if has_claude_compat:
         return _resolve_claude_compat_env(env)
 
@@ -265,7 +309,8 @@ def _resolve_env_inputs(env: Mapping[str, str]) -> tuple[str, str, str, str, str
     raise _fail(
         f"missing required env: {required}; claude compatibility requires "
         f"{claude_ids} (plus {claude_paths}, or a discoverable "
-        f"~/.claude/projects/*/<session>.jsonl)"
+        f"~/.claude/projects/*/<session>.jsonl); codex compatibility requires "
+        f"{CODEX_ENV_THREAD_ID} and one matching rollout"
     )
 
 
@@ -276,9 +321,8 @@ def resolve_current_session(env: Mapping[str, str] | None = None) -> CurrentSess
     state, or any registry. Missing or inconsistent env is reported as an
     explicit failure because guessing can identify the wrong parallel session.
     Session Index's public SESSION_INDEX_* contract takes precedence. Claude's
-    native env is accepted via CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID; the
-    source transcript path is taken from CLAUDE_(CODE_)TRANSCRIPT_PATH when set,
-    otherwise located by the *exact* session id (~/.claude/projects/*/<id>.jsonl),
+    native env is accepted via CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID or
+    CODEX_THREAD_ID. Provider source transcripts are located by exact native id,
     requiring one unique match so duplicate files fail clearly instead of being
     guessed.
     """

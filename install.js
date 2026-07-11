@@ -41,6 +41,9 @@ const SKILL_SRC = path.join(REPO_ROOT, "skills", SKILL_NAME);
 const CLAUDE_SKILL_DST = path.join(CLAUDE_DIR, "skills", SKILL_NAME);
 const PI_SKILL_DST = path.join(PI_AGENT_DIR, "skills", SKILL_NAME);
 const CODEX_SKILL_DST = path.join(CODEX_DIR, "skills", SKILL_NAME);
+const CODEX_CURRENT_SKILL_NAME = "current-session";
+const CODEX_CURRENT_SKILL_SRC = path.join(REPO_ROOT, "skills", CODEX_CURRENT_SKILL_NAME);
+const CODEX_CURRENT_SKILL_DST = path.join(CODEX_DIR, "skills", CODEX_CURRENT_SKILL_NAME);
 
 const PI_EXTENSION_NAME = "session-index";
 const PI_EXTENSION_SRC = path.join(REPO_ROOT, "pi-extension");
@@ -280,6 +283,7 @@ function validateCodexHooksDocument(document) {
 function installCodex() {
   console.log("\nCodex integration");
   linkResource(SKILL_SRC, CODEX_SKILL_DST, `Codex skill: ${SKILL_NAME}`);
+  linkResource(CODEX_CURRENT_SKILL_SRC, CODEX_CURRENT_SKILL_DST, `Codex skill: ${CODEX_CURRENT_SKILL_NAME}`);
 
   let previousManifest = {};
   if (fs.existsSync(CODEX_MANIFEST_PATH)) {
@@ -308,6 +312,7 @@ function installCodex() {
     target: "codex",
     repoRoot: REPO_ROOT,
     skill: SKILL_NAME,
+    skills: [SKILL_NAME, CODEX_CURRENT_SKILL_NAME],
     hookEvents: ["Stop"],
     hooksFileCreated,
   });
@@ -323,6 +328,11 @@ function uninstallCodex() {
   }
   const repoRoot = manifest.repoRoot || REPO_ROOT;
   unlinkResource(CODEX_SKILL_DST, path.join(repoRoot, "skills", SKILL_NAME), `Codex skill: ${SKILL_NAME}`);
+  unlinkResource(
+    CODEX_CURRENT_SKILL_DST,
+    path.join(repoRoot, "skills", CODEX_CURRENT_SKILL_NAME),
+    `Codex skill: ${CODEX_CURRENT_SKILL_NAME}`,
+  );
 
   if (fs.existsSync(CODEX_HOOKS_PATH)) {
     const document = readJson(CODEX_HOOKS_PATH, {});

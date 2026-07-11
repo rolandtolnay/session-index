@@ -24,6 +24,7 @@ CLAUDE_COMPAT_ENV_KEYS = [
     "CLAUDE_TRANSCRIPT_PATH",
     "CLAUDE_CODE_TRANSCRIPT_PATH",
 ]
+CODEX_COMPAT_ENV_KEY = "CODEX_THREAD_ID"
 
 
 def _env(session_id="session-1", native_session_id="session-1", source="claude", source_path="/tmp/source.jsonl", **extra):
@@ -98,6 +99,88 @@ def test_resolve_codex_env_adds_canonical_prefix_and_strips_native_prefix(tmp_pa
     assert current.source == "codex"
     assert current.transcript_path == str(tmp_path / "codex:019codex-session.md")
     assert current.tool_log_path == str(tmp_path / "codex:019codex-session.tools.md")
+
+
+def test_resolve_codex_compat_locates_exact_active_rollout(tmp_path, monkeypatch):
+    native_id = "019codex-active"
+    codex_home = tmp_path / "codex-home"
+    source = codex_home / "sessions" / "2026" / "07" / "11" / f"rollout-2026-07-11T10-00-00-{native_id}.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text("{}\n")
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(codex_home))
+
+    current = resolve_current_session({CODEX_COMPAT_ENV_KEY: native_id})
+
+    assert current.session_id == f"codex:{native_id}"
+    assert current.native_session_id == native_id
+    assert current.source == "codex"
+    assert current.source_path == str(source)
+    assert current.source_path_exists is True
+    assert current.transcript_path == str(tmp_path / f"codex:{native_id}.md")
+    assert current.tool_log_path == str(tmp_path / f"codex:{native_id}.tools.md")
+
+
+def test_resolve_codex_compat_accepts_prefixed_id_and_archived_rollout(tmp_path, monkeypatch):
+    native_id = "019codex-archived"
+    codex_home = tmp_path / "codex-home"
+    source = codex_home / "archived_sessions" / f"rollout-2026-07-10T10-00-00-{native_id}.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text("{}\n")
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(codex_home))
+
+    current = resolve_current_session({CODEX_COMPAT_ENV_KEY: f"codex:{native_id}"})
+
+    assert current.session_id == f"codex:{native_id}"
+    assert current.native_session_id == native_id
+    assert current.source_path == str(source)
+
+
+def test_resolve_codex_compat_fails_when_rollout_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(tmp_path / "missing-codex-home"))
+
+    with pytest.raises(CurrentSessionError) as exc:
+        resolve_current_session({CODEX_COMPAT_ENV_KEY: "019codex-missing"})
+
+    message = str(exc.value)
+    assert "could not locate the source transcript for codex thread" in message
+    assert "019codex-missing" in message
+
+
+def test_resolve_codex_compat_fails_on_duplicate_rollouts(tmp_path, monkeypatch):
+    native_id = "019codex-duplicate"
+    codex_home = tmp_path / "codex-home"
+    active = codex_home / "sessions" / f"rollout-2026-07-11T10-00-00-{native_id}.jsonl"
+    archived = codex_home / "archived_sessions" / f"rollout-2026-07-10T10-00-00-{native_id}.jsonl"
+    active.parent.mkdir(parents=True)
+    archived.parent.mkdir(parents=True)
+    active.write_text("{}\n")
+    archived.write_text("{}\n")
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(codex_home))
+
+    with pytest.raises(CurrentSessionError) as exc:
+        resolve_current_session({CODEX_COMPAT_ENV_KEY: native_id})
+
+    message = str(exc.value)
+    assert "multiple source transcripts matched codex thread" in message
+    assert str(active) in message
+    assert str(archived) in message
+
+
+def test_public_env_takes_precedence_over_codex_compat(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "sources.discover_codex_sessions",
+        lambda _session_id: pytest.fail("Codex compatibility discovery should not run"),
+    )
+
+    current = resolve_current_session(_env(
+        session_id="pi:public",
+        native_session_id="public",
+        source="pi",
+        source_path=str(tmp_path / "source.jsonl"),
+        CODEX_THREAD_ID="019codex-ignored",
+    ))
+
+    assert current.session_id == "pi:public"
 
 
 def test_resolve_claude_env_keeps_canonical_and_native_equal(tmp_path, monkeypatch):
@@ -381,6 +464,18 @@ def test_missing_required_env_fails_clearly():
         assert key in message
     for key in CLAUDE_COMPAT_ENV_KEYS[:2]:
         assert key in message
+    assert CODEX_COMPAT_ENV_KEY in message
+
+
+def test_conflicting_provider_compatibility_env_fails_clearly(tmp_path):
+    with pytest.raises(CurrentSessionError) as exc:
+        resolve_current_session({
+            CODEX_COMPAT_ENV_KEY: "019codex-session",
+            "CLAUDE_CODE_SESSION_ID": "claude-session",
+            "CLAUDE_CODE_TRANSCRIPT_PATH": str(tmp_path / "claude-session.jsonl"),
+        })
+
+    assert "conflicting claude and codex compatibility env" in str(exc.value)
 
 
 def test_inconsistent_pi_env_fails_clearly(tmp_path):

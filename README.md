@@ -12,7 +12,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
 - **Skill Invocation audits** — normalizes slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads into the canonical `skill_invocations` table
 - **CLI** — `find`, `inspect`, `query`, backfill, status, and current-session lookup from the terminal
-- **Skill** — `session-search` skill for Claude Code, Pi, and Codex-indexed history
+- **Skills** — `session-search` for indexed history and Codex `$current-session` for the active conversation's cleaned paths
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ By default the installer sets up all three integrations:
 
 - Claude Code: skill symlink in `~/.claude/skills/` and hooks in `~/.claude/settings.json`
 - Pi: skill symlink in `~/.pi/agent/skills/` and extension symlink in `~/.pi/agent/extensions/`
-- Codex: skill symlink in `~/.codex/skills/` and Stop hook in `~/.codex/hooks.json`
+- Codex: `session-search` and `current-session` skill symlinks in `~/.codex/skills/`, plus the Stop hook in `~/.codex/hooks.json`
 
 Install one target only:
 
@@ -55,6 +55,7 @@ node install.js --uninstall --target codex
 
 After installing the Pi integration, run `/reload` in Pi or restart Pi.
 After installing the Codex integration, restart Codex and use `/hooks` to review and trust the Session Index Stop hook. Codex skips new or changed non-managed hooks until they are trusted.
+In Codex, invoke `$current-session` to display the canonical Clean Transcript and Tool Log paths for the active conversation.
 
 ## Summary model configuration
 
@@ -149,16 +150,19 @@ Copy a `ref` or `inspect_refs.primary` value unchanged into `inspect` to retriev
 
 ## Current session lookup
 
-Inside an active Claude Code or Pi runtime that exposes Session Index environment, the `current` command identifies the exact conversation running that command:
+Inside an active Claude Code, Pi, or Codex runtime that exposes exact session identity, the `current` command identifies the conversation running that command:
 
 ```bash
 uv run cli.py current          # Canonical Session ID
 uv run cli.py current --path   # deterministic Clean Transcript artifact path; warns if missing
+uv run cli.py current --cleaned-paths # Clean Transcript + Tool Log paths with existence status
 uv run cli.py current --native # provider-native session ID
 uv run cli.py current --json   # full current-session metadata
 ```
 
 In Pi TUI, use `/current-session` to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `Ctrl+R` explicitly runs Manual Current Session Indexing: the same full Pi indexing pass used on session shutdown for the current snapshot, then refreshes artifact statuses if the display remains open. The CLI remains the terminal/API-oriented interface.
+
+In Codex, use `$current-session`. The dedicated skill runs the focused `--cleaned-paths` output and returns only the absolute Clean Transcript and Tool Log paths with `[exists]` or `[missing]` status.
 
 `current --json` uses Session Index terminology:
 
@@ -183,7 +187,7 @@ The Session Index-owned runtime environment contract is:
 | `SESSION_INDEX_SOURCE_PATH` | yes | Raw provider Source Transcript path |
 | `SESSION_INDEX_LEAF_ID` | no | Optional Pi leaf metadata |
 
-`SESSION_INDEX_*` variables are the public contract and take precedence. Claude-native environment can be used only as compatibility input when it provides both the native session ID (`CLAUDE_SESSION_ID`) and Source Transcript path (`CLAUDE_TRANSCRIPT_PATH` or `CLAUDE_CODE_TRANSCRIPT_PATH`) needed to construct the same result.
+`SESSION_INDEX_*` variables are the public contract and take precedence. Claude-native environment can be used as compatibility input when it identifies one exact Claude source transcript. Codex compatibility uses `CODEX_THREAD_ID` and requires exactly one matching rollout under the active or archived Codex session directories.
 
 `current` does not require a database row. It derives `transcript_path` and `tool_log_path` from the Canonical Session ID using the standard artifact paths under `~/.session-index/transcripts/`, so it can work before full indexing has completed. Because those paths can be deterministic before the artifacts are written, `current --path` prints the path on stdout and warns on stderr when the Clean Transcript file does not exist yet; use `current --json` when callers need machine-readable existence flags.
 
@@ -210,7 +214,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 
 | Command | Description |
 |---------|-------------|
-| `current [--path\|--native\|--json]` | Show the exact active runtime session from Session Index env |
+| `current [--path\|--cleaned-paths\|--native\|--json]` | Show the exact active runtime session or its canonical generated paths |
 | `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
 | `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |
 | `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with generated artifact metadata and scoped Clean Transcript, Tool Log, or Subagent Run Evidence Snippets |
