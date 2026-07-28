@@ -245,7 +245,7 @@ The script simulates what SessionStart would have injected and checks if those p
 
 1. Selects the latest seven Top-Level current-project sessions with headlines and existing Clean Transcripts; nested Pi subagent `run-N/session.jsonl` rows are excluded before limiting.
 2. Selects Top-Level other-project candidates from the last seven days and ranks them by 60% total-turn percentile plus 40% assistant-character percentile, with recency as the tie-breaker.
-3. Injects one shared Clean Transcript root plus the top 21 cross-project entries with dates, branches, canonical transcript filenames, and headlines.
+3. Injects one shared Clean Transcript root, retaining branch names for current-project entries while cross-project entries contain only dates, projects, canonical transcript filenames, and headlines.
 4. Directs the agent to `session-search` when the needed session is absent.
 
 Pi's `before_agent_start` path calls the same `recent_context.py` builder, so selection and formatting are identical across Claude and Pi.

@@ -12,14 +12,19 @@ CROSS_PROJECT_LIMIT = 21
 CROSS_PROJECT_DAYS = 7
 
 
-def _format_session(s: dict[str, Any], *, include_project: bool = True) -> str:
-    """Format one routing headline with metadata and a root-relative transcript name."""
+def _format_session(
+    s: dict[str, Any],
+    *,
+    include_project: bool = True,
+    include_branch: bool = True,
+) -> str:
+    """Format one routing headline with selected metadata and a transcript name."""
     parts: list[str] = []
     if s.get("started_at"):
         parts.append(s["started_at"][:10])
     if include_project and s.get("project"):
         parts.append(s["project"])
-    if s.get("branch"):
+    if include_branch and s.get("branch"):
         parts.append(f"({s['branch']})")
     if s.get("transcript_path"):
         parts.append(f"`{os.path.basename(s['transcript_path'])}`")
@@ -132,6 +137,9 @@ def build_recent_context(cwd: str) -> str | None:
 
     if cross_project:
         lines.append(f"\n## Other projects (top {len(cross_project)} from the last {CROSS_PROJECT_DAYS} days)")
-        lines.extend(f"- {_format_session(session)}" for session in cross_project)
+        lines.extend(
+            f"- {_format_session(session, include_branch=False)}"
+            for session in cross_project
+        )
 
     return "\n".join(lines)

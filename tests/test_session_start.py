@@ -49,6 +49,18 @@ def test_format_session_has_deterministic_metadata_and_path(tmp_path):
     assert str(tmp_path) not in result
 
 
+def test_format_session_can_omit_branch_for_cross_project_entry(tmp_path):
+    path = _transcript(tmp_path, "s-cross")
+    result = _format_session({
+        "started_at": "2026-07-28T10:00:00Z",
+        "project": "dashboard-web",
+        "branch": "feature/payments",
+        "headline": "Added payment retries",
+        "transcript_path": path,
+    }, include_branch=False)
+    assert result == "2026-07-28 dashboard-web `s-cross.md` — Added payment retries"
+
+
 def test_format_session_can_omit_redundant_project(tmp_path):
     path = _transcript(tmp_path, "s1")
     result = _format_session({
@@ -210,8 +222,10 @@ def test_build_recent_context_limits_filters_and_instructs(tmp_path, monkeypatch
     assert "[pi]" not in context
     assert "## current (latest 7)" in context
     assert "## Other projects (top 21 from the last 7 days)" in context
-    assert "branch-0" in context and "branch-6" in context
+    current_section, cross_section = context.split("## Other projects", 1)
+    assert "branch-0" in current_section and "branch-6" in current_section
     assert "branch-7" not in context
+    assert "(main)" not in cross_section
     assert "nested child agent" not in context
     assert "missing transcript entry" not in context
     assert "old cross project task" not in context
