@@ -11,6 +11,19 @@ from typing import Any
 
 DATA_DIR = os.path.expanduser("~/.session-index")
 DB_PATH = os.path.join(DATA_DIR, "sessions.db")
+TOP_LEVEL_SESSION_PREDICATE = (
+    "NOT (source = 'pi' AND COALESCE(source_path, '') GLOB '*/run-*/session.jsonl')"
+)
+
+
+def top_level_session_predicate(alias: str = "") -> str:
+    """Return the SQL predicate that excludes nested Pi subagent sessions."""
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"NOT ({prefix}source = 'pi' AND "
+        f"COALESCE({prefix}source_path, '') GLOB '*/run-*/session.jsonl')"
+    )
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -27,10 +40,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     ended_at TEXT,
     duration_seconds INTEGER,
     user_message_count INTEGER,
+    assistant_message_count INTEGER,
+    assistant_char_count INTEGER,
     user_messages TEXT,
     files_touched TEXT,
     tools_used TEXT,
     summary TEXT,
+    headline TEXT,
     transcript_path TEXT,
     tool_log_path TEXT,
     subagent_transcripts TEXT,
@@ -225,6 +241,9 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         ("tool_log_path", "ALTER TABLE sessions ADD COLUMN tool_log_path TEXT"),
         ("parent_session_path", "ALTER TABLE sessions ADD COLUMN parent_session_path TEXT"),
         ("parent_native_session_id", "ALTER TABLE sessions ADD COLUMN parent_native_session_id TEXT"),
+        ("assistant_message_count", "ALTER TABLE sessions ADD COLUMN assistant_message_count INTEGER"),
+        ("assistant_char_count", "ALTER TABLE sessions ADD COLUMN assistant_char_count INTEGER"),
+        ("headline", "ALTER TABLE sessions ADD COLUMN headline TEXT"),
     ]
     for _column, ddl in migrations:
         try:
@@ -262,10 +281,13 @@ def upsert_session(
     ended_at: str | None = None,
     duration_seconds: int | None = None,
     user_message_count: int | None = None,
+    assistant_message_count: int | None = None,
+    assistant_char_count: int | None = None,
     user_messages: str | None = None,
     files_touched: str | None = None,
     tools_used: str | None = None,
     summary: str | None = None,
+    headline: str | None = None,
     transcript_path: str | None = None,
     tool_log_path: str | None = None,
     subagent_transcripts: str | None = None,
@@ -296,10 +318,13 @@ def upsert_session(
         "ended_at": ended_at,
         "duration_seconds": duration_seconds,
         "user_message_count": user_message_count,
+        "assistant_message_count": assistant_message_count,
+        "assistant_char_count": assistant_char_count,
         "user_messages": user_messages,
         "files_touched": files_touched,
         "tools_used": tools_used,
         "summary": summary,
+        "headline": headline,
         "transcript_path": transcript_path,
         "tool_log_path": tool_log_path,
         "subagent_transcripts": subagent_transcripts,
@@ -312,13 +337,15 @@ def upsert_session(
             session_id, source, native_session_id, source_path,
             slug, project_path, project, branch, model,
             started_at, ended_at, duration_seconds, user_message_count,
-            user_messages, files_touched, tools_used, summary, transcript_path,
+            assistant_message_count, assistant_char_count,
+            user_messages, files_touched, tools_used, summary, headline, transcript_path,
             tool_log_path, subagent_transcripts, parent_session_path, parent_native_session_id
         ) VALUES (
             :session_id, :source, :native_session_id, :source_path,
             :slug, :project_path, :project, :branch, :model,
             :started_at, :ended_at, :duration_seconds, :user_message_count,
-            :user_messages, :files_touched, :tools_used, :summary, :transcript_path,
+            :assistant_message_count, :assistant_char_count,
+            :user_messages, :files_touched, :tools_used, :summary, :headline, :transcript_path,
             :tool_log_path, :subagent_transcripts, :parent_session_path, :parent_native_session_id
         )
         ON CONFLICT(session_id) DO UPDATE SET
@@ -334,10 +361,13 @@ def upsert_session(
             ended_at = COALESCE(:ended_at, ended_at),
             duration_seconds = COALESCE(:duration_seconds, duration_seconds),
             user_message_count = COALESCE(:user_message_count, user_message_count),
+            assistant_message_count = COALESCE(:assistant_message_count, assistant_message_count),
+            assistant_char_count = COALESCE(:assistant_char_count, assistant_char_count),
             user_messages = COALESCE(:user_messages, user_messages),
             files_touched = COALESCE(:files_touched, files_touched),
             tools_used = COALESCE(:tools_used, tools_used),
             summary = COALESCE(:summary, summary),
+            headline = COALESCE(:headline, headline),
             transcript_path = COALESCE(:transcript_path, transcript_path),
             tool_log_path = COALESCE(:tool_log_path, tool_log_path),
             subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts),
@@ -408,7 +438,7 @@ def find_session_candidates(
     - use_or: join terms with OR instead of implicit AND (ignored if query has explicit operators)
     """
     params: dict[str, Any] = {"limit": limit}
-    clauses: list[str] = []
+    clauses: list[str] = [top_level_session_predicate("s")]
 
     if project:
         clauses.append("s.project LIKE :project_pattern")
@@ -494,9 +524,10 @@ def get_recent_by_project(
     conn: sqlite3.Connection, project: str, limit: int = 5,
 ) -> list[dict[str, Any]]:
     """Get recent sessions for a specific project."""
-    cursor = conn.execute("""
+    cursor = conn.execute(f"""
         SELECT * FROM sessions
         WHERE project = :project
+          AND {TOP_LEVEL_SESSION_PREDICATE}
         ORDER BY started_at DESC
         LIMIT :limit
     """, {"project": project, "limit": limit})
@@ -507,39 +538,80 @@ def get_recent_cross_project(
     conn: sqlite3.Connection, since: str, exclude_project: str = "", limit: int = 10,
 ) -> list[dict[str, Any]]:
     """Get recent sessions across all projects since a timestamp."""
-    cursor = conn.execute("""
+    cursor = conn.execute(f"""
         SELECT * FROM sessions
         WHERE started_at >= :since
         AND (:exclude = '' OR project != :exclude)
+        AND {TOP_LEVEL_SESSION_PREDICATE}
         ORDER BY started_at DESC
         LIMIT :limit
     """, {"since": since, "exclude": exclude_project, "limit": limit})
     return [dict(row) for row in cursor.fetchall()]
 
 
+def get_headlined_by_project(
+    conn: sqlite3.Connection, project: str,
+) -> list[dict[str, Any]]:
+    """Get headlined sessions with Clean Transcript paths, newest first."""
+    cursor = conn.execute(f"""
+        SELECT * FROM sessions
+        WHERE project = :project
+          AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND headline IS NOT NULL AND trim(headline) != ''
+          AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
+        ORDER BY started_at DESC, session_id DESC
+    """, {"project": project})
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_headlined_cross_project(
+    conn: sqlite3.Connection, since: str, exclude_project: str,
+) -> list[dict[str, Any]]:
+    """Get eligible cross-project headline candidates for in-memory ranking."""
+    cursor = conn.execute(f"""
+        SELECT * FROM sessions
+        WHERE started_at >= :since
+          AND project != :exclude
+          AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND headline IS NOT NULL AND trim(headline) != ''
+          AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
+        ORDER BY started_at DESC, session_id DESC
+    """, {"since": since, "exclude": exclude_project})
+    return [dict(row) for row in cursor.fetchall()]
+
+
 def get_stats(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Get index statistics."""
-    total = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    """Get Top-Level Session statistics."""
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM sessions WHERE {TOP_LEVEL_SESSION_PREDICATE}"
+    ).fetchone()[0]
     with_summary = conn.execute(
-        "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL"
+        f"SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
+    ).fetchone()[0]
+    with_headline = conn.execute(
+        f"SELECT COUNT(*) FROM sessions WHERE headline IS NOT NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
     ).fetchone()[0]
 
-    projects = conn.execute("""
+    projects = conn.execute(f"""
         SELECT project, COUNT(*) as count
         FROM sessions
         WHERE project IS NOT NULL AND project != ''
+          AND {TOP_LEVEL_SESSION_PREDICATE}
         GROUP BY project
         ORDER BY count DESC
     """).fetchall()
 
-    date_range = conn.execute("""
+    date_range = conn.execute(f"""
         SELECT MIN(started_at), MAX(started_at) FROM sessions
+        WHERE {TOP_LEVEL_SESSION_PREDICATE}
     """).fetchone()
 
     return {
         "total_sessions": total,
         "with_summary": with_summary,
         "missing_summary": total - with_summary,
+        "with_headline": with_headline,
+        "missing_headline": total - with_headline,
         "projects": [(row[0], row[1]) for row in projects],
         "earliest": date_range[0],
         "latest": date_range[1],

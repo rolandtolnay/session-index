@@ -22,6 +22,7 @@ from db import (
     run_readonly_select,
     delete_sessions,
     DB_PATH,
+    TOP_LEVEL_SESSION_PREDICATE,
 )
 from logger import log
 from evidence_find import find_candidates
@@ -161,6 +162,22 @@ def _backfill_options(args: argparse.Namespace):
     return FULL_INDEX_OPTIONS if getattr(args, "with_summary", False) else NO_SUMMARY_INDEX_OPTIONS
 
 
+def _completed_backfill_sessions(conn, options) -> set[str]:
+    """Return sessions complete for the requested deterministic or LLM pass."""
+    from indexer import IndexStage
+
+    done_predicate = (
+        "summary IS NOT NULL AND headline IS NOT NULL"
+        if IndexStage.SUMMARY in options.stages
+        else "transcript_path IS NOT NULL"
+    )
+    cursor = conn.execute(
+        f"SELECT session_id FROM sessions WHERE {done_predicate} "
+        "AND (tools_used IS NULL OR tools_used = '' OR tool_log_path IS NOT NULL)"
+    )
+    return {row[0] for row in cursor.fetchall()}
+
+
 def cmd_backfill(args: argparse.Namespace) -> None:
     """Process JSONL files from Claude Code, Pi, and/or Codex."""
     from indexer import (
@@ -202,12 +219,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     # fact tables (no tools at all, or never got a tool log) so they get caught up.
     existing = set()
     if not args.force:
-        done_column = "summary" if IndexStage.SUMMARY in options.stages else "transcript_path"
-        cursor = conn.execute(
-            f"SELECT session_id FROM sessions WHERE {done_column} IS NOT NULL "
-            "AND (tools_used IS NULL OR tools_used = '' OR tool_log_path IS NOT NULL)"
-        )
-        existing = {row[0] for row in cursor.fetchall()}
+        existing = _completed_backfill_sessions(conn, options)
 
     total = len(source_files)
     processed = 0
@@ -246,6 +258,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             statuses = []
             if IndexStage.SUMMARY in options.stages:
                 statuses.append("summary" if result.summary_generated else "no summary")
+                statuses.append("headline" if result.headline_generated else "no headline")
             if IndexStage.CLEAN_TRANSCRIPT in options.stages:
                 statuses.append("transcript" if result.transcript_path else "no transcript")
             if IndexStage.SUBAGENT_TRANSCRIPTS in options.stages:
@@ -792,6 +805,8 @@ def _check_integrity(conn) -> dict:
     issues = {
         "missing_summary": [],       # session_ids with NULL summary
         "recoverable": [],           # subset of missing_summary where JSONL still exists
+        "missing_headline": [],      # session_ids with NULL headline
+        "headline_recoverable": [],  # subset with summary + Source Transcript for backfill
         "missing_transcript": [],    # session_ids with NULL transcript_path
         "transcript_recoverable": [],  # subset where JSONL still exists
         "dangling_transcript": [],   # session_ids where transcript_path points to missing file
@@ -822,7 +837,8 @@ def _check_integrity(conn) -> dict:
 
     # Missing summaries
     cursor = conn.execute(
-        "SELECT session_id, native_session_id, source, source_path FROM sessions WHERE summary IS NULL"
+        f"SELECT session_id, native_session_id, source, source_path FROM sessions "
+        f"WHERE summary IS NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
     )
     for row in cursor:
         sid = row["session_id"]
@@ -830,9 +846,21 @@ def _check_integrity(conn) -> dict:
         if source_jsonl_exists(row):
             issues["recoverable"].append(sid)
 
+    # Missing headlines
+    cursor = conn.execute(
+        "SELECT session_id, native_session_id, source, source_path, summary "
+        f"FROM sessions WHERE headline IS NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
+    )
+    for row in cursor:
+        sid = row["session_id"]
+        issues["missing_headline"].append(sid)
+        if row["summary"] and source_jsonl_exists(row):
+            issues["headline_recoverable"].append(sid)
+
     # Missing transcripts
     cursor = conn.execute(
-        "SELECT session_id, native_session_id, source, source_path FROM sessions WHERE transcript_path IS NULL"
+        f"SELECT session_id, native_session_id, source, source_path FROM sessions "
+        f"WHERE transcript_path IS NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
     )
     for row in cursor:
         sid = row["session_id"]
@@ -842,7 +870,8 @@ def _check_integrity(conn) -> dict:
 
     # Dangling transcript paths
     cursor = conn.execute(
-        "SELECT session_id, transcript_path FROM sessions WHERE transcript_path IS NOT NULL"
+        f"SELECT session_id, transcript_path FROM sessions "
+        f"WHERE transcript_path IS NOT NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
     )
     for row in cursor:
         if not os.path.exists(row[1]):
@@ -872,7 +901,7 @@ def _check_integrity(conn) -> dict:
     # Dangling subagent transcript paths
     cursor = conn.execute(
         "SELECT session_id, subagent_transcripts FROM sessions "
-        "WHERE subagent_transcripts IS NOT NULL"
+        f"WHERE subagent_transcripts IS NOT NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
     )
     for row in cursor:
         sid = row[0]
@@ -913,6 +942,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"Sessions:        {stats['total_sessions']}")
     print(f"With summary:    {stats['with_summary']}")
     print(f"Missing summary: {stats['missing_summary']}")
+    print(f"With headline:   {stats['with_headline']}")
+    print(f"Missing headline: {stats['missing_headline']}")
 
     if stats["earliest"]:
         print(f"Date range:      {stats['earliest'][:10]} to {stats['latest'][:10]}")
@@ -933,7 +964,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     )
 
     print(f"\nIntegrity:")
-    if not issues["missing_summary"] and total_issues == 0:
+    if not issues["missing_summary"] and not issues["missing_headline"] and total_issues == 0:
         print("  All clear")
     else:
         if issues["missing_summary"]:
@@ -945,6 +976,15 @@ def cmd_status(args: argparse.Namespace) -> None:
             if unrecoverable:
                 parts.append(f"{unrecoverable} unrecoverable (JSONL deleted)")
             print(f"  Missing summary: {len(issues['missing_summary'])} ({', '.join(parts)})")
+        if issues["missing_headline"]:
+            recoverable = len(issues["headline_recoverable"])
+            unavailable = len(issues["missing_headline"]) - recoverable
+            parts = []
+            if recoverable:
+                parts.append(f"{recoverable} recoverable via `backfill --with-summary`")
+            if unavailable:
+                parts.append(f"{unavailable} require a summary and retained Source Transcript")
+            print(f"  Missing headline: {len(issues['missing_headline'])} ({', '.join(parts)})")
         if issues["missing_transcript"]:
             recoverable = len(issues["transcript_recoverable"])
             unrecoverable = len(issues["missing_transcript"]) - recoverable
@@ -970,8 +1010,9 @@ def cmd_status(args: argparse.Namespace) -> None:
             else:
                 print(f"\n  Run `status --fix` to repair {total_issues} issue(s)")
 
-        if issues["recoverable"]:
-            print(f"  Run `backfill --with-summary` to regenerate {len(issues['recoverable'])} missing summary/summaries")
+        description_repairs = set(issues["recoverable"]) | set(issues["headline_recoverable"])
+        if description_repairs:
+            print(f"  Run `backfill --with-summary` to repair {len(description_repairs)} session description(s)")
 
     conn.close()
 
@@ -1079,7 +1120,7 @@ def main() -> None:
     sp_backfill.add_argument("--project", help="Only process sessions for this project name")
     sp_backfill.add_argument("--session", help="Only process this specific session ID")
     sp_backfill.add_argument("--with-summary", action="store_true",
-                             help="Also regenerate LLM summaries (slower; may use network/local LLM)")
+                             help="Also regenerate LLM summaries and headlines (slower; may use network/local LLM)")
     sp_backfill.add_argument("--no-summary", action="store_true", help=argparse.SUPPRESS)
     sp_backfill.set_defaults(func=cmd_backfill)
 

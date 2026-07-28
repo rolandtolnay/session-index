@@ -59,7 +59,7 @@ In Codex, invoke `$current-session` to display the canonical Clean Transcript an
 
 ## Summary model configuration
 
-Summaries run in the background through headless Pi print mode. Defaults:
+Summaries and their separately generated Session Headlines (target 8-15 words, hard maximum 15) run in the background through isolated headless Pi print-mode processes. Defaults:
 
 ```bash
 SESSION_INDEX_SUMMARY_MODEL=openai-codex/gpt-5.4-mini
@@ -68,7 +68,7 @@ SESSION_INDEX_SUMMARY_TIMEOUT=180
 SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS=300
 ```
 
-Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy fallback path.
+The model/thinking overrides apply to full summaries. Session Headlines use fixed `openai-codex/gpt-5.4-mini` with low thinking. Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy summary fallback path; headlines require Pi.
 
 ## Backfill existing conversations
 
@@ -115,7 +115,7 @@ uv run cli.py backfill --source all --force
 
 For scoped validation, run the same command with `--session SESSION_ID` before a full backfill.
 
-Summary regeneration is opt-in:
+Summary regeneration is opt-in. Each successful summary is followed by a separate headline-generation call; sessions are considered complete only when both fields exist:
 
 ```bash
 uv run cli.py backfill --source all --with-summary
@@ -200,10 +200,11 @@ For Claude Code, add to `~/.claude/CLAUDE.md`. For Pi, add to `~/.pi/agent/AGENT
 ```markdown
 ## Past Conversation Reference
 
-Recent same-project sessions are already in context when session-index is installed.
-For anything else — older sessions, other projects, or specific topic lookups — use
-the session-search skill. Invoke it proactively when the user references past work,
-decisions, or discussions from another project. Do NOT read raw JSONL files.
+Recent same-project sessions and selected high-signal cross-project sessions are
+already in context when session-index is installed. For anything absent — older
+sessions, omitted projects, or specific topic lookups — use the session-search skill.
+Invoke it proactively when the user references past work or decisions not listed in
+recent context. Do NOT read raw JSONL files.
 ```
 
 ## Important: raw session cleanup
@@ -218,7 +219,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
 | `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |
 | `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with generated artifact metadata and scoped Clean Transcript, Tool Log, or Subagent Run Evidence Snippets |
-| `backfill [--source claude\|pi\|codex\|all] [--force] [--prune] [--project NAME] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries |
+| `backfill [--source claude\|pi\|codex\|all] [--force] [--prune] [--project NAME] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries and Session Headlines |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
 `find --mutated` is file conversation history by default: it returns one session-collapsed candidate per Canonical Session ID, with representative matching paths and related tool refs for drill-down. Use `find --mutated PATH --mutation-mode event` for exact File Mutation audit rows. Raw SQL over `file_mutations` remains available for custom aggregates and exact lists, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.

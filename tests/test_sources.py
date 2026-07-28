@@ -3,7 +3,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sources import discover_codex_sessions, discover_pi_sessions
+from sources import discover_codex_sessions, discover_pi_sessions, is_nested_pi_subagent_session
+
+
+def test_nested_pi_subagent_session_path_detection(tmp_path):
+    child = tmp_path / "parent-session" / "review-run" / "run-0" / "session.jsonl"
+    top_level = tmp_path / "2026-07-28_parent.jsonl"
+    assert is_nested_pi_subagent_session(str(child)) is True
+    assert is_nested_pi_subagent_session(str(top_level)) is False
+    assert is_nested_pi_subagent_session(str(tmp_path / "session.jsonl")) is False
 
 
 def test_discover_pi_sessions_excludes_subagent_event_and_session_logs(tmp_path):

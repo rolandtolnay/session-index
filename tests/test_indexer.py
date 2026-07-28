@@ -45,6 +45,11 @@ def _add_subagent(parent_path):
     shutil.copyfile(SUB_META, subdir / "agent-a5f64306c4e829331.meta.json")
 
 
+@pytest.fixture(autouse=True)
+def _stub_headline_generation(monkeypatch):
+    monkeypatch.setattr("summarizer.generate_headline", lambda summary: "Implemented compact session headline")
+
+
 def test_index_fast_delegates_to_staged_metadata_only(monkeypatch):
     calls = []
 
@@ -59,6 +64,21 @@ def test_index_fast_delegates_to_staged_metadata_only(monkeypatch):
     assert result.session_id == "s"
     assert calls == [("claude", "/tmp/session.jsonl", indexer.FAST_INDEX_OPTIONS)]
     assert calls[0][2].stages == frozenset({indexer.IndexStage.SESSION_METADATA})
+
+
+def test_indexing_skips_nested_pi_subagent_sessions(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    child = tmp_path / "parent-session" / "review-run" / "run-0" / "session.jsonl"
+    child.parent.mkdir(parents=True)
+    child.write_text("{}\n")
+
+    result = indexer.index_source_transcript("pi", str(child), indexer.FAST_INDEX_OPTIONS)
+
+    assert result.skipped_reason == "nested Pi subagent session"
+    conn = db.get_connection()
+    db.init_db(conn)
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    conn.close()
 
 
 def test_index_summary_delegates_to_summary_only_stage(monkeypatch):
@@ -86,6 +106,7 @@ def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_pa
     result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS)
 
     assert result.summary_generated is True
+    assert result.headline_generated is True
     assert result.transcript_path and os.path.exists(result.transcript_path)
     assert result.tool_log_path and os.path.exists(result.tool_log_path)
     assert result.subagents == 1
@@ -94,6 +115,9 @@ def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_pa
     row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (result.session_id,)).fetchone()
     conn.close()
     assert row["summary"] == "summary text"
+    assert row["headline"] == "Implemented compact session headline"
+    assert row["assistant_message_count"] > 0
+    assert row["assistant_char_count"] > 0
     assert row["transcript_path"] == result.transcript_path
     assert row["tool_log_path"] == result.tool_log_path
     assert row["subagent_transcripts"] and "agent-a5f64306c4e829331.md" in row["subagent_transcripts"]
@@ -357,7 +381,24 @@ def test_cli_backfill_options_select_pass():
     assert deprecated_no_summary.stages == indexer.NO_SUMMARY_INDEX_OPTIONS.stages
 
 
-def test_summary_stage_preserves_old_summary_when_generation_fails(tmp_path, monkeypatch):
+def test_summary_backfill_does_not_skip_rows_missing_headlines():
+    from cli import _completed_backfill_sessions
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    db.init_db(conn)
+    db.upsert_session(conn, session_id="complete", summary="summary", headline="Headline", commit=False)
+    db.upsert_session(conn, session_id="missing-headline", summary="summary", commit=False)
+    conn.commit()
+
+    completed = _completed_backfill_sessions(conn, indexer.FULL_INDEX_OPTIONS)
+
+    assert "complete" in completed
+    assert "missing-headline" not in completed
+    conn.close()
+
+
+def test_summary_stage_preserves_old_descriptions_when_generation_fails(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     monkeypatch.setattr("summarizer.summarize", lambda **kwargs: None)
     parent = _copy_parent(tmp_path, "summary-failure.jsonl")
@@ -365,16 +406,41 @@ def test_summary_stage_preserves_old_summary_when_generation_fails(tmp_path, mon
 
     conn = db.get_connection()
     db.init_db(conn)
-    db.upsert_session(conn, session_id=parsed.session_id, summary="old summary")
+    db.upsert_session(conn, session_id=parsed.session_id, summary="old summary", headline="Old headline")
     conn.close()
 
     result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS, parsed_session=parsed)
 
     assert result.summary_generated is False
+    assert result.headline_generated is False
     conn = db.get_connection()
-    row = conn.execute("SELECT summary FROM sessions WHERE session_id = ?", (parsed.session_id,)).fetchone()
+    row = conn.execute("SELECT summary, headline FROM sessions WHERE session_id = ?", (parsed.session_id,)).fetchone()
     conn.close()
     assert row["summary"] == "old summary"
+    assert row["headline"] == "Old headline"
+
+
+def test_summary_stage_preserves_old_headline_when_headline_generation_fails(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "new summary")
+    monkeypatch.setattr("summarizer.generate_headline", lambda summary: None)
+    parent = _copy_parent(tmp_path, "headline-failure.jsonl")
+    parsed = indexer.parse_session_file("claude", str(parent))
+
+    conn = db.get_connection()
+    db.init_db(conn)
+    db.upsert_session(conn, session_id=parsed.session_id, summary="old summary", headline="Old headline")
+    conn.close()
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS, parsed_session=parsed)
+
+    assert result.summary_generated is True
+    assert result.headline_generated is False
+    conn = db.get_connection()
+    row = conn.execute("SELECT summary, headline FROM sessions WHERE session_id = ?", (parsed.session_id,)).fetchone()
+    conn.close()
+    assert row["summary"] == "new summary"
+    assert row["headline"] == "Old headline"
 
 
 def test_requested_artifact_stage_can_clear_old_owned_field(tmp_path, monkeypatch):

@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import write_transcript, write_subagent_transcript, SubagentRef, extract_evidence_snippets, _block_role
+from transcript import assistant_metrics, read_assistant_metrics, write_transcript, write_subagent_transcript, SubagentRef, extract_evidence_snippets, _block_role
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -41,6 +41,30 @@ def test_write_transcript(tmp_path, monkeypatch):
     assert "I found the issue" in content
     assert "Looks good" in content
     assert "Done!" in content
+
+
+def test_assistant_metrics_match_written_clean_transcript(tmp_path, monkeypatch):
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "user", "content": "Review this long input"},
+        {"role": "assistant", "content": "First response\nwith detail"},
+        {"role": "user", "content": "Continue"},
+        {"role": "assistant", "content": "Second response"},
+    ]
+    path = write_transcript("metrics", messages)
+    assert assistant_metrics(messages) == (2, len("First response\nwith detail") + len("Second response"))
+    assert read_assistant_metrics(path) == assistant_metrics(messages)
+
+
+def test_assistant_metrics_match_subagent_expansion_in_clean_transcript(tmp_path, monkeypatch):
+    monkeypatch.setattr("transcript.TRANSCRIPT_DIR", str(tmp_path))
+    messages = [
+        {"role": "user", "content": "Delegate this"},
+        {"role": "assistant", "content": "Before\n__SUBAGENT:worker:review the code__\nAfter"},
+    ]
+    refs = [SubagentRef(agent_type="worker", agent_id="abc123")]
+    path = write_transcript("subagent-metrics", messages, subagents=refs)
+    assert read_assistant_metrics(path) == assistant_metrics(messages, subagents=refs)
 
 
 def test_write_transcript_empty(tmp_path, monkeypatch):

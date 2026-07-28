@@ -27,6 +27,26 @@ def test_find_topic_returns_compact_session_refs_without_evidence_text(tmp_path)
     assert "text" not in result
 
 
+def test_find_topic_excludes_nested_pi_subagent_sessions(tmp_path):
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
+    db.upsert_session(
+        conn,
+        session_id="pi:child",
+        source="pi",
+        source_path="/sessions/parent/review/run-0/session.jsonl",
+        project="session-index",
+        started_at="2026-06-01T12:00:00Z",
+        summary="Worked on session index evidence retrieval as a child.",
+        user_messages="session index",
+        transcript_path=str(tmp_path / "child.md"),
+    )
+
+    data = find_candidates(conn, topic="session index", limit=5)
+
+    assert [result["ref"] for result in data["results"]] == ["session/pi:abc"]
+
+
 def test_find_topic_falls_back_to_fuzzy_candidates_when_exact_topic_is_empty(tmp_path):
     conn = make_memory_conn()
     seed_evidence_graph(

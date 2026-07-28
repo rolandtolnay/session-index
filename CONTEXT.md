@@ -8,6 +8,10 @@ Session Index preserves searchable records of agent conversations and exposes en
 The agent conversation associated with the active agent/runtime process.
 _Avoid_: Latest session, current terminal session, current project session
 
+**Top-Level Session**:
+A dedicated user-spawned conversation whose Source Transcript is not a nested Subagent Run conversation. Only Top-Level Sessions participate in recent-session injection and ranking.
+_Avoid_: Root session, parent session, Subagent Run
+
 **Current Session Display**:
 A user-visible presentation of Current Session identity and artifact locations for copying or inspection.
 _Avoid_: Chat message, model context, transcript lookup
@@ -27,6 +31,14 @@ Codex uses `codex:<uuid>`.
 **Clean Transcript**:
 The generated markdown conversation artifact for a session, excluding detailed tool-call logs.
 _Avoid_: Raw transcript, source transcript
+
+**Session Headline**:
+An LLM-generated routing phrase of at most 15 words that distinguishes one session in compact injected context and points the agent toward its Clean Transcript.
+_Avoid_: Summary, title, slug, transcript excerpt
+
+**Session Summary**:
+The fuller LLM-generated searchable description of what happened in one session and the source from which its Session Headline is generated.
+_Avoid_: Session Headline, project description
 
 **Source Transcript**:
 The provider-owned raw session log consumed by Session Index.
@@ -101,6 +113,10 @@ _Avoid_: Observed child type, artifact title
 
 - A **Current Session** has exactly one **Canonical Session ID**.
 - A **Current Session** has exactly one **Source Transcript** when the provider exposes a session file.
+- A **Top-Level Session** may contain zero or more **Subagent Runs**; nested Subagent Run conversations are not separate Top-Level Sessions.
+- Recent-session injection and cross-project ranking consider only **Top-Level Sessions**.
+- An indexed session may have one **Session Summary** and one derived **Session Headline**.
+- A **Session Headline** routes an agent to a **Clean Transcript**; it does not replace the searchable **Session Summary**.
 - A **Current Session** has one deterministic **Clean Transcript** path, even before that file exists.
 - A **Current Session** has one deterministic **Tool Log** path, even before that file exists.
 - A **Current Session** may expose a **Leaf ID** when the provider has branch-level identity.

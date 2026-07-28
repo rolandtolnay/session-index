@@ -7,6 +7,7 @@ Returns None on any failure.
 
 import json
 import os
+import re
 import subprocess
 import urllib.request
 
@@ -70,6 +71,12 @@ Start with an action verb: Implemented, Fixed, Refactored, Added, Configured, Mi
 Write 1-4 sentences capturing what this session accomplished and why. Include specific topics, technologies, files, functions, components, ticket IDs, commands, and decisions so keyword searches find this session. If the session spans multiple topics, mention all important ones.
 
 Distinguish planning, research, debugging, and implementation. Only state facts visible in the provided session data. Do not describe the overall project; describe what happened in this session. Never answer the user's questions directly.
+"""
+
+SYSTEM_PROMPT_HEADLINE = """\
+You compress a coding-session summary into a routing headline that helps another AI identify the correct session.
+
+Write one phrase of 8-15 words, with a hard maximum of 15 words. Start with an action verb and preserve the most distinguishing ticket ID, component, file, decision, or outcome. Omit generic wording, project names, branch names, dates, and final punctuation. State only facts from the supplied summary. Output only the headline.
 """
 
 SYSTEM_PROMPT_GEMINI = """\
@@ -204,14 +211,20 @@ def _call_gemini(prompt: str, max_tokens: int) -> str | None:
     return text.strip() or None
 
 
-def _call_pi(prompt: str) -> str | None:
-    """Call headless Pi print mode. Returns None on any failure."""
+def _call_pi(
+    prompt: str,
+    *,
+    system_prompt: str = SYSTEM_PROMPT_PI,
+    model: str | None = None,
+    thinking: str | None = None,
+) -> str | None:
+    """Call headless Pi print mode in a separate OS process. Returns None on failure."""
     disabled = os.environ.get("SESSION_INDEX_DISABLE_PI_SUMMARIZER", "").lower()
     if disabled in {"1", "true", "yes", "on"}:
         return None
 
-    model = os.environ.get("SESSION_INDEX_SUMMARY_MODEL", _PI_MODEL)
-    thinking = os.environ.get("SESSION_INDEX_SUMMARY_THINKING", _PI_THINKING)
+    model = model or os.environ.get("SESSION_INDEX_SUMMARY_MODEL", _PI_MODEL)
+    thinking = thinking or os.environ.get("SESSION_INDEX_SUMMARY_THINKING", _PI_THINKING)
     try:
         timeout = int(os.environ.get("SESSION_INDEX_SUMMARY_TIMEOUT", str(_PI_TIMEOUT_SECONDS)))
     except ValueError:
@@ -231,7 +244,7 @@ def _call_pi(prompt: str) -> str | None:
         "--thinking",
         thinking,
         "--system-prompt",
-        SYSTEM_PROMPT_PI,
+        system_prompt,
     ]
     env = {
         **os.environ,
@@ -291,6 +304,31 @@ def _legacy_summarize(
         timeout=30,
     )
     return result.strip() if result and result.strip() else None
+
+
+def _normalize_headline(text: str) -> str | None:
+    """Normalize model output and enforce the headline's hard 15-word limit."""
+    text = re.sub(r"\s+", " ", text or "").strip().strip('"\'`')
+    text = re.sub(r"^headline\s*:\s*", "", text, flags=re.IGNORECASE)
+    text = text.rstrip(".!?;:").strip()
+    words = text.split()
+    if not words:
+        return None
+    return " ".join(words[:15])
+
+
+def generate_headline(summary: str) -> str | None:
+    """Generate a compact routing headline from an existing summary."""
+    if not summary or not summary.strip():
+        return None
+    prompt = f"Session summary:\n{summary.strip()}\n\nHeadline:"
+    result = _call_pi(
+        prompt,
+        system_prompt=SYSTEM_PROMPT_HEADLINE,
+        model=_PI_MODEL,
+        thinking=_PI_THINKING,
+    )
+    return _normalize_headline(result or "")
 
 
 def summarize(

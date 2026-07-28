@@ -52,6 +52,14 @@ def discover_claude_sessions(session_id: str | None = None) -> list[SourceSessio
     return [SourceSessionFile("claude", path) for path in sorted(glob.glob(pattern))]
 
 
+def is_nested_pi_subagent_session(path: str) -> bool:
+    """Return whether path is a pi-subagents child conversation artifact."""
+    return (
+        os.path.basename(path) == "session.jsonl"
+        and os.path.basename(os.path.dirname(path)).startswith("run-")
+    )
+
+
 def discover_pi_sessions(
     session_id: str | None = None,
     *,

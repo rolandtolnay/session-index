@@ -8,12 +8,14 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
+from db import top_level_session_predicate
+
 FUZZY_CANDIDATE_POOL_LIMIT = 1000
 FUZZY_TOPIC_THRESHOLD = 78.0
 
 
 def _filters(*, project: str | None, since: str | None, until: str | None, session: str | None) -> tuple[list[str], dict[str, Any]]:
-    clauses: list[str] = []
+    clauses: list[str] = [top_level_session_predicate("s")]
     params: dict[str, Any] = {"pool_limit": FUZZY_CANDIDATE_POOL_LIMIT}
     if project:
         clauses.append("s.project LIKE :project_pattern")

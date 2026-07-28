@@ -59,7 +59,7 @@ Key tables:
 - `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and event trails.
 - `subagent_runs` — one row per Subagent Run. Construct `subagent/<parent_session_id>/<child_index>` when `child_index` is present.
 - `question_answers` — one row per asked question. Construct `question/<session_id>/<sequence>/<question_index>`.
-- `sessions` — session metadata useful for joins: `session_id`, `project`, `branch`, `started_at`, `summary`, generated artifact paths.
+- `sessions` — session metadata useful for joins: `session_id`, `project`, `branch`, `started_at`, searchable `summary`, compact `headline`, interaction counts, and generated artifact paths.
 
 ### find — compact Evidence Find candidates
 
@@ -164,4 +164,4 @@ These are more compact than raw JSONL at `~/.claude/projects/`, `~/.pi/agent/ses
 
 Invoke this skill when the user references past work, asks about prior decisions, wants to audit tool/skill/subagent/question/File Mutation behavior, asks for PR summaries/changelogs from recent work, or needs counts/aggregates across sessions.
 
-Recent same-project sessions may already be injected automatically. Use this skill for older sessions, other projects, specific topic lookups, structured audits, and aggregate questions.
+Up to seven Top-Level current-project Session Headlines and 21 ranked Top-Level cross-project headlines may already be injected with a shared Clean Transcript root and canonical transcript filenames. Nested Subagent Run sessions do not participate. Use this skill when the desired session is absent, or for specific topic lookups, structured audits, and aggregate questions.

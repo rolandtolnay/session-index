@@ -37,6 +37,7 @@ def test_check_integrity_does_not_treat_tool_log_as_orphaned_transcript(monkeypa
         conn,
         session_id="s1",
         summary="summary",
+        headline="Implemented useful work",
         transcript_path=str(transcript),
         tool_log_path=str(tool_log),
     )
@@ -46,6 +47,20 @@ def test_check_integrity_does_not_treat_tool_log_as_orphaned_transcript(monkeypa
     assert issues["orphaned_transcripts"] == []
     conn.close()
 
+
+def test_check_integrity_reports_recoverable_missing_headline(tmp_path):
+    source = tmp_path / "source.jsonl"
+    source.write_text("{}")
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    upsert_session(conn, session_id="s1", summary="summary", source_path=str(source))
+
+    issues = _check_integrity(conn)
+
+    assert issues["missing_headline"] == ["s1"]
+    assert issues["headline_recoverable"] == ["s1"]
+    conn.close()
 
 
 # ── query (read-only escape hatch) ─────────────────────────────────────────

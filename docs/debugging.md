@@ -30,8 +30,9 @@ Codex hooks.json
                                                    └─ summary-only pass after 300 idle seconds
 
 Shared full pass:
-    parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► Clean Transcript + Tool Log ─► DB upsert + fact tables
-                                                                                     └─► Skill Invocations from slash commands, skill envelopes, Skill tools, and exact SKILL.md reads
+    parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► Session Headline via separate headless Pi process
+                                                                                 ├─► Clean Transcript + Tool Log ─► DB upsert + fact tables
+                                                                                 └─► Skill Invocations from slash commands, skill envelopes, Skill tools, and exact SKILL.md reads
 
 Canonical evidence path:
     find/query ──► Inspection Reference ──► inspect ──► artifact metadata + scoped Evidence Snippets
@@ -68,7 +69,7 @@ Current-session lookup:
 | `transcript.py` | Clean Transcript writer + Evidence Snippet selector |
 | `tool_log.py` | Per-session Markdown Tool Log writer and section extractor |
 | `skill_facts.py` | Canonical Skill Invocation extraction and row building |
-| `summarizer.py` | LLM summary generator using headless Pi, with legacy Gemini/Ollama fallback |
+| `summarizer.py` | LLM summary generator plus separate Session Headline generator using headless Pi, with legacy summary fallback |
 | `logger.py` | Structured logging with monthly rotation |
 | `client.py` | Standalone Ollama HTTP client for fallback summaries (pure stdlib) |
 | `skills/session-search/SKILL.md` | Canonical installed LLM operating guide |
@@ -148,8 +149,9 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - Codex: no `codex_stop` lines — restart Codex, open `/hooks`, and review/trust the Session Index hook
 - `worker | jsonl not found` / `pi_index | missing session file` — Source Transcript path mismatch
 
-**Summary missing:**
+**Summary or Session Headline missing:**
 - Check Pi auth/model availability: default is `openai-codex/gpt-5.4-mini` via `pi -p --no-session --no-tools`.
+- Headlines use a second isolated Pi process after successful summary generation; a failed headline call preserves any previous value.
 - Set `SESSION_INDEX_SUMMARY_MODEL`, `SESSION_INDEX_SUMMARY_THINKING`, or `SESSION_INDEX_SUMMARY_TIMEOUT` to override the default.
 - Codex summaries wait for 300 seconds without another Stop; override with `SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS`.
 - Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to force the legacy fallback path.
@@ -241,9 +243,12 @@ The script simulates what SessionStart would have injected and checks if those p
 
 ### `session_start.py` (SessionStart)
 
-1. Queries DB for recent same-project sessions (last 5)
-2. Queries DB for recent cross-project sessions (last 10)
-3. Formats results as a system-reminder block injected into the conversation
+1. Selects the latest seven Top-Level current-project sessions with headlines and existing Clean Transcripts; nested Pi subagent `run-N/session.jsonl` rows are excluded before limiting.
+2. Selects Top-Level other-project candidates from the last seven days and ranks them by 60% total-turn percentile plus 40% assistant-character percentile, with recency as the tie-breaker.
+3. Injects one shared Clean Transcript root plus the top 21 cross-project entries with dates, branches, canonical transcript filenames, and headlines.
+4. Directs the agent to `session-search` when the needed session is absent.
+
+Pi's `before_agent_start` path calls the same `recent_context.py` builder, so selection and formatting are identical across Claude and Pi.
 
 ### `stop.py` (Stop)
 
@@ -254,10 +259,13 @@ The script simulates what SessionStart would have injected and checks if those p
 ### `session_end.py` + `_session_end_worker.py` (SessionEnd)
 
 1. `session_end.py` forks a detached worker process and exits immediately (< 1s)
-2. Worker renders the Clean Transcript in memory and generates an LLM summary via headless Pi print mode
-3. Worker writes Clean Transcript and Tool Log when tool calls exist
-4. Worker upserts all fields to DB and replaces fact-table rows
-5. All failures are caught and logged — worker never crashes silently
+2. Worker renders the Clean Transcript in memory and generates an LLM summary via headless Pi print mode.
+3. A separate headless Pi process distills the successful summary into an 8-15-word Session Headline.
+4. Worker writes Clean Transcript and Tool Log when tool calls exist.
+5. Worker upserts all fields to DB and replaces fact-table rows; failed description calls preserve prior values.
+6. All failures are caught and logged — worker never crashes silently.
+
+Nested Pi subagent lifecycle sessions are skipped by the shared indexer. Their activity remains represented through the parent session's Subagent Run facts and generated subagent transcript rather than a duplicate top-level session row.
 
 ### `codex_stop.py` + `_codex_index_worker.py` (Stop)
 

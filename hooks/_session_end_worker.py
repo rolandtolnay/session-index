@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Detached worker — full index pass for summary + transcript.
+"""Detached worker — full index pass for descriptions and generated artifacts.
 
-Launched by session_end.py as a detached subprocess. If LLM fails, the DB row
-keeps NULL summary and backfill can repair later.
+Launched by session_end.py as a detached subprocess. If an LLM call fails, the
+DB row preserves prior generated descriptions and backfill can repair later.
 
 Usage: python3 _session_end_worker.py <session_id> <jsonl_path>
 """
@@ -44,6 +44,10 @@ def main() -> None:
         log(session_id, "worker", "summary generated")
     else:
         log(session_id, "worker", "summary failed (LLM unavailable)")
+    if result.headline_generated:
+        log(session_id, "worker", "headline generated")
+    else:
+        log(session_id, "worker", "headline failed (preserved prior value)")
     if result.transcript_path:
         log(session_id, "worker", "transcript written")
 

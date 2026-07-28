@@ -5,7 +5,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from summarizer import _select_messages, _build_prompt, _build_rich_prompt, _call_pi
+from summarizer import (
+    SYSTEM_PROMPT_HEADLINE,
+    _call_pi,
+    _build_prompt,
+    _build_rich_prompt,
+    _normalize_headline,
+    _select_messages,
+    generate_headline,
+)
 
 
 def test_short_list_unchanged():
@@ -141,3 +149,35 @@ def test_call_pi_returns_none_on_subprocess_error(monkeypatch):
 
     monkeypatch.setattr("subprocess.run", fake_run)
     assert _call_pi("prompt") is None
+
+
+def test_normalize_headline_enforces_hard_word_limit():
+    result = _normalize_headline(
+        "Headline: Implemented one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen."
+    )
+    assert result is not None
+    assert len(result.split()) == 15
+    assert not result.lower().startswith("headline:")
+
+
+def test_normalize_headline_collapses_lines_and_final_punctuation():
+    assert _normalize_headline('"Fixed auth retries\nfor terminal provisioning."') == "Fixed auth retries for terminal provisioning"
+
+
+def test_generate_headline_uses_separate_pi_call(monkeypatch):
+    calls = []
+
+    def fake_call(prompt, *, system_prompt, model, thinking):
+        calls.append((prompt, system_prompt, model, thinking))
+        return "Implemented compact session routing headlines."
+
+    monkeypatch.setattr("summarizer._call_pi", fake_call)
+    assert generate_headline("Added a compact routing field to session records.") == "Implemented compact session routing headlines"
+    assert calls[0][1] == SYSTEM_PROMPT_HEADLINE
+    assert calls[0][2:] == ("openai-codex/gpt-5.4-mini", "low")
+    assert "Added a compact routing field" in calls[0][0]
+
+
+def test_generate_headline_skips_empty_summary(monkeypatch):
+    monkeypatch.setattr("summarizer._call_pi", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
+    assert generate_headline("") is None

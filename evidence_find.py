@@ -6,7 +6,7 @@ import sqlite3
 from collections import Counter
 from typing import Any
 
-from db import build_fts_query, find_session_candidates
+from db import build_fts_query, find_session_candidates, top_level_session_predicate
 from evidence_model import (
     candidate,
     file_mutation_match,
@@ -28,7 +28,7 @@ FUZZY_TOPIC_SCOPE_LIMIT = 1000
 
 
 def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = "s") -> list[str]:
-    clauses: list[str] = []
+    clauses: list[str] = [top_level_session_predicate(alias)]
     if args.get("project"):
         clauses.append(f"{alias}.project LIKE :project_pattern")
         params["project_pattern"] = f"{args['project']}%"

@@ -12,6 +12,8 @@ Any new summarization approach must either use `gemma4:e2b` or bypass Ollama ent
 
 Production summarization now uses headless Pi print mode with `openai-codex/gpt-5.4-mini`, low thinking, the compact GPT prompt, and rich transcript input. The Pi call disables sessions, tools, extensions, skills, prompt templates, and context files so summarization does not create recursive index entries or load unrelated project context.
 
+After a summary succeeds, a second isolated headless Pi process uses fixed `openai-codex/gpt-5.4-mini` with low thinking to compress that summary into a Session Headline. Headlines target 8-15 words with a hard 15-word limit, preserve distinguishing identifiers/components/outcomes, and omit project, branch, and date metadata because recent-context formatting appends those deterministically. A headline failure does not invalidate the summary and preserves any prior headline.
+
 Benchmark result on the 19-session ground-truth set: **13.47/15** composite for `gpt-5.4-mini + rich + compact prompt`.
 
 Historical baselines:
@@ -23,7 +25,7 @@ Historical baselines:
 
 Gemma 4 E2B stays loaded for local hook workflows. Summarization bypasses Ollama entirely by default, avoiding the single-model constraint and local-model quality trade-offs.
 
-If Pi is unavailable or disabled via `SESSION_INDEX_DISABLE_PI_SUMMARIZER`, the code falls back to the legacy Gemini/local path; that local path uses `gemma4:e2b`.
+If Pi is unavailable or disabled via `SESSION_INDEX_DISABLE_PI_SUMMARIZER`, summary generation falls back to the legacy Gemini/local path; that local path uses `gemma4:e2b`. Session Headline generation requires Pi and remains absent (or preserves its prior value) when the isolated Pi call fails.
 
 Relevant benchmark artifacts:
 - `tests/eval_results/pi_gpt_benchmark_report.md`

@@ -46,6 +46,7 @@ class IndexResult:
     subagents: int = 0
     subagent_runs: int = 0
     summary_generated: bool = False
+    headline_generated: bool = False
     transcript_path: str | None = None
     tool_log_path: str | None = None
     skipped_reason: str = ""
@@ -67,6 +68,8 @@ _METADATA_FIELDS = {
     "ended_at",
     "duration_seconds",
     "user_message_count",
+    "assistant_message_count",
+    "assistant_char_count",
     "user_messages",
     "files_touched",
     "tools_used",
@@ -76,7 +79,7 @@ _METADATA_FIELDS = {
 
 _STAGE_FIELDS = {
     IndexStage.SESSION_METADATA: _METADATA_FIELDS,
-    IndexStage.SUMMARY: {"summary"},
+    IndexStage.SUMMARY: {"summary", "headline"},
     IndexStage.CLEAN_TRANSCRIPT: {"transcript_path"},
     IndexStage.SUBAGENT_TRANSCRIPTS: {"subagent_transcripts"},
     IndexStage.TOOL_LOG: {"tool_log_path"},
@@ -132,9 +135,11 @@ def upsert_parsed_session(
     source_path: str,
     files_touched: list[str] | None = None,
     summary: str | None = None,
+    headline: str | None = None,
     transcript_path: str | None = None,
     tool_log_path: str | None = None,
     subagent_transcripts: list[str] | None = None,
+    assistant_subagent_refs: list | None = None,
     stage_overwrite_fields: set[str] | None = None,
     commit: bool = True,
 ) -> None:
@@ -148,6 +153,12 @@ def upsert_parsed_session(
         else session.session_id
     )
     effective_files = files_touched if files_touched is not None else session.files_touched
+    from transcript import assistant_metrics
+
+    assistant_message_count, assistant_char_count = assistant_metrics(
+        session.messages,
+        subagents=assistant_subagent_refs,
+    )
 
     upsert_session(
         conn,
@@ -164,10 +175,13 @@ def upsert_parsed_session(
         ended_at=session.ended_at or None,
         duration_seconds=session.duration_seconds or None,
         user_message_count=session.user_message_count,
+        assistant_message_count=assistant_message_count,
+        assistant_char_count=assistant_char_count,
         user_messages="\n---\n".join(session.user_messages) if session.user_messages else None,
         files_touched=", ".join(effective_files) if effective_files else None,
         tools_used=session.tools_used or None,
         summary=summary,
+        headline=headline,
         transcript_path=transcript_path,
         tool_log_path=tool_log_path,
         subagent_transcripts=", ".join(subagent_transcripts) if subagent_transcripts else None,
@@ -310,6 +324,11 @@ def index_source_transcript(
 
     source = normalize_source(source)
     stages = frozenset(options.stages)
+    if source == "pi":
+        from sources import is_nested_pi_subagent_session
+
+        if is_nested_pi_subagent_session(path):
+            return IndexResult(skipped_reason="nested Pi subagent session", stages=stages)
     session = parsed_session or parse_session_file(source, path)
     result = IndexResult(
         session_id=session.session_id,
@@ -331,9 +350,15 @@ def index_source_transcript(
         result.files_touched = len(enriched_files)
 
     summary = None
+    headline = None
     if IndexStage.SUMMARY in stages:
         summary = _summarize_session(session, enriched_files, parsed_subagents)
         result.summary_generated = bool(summary)
+        if summary:
+            from summarizer import generate_headline
+
+            headline = generate_headline(summary)
+            result.headline_generated = bool(headline)
 
     transcript_path = None
     if IndexStage.CLEAN_TRANSCRIPT in stages:
@@ -358,10 +383,14 @@ def index_source_transcript(
     result.subagent_runs = len(subagent_runs)
 
     stage_overwrite_fields = _stage_overwrite_fields(stages)
-    if IndexStage.SUMMARY in stages and summary is None:
-        # summarizer.summarize() returns None on provider/runtime failure; preserve
-        # existing searchable summaries when the stage produced no replacement.
-        stage_overwrite_fields.discard("summary")
+    if IndexStage.SUMMARY in stages:
+        if summary is None:
+            # Preserve existing searchable descriptions when summary generation fails.
+            stage_overwrite_fields.discard("summary")
+            stage_overwrite_fields.discard("headline")
+        elif headline is None:
+            # A new summary remains useful even if the separate headline process fails.
+            stage_overwrite_fields.discard("headline")
 
     conn = get_connection()
     try:
@@ -373,9 +402,11 @@ def index_source_transcript(
             source_path=path,
             files_touched=enriched_files,
             summary=summary,
+            headline=headline,
             transcript_path=transcript_path,
             tool_log_path=tool_log_path,
             subagent_transcripts=subagent_paths,
+            assistant_subagent_refs=_subagent_refs(parsed_subagents) or None,
             stage_overwrite_fields=stage_overwrite_fields,
             commit=False,
         )

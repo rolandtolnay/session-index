@@ -47,16 +47,49 @@ def test_init_db():
     assert "parent_session_path" in columns
     assert "parent_native_session_id" in columns
     assert "tool_log_path" in columns
+    assert "headline" in columns
+    assert "assistant_message_count" in columns
+    assert "assistant_char_count" in columns
+    conn.close()
+
+
+def test_init_db_migrates_description_and_ranking_columns():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    legacy_schema = db.SCHEMA
+    for column_line in (
+        "    assistant_message_count INTEGER,\n",
+        "    assistant_char_count INTEGER,\n",
+        "    headline TEXT,\n",
+    ):
+        legacy_schema = legacy_schema.replace(column_line, "")
+    conn.executescript(legacy_schema)
+
+    init_db(conn)
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    assert {"headline", "assistant_message_count", "assistant_char_count"} <= columns
     conn.close()
 
 
 def test_upsert_insert():
     conn = _make_conn()
-    upsert_session(conn, session_id="test-1", project="myproject", summary="did stuff")
+    upsert_session(
+        conn,
+        session_id="test-1",
+        project="myproject",
+        summary="did stuff",
+        headline="Implemented useful work",
+        assistant_message_count=3,
+        assistant_char_count=1200,
+    )
     row = conn.execute("SELECT * FROM sessions WHERE session_id='test-1'").fetchone()
     assert row is not None
     assert row["project"] == "myproject"
     assert row["summary"] == "did stuff"
+    assert row["headline"] == "Implemented useful work"
+    assert row["assistant_message_count"] == 3
+    assert row["assistant_char_count"] == 1200
     assert row["source"] == "claude"
     assert row["native_session_id"] == "test-1"
     conn.close()
@@ -142,14 +175,25 @@ def test_get_recent_by_project():
 
 def test_get_stats():
     conn = _make_conn()
-    upsert_session(conn, session_id="stat1", project="a", summary="yes")
+    upsert_session(conn, session_id="stat1", project="a", summary="yes", headline="Did work")
     upsert_session(conn, session_id="stat2", project="a")
     upsert_session(conn, session_id="stat3", project="b", summary="yes")
+    upsert_session(
+        conn,
+        session_id="stat-child",
+        source="pi",
+        source_path="/sessions/parent/review/run-0/session.jsonl",
+        project="a",
+        summary="child summary",
+        headline="Reviewed parent work",
+    )
 
     stats = get_stats(conn)
     assert stats["total_sessions"] == 3
     assert stats["with_summary"] == 2
     assert stats["missing_summary"] == 1
+    assert stats["with_headline"] == 1
+    assert stats["missing_headline"] == 2
     assert len(stats["projects"]) == 2
     conn.close()
 
@@ -280,6 +324,14 @@ def test_find_session_candidates_no_filters():
                    started_at="2026-03-10T00:00:00Z")
     upsert_session(conn, session_id="sn3", project="c",
                    started_at="2026-03-05T00:00:00Z")
+    upsert_session(
+        conn,
+        session_id="sn-child",
+        source="pi",
+        source_path="/sessions/parent/review/run-0/session.jsonl",
+        project="a",
+        started_at="2026-03-20T00:00:00Z",
+    )
     results = find_session_candidates(conn, limit=3)
     assert len(results) == 3
     # Most recent first

@@ -151,6 +151,10 @@ def process_pending_jobs(
                 log(session_id, "codex_worker", "summary generated")
             else:
                 log(session_id, "codex_worker", "summary failed (preserved prior value)")
+            if getattr(result, "headline_generated", False):
+                log(session_id, "codex_worker", "headline generated")
+            else:
+                log(session_id, "codex_worker", "headline failed (preserved prior value)")
         except Exception as error:
             log(session_id, "codex_worker", f"summary error: {error}")
         finally:

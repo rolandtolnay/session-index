@@ -69,6 +69,44 @@ def _expand_subagent_markers(
     return "\n".join(out_lines)
 
 
+def assistant_metrics(
+    messages: list[dict[str, str]],
+    *,
+    subagents: list[SubagentRef] | None = None,
+) -> tuple[int, int]:
+    """Return assistant turn count and rendered Clean Transcript text characters."""
+    contents: list[str] = []
+    ref_index = [0]
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content", "")
+        if subagents:
+            content = _expand_subagent_markers(content, subagents, ref_index)
+        contents.append(content)
+    return len(contents), sum(len(content) for content in contents)
+
+
+def read_assistant_metrics(transcript_path: str) -> tuple[int, int]:
+    """Derive assistant turn count and text characters from a Clean Transcript."""
+    with open(transcript_path) as handle:
+        lines = handle.read().splitlines()
+
+    assistant_blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines:
+        if line.startswith("[assistant]"):
+            current = []
+            assistant_blocks.append(current)
+        elif line.startswith("[user]"):
+            current = None
+        elif current is not None:
+            current.append(line)
+
+    contents = ["\n".join(block).strip() for block in assistant_blocks]
+    return len(contents), sum(len(content) for content in contents)
+
+
 def render_transcript(
     messages: list[dict[str, str]],
     *,
