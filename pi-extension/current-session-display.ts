@@ -180,6 +180,14 @@ export function formatCurrentSessionDisplay(content: CurrentSessionDisplayConten
 	];
 }
 
+function isUnmodifiedKittyKey(data: string, codePoint: number): boolean {
+	const match = /^\x1b\[(\d+)(?::\d*)?(?::\d+)?(?:;(\d+))?(?::\d+)?u$/.exec(data);
+	if (!match || Number(match[1]) !== codePoint) return false;
+	const modifiers = Number(match[2] ?? 1) - 1;
+	const lockModifiers = 64 | 128;
+	return (modifiers & ~lockModifiers) === 0;
+}
+
 function isDismissKey(data: string): boolean {
 	const normalized = data.toLowerCase().replace(/[\s_]/g, "-");
 	return data === "q"
@@ -187,6 +195,7 @@ function isDismissKey(data: string): boolean {
 		|| data === "\r"
 		|| data === "\n"
 		|| data === "\x1b"
+		|| isUnmodifiedKittyKey(data, 27)
 		|| normalized === "return"
 		|| normalized === "enter"
 		|| normalized === "escape";

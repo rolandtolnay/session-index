@@ -56,3 +56,23 @@ test("formatCurrentSessionDisplay keeps command hints out of unresolved metadata
 	assert.equal(lines.some((line) => line.includes("pi --session")), false);
 	assert.equal(lines.some((line) => line.includes("pi --fork")), false);
 });
+
+test("showCurrentSessionDisplay closes on Kitty keyboard protocol Escape", async () => {
+	let closeCount = 0;
+	const ui: CurrentSessionDisplayUi = {
+		custom: async <T>(factory) => {
+			const component = factory(
+				{ requestRender() {} },
+				{},
+				undefined,
+				() => { closeCount++; },
+			);
+			component.handleInput("\x1b[27u");
+			return undefined as T;
+		},
+	};
+
+	await showCurrentSessionDisplay({ ctx: { ui }, content });
+
+	assert.equal(closeCount, 1);
+});
