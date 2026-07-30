@@ -110,6 +110,8 @@ def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_pa
     assert result.transcript_path and os.path.exists(result.transcript_path)
     assert result.tool_log_path and os.path.exists(result.tool_log_path)
     assert result.subagents == 1
+    assert result.rendered_content_chars > 0
+    assert result.rendered_content_signature
 
     conn = db.get_connection()
     row = conn.execute("SELECT * FROM sessions WHERE session_id = ?", (result.session_id,)).fetchone()

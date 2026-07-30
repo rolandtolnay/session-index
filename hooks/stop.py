@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Stop hook — upsert deterministic fields on every Stop event.
+"""Claude Stop hook — queue non-blocking active-session refresh.
 
-Parses the JSONL, checks >= 1 user + 1 assistant message, upserts deterministic
-fields only (no summary, no transcript). Loop-prevention via
-stop_hook_active field from stdin.
+The shared detached coordinator refreshes deterministic artifacts immediately,
+creates the first summary/headline for a qualifying session, and schedules later
+summary refreshes. Loop prevention uses stop_hook_active from stdin.
 """
 
 import json
@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from logger import log
+from session_refresh import enqueue_refresh
 
 
 def main() -> None:
@@ -23,30 +24,21 @@ def main() -> None:
 
     hook_input = json.load(sys.stdin)
 
-    # Loop prevention: Claude Code sets this when a prior Stop hook triggered a continuation
+    # Claude Code sets this when a prior Stop hook triggered a continuation.
     if hook_input.get("stop_hook_active"):
         return
 
     session_id = hook_input.get("session_id", "")
     jsonl_path = hook_input.get("transcript_path", "")
-
     if not session_id or not jsonl_path:
         return
-
-    log(session_id, "stop", "started")
 
     if not os.path.exists(jsonl_path):
         log(session_id, "stop", f"jsonl not found: {jsonl_path}")
         return
 
-    from indexer import index_fast
-
-    result = index_fast("claude", jsonl_path)
-    if result.skipped_reason:
-        log(session_id, "stop", f"skipped ({result.skipped_reason})")
-        return
-
-    log(session_id, "stop", f"upserted ({result.user_message_count} msgs, {result.files_touched} files)")
+    job_path = enqueue_refresh("claude", session_id, jsonl_path, event_id="stop")
+    log(session_id, "stop", f"queued {os.path.basename(job_path)}")
 
 
 if __name__ == "__main__":

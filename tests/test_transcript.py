@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from transcript import assistant_metrics, read_assistant_metrics, write_transcript, write_subagent_transcript, SubagentRef, extract_evidence_snippets, _block_role
+from transcript import assistant_metrics, read_assistant_metrics, rendered_conversation_signature, write_transcript, write_subagent_transcript, SubagentRef, extract_evidence_snippets, _block_role
 
 
 def test_write_transcript(tmp_path, monkeypatch):
@@ -41,6 +41,23 @@ def test_write_transcript(tmp_path, monkeypatch):
     assert "I found the issue" in content
     assert "Looks good" in content
     assert "Done!" in content
+
+
+def test_rendered_conversation_signature_counts_content_and_detects_changes():
+    messages = [
+        {"role": "user", "content": "Fix it"},
+        {"role": "assistant", "content": "Done"},
+    ]
+
+    signature = rendered_conversation_signature(messages)
+
+    assert [(role, chars) for role, chars, _digest in signature] == [
+        ("user", 6),
+        ("assistant", 4),
+    ]
+    changed = rendered_conversation_signature([*messages[:-1], {"role": "assistant", "content": "Done!"}])
+    assert changed[0] == signature[0]
+    assert changed[1] != signature[1]
 
 
 def test_assistant_metrics_match_written_clean_transcript(tmp_path, monkeypatch):

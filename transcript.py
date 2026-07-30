@@ -4,6 +4,7 @@ Writes conversation transcripts to ~/.session-index/transcripts/{session_id}.md
 Uses inline role tags with bracket tool calls.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -69,22 +70,39 @@ def _expand_subagent_markers(
     return "\n".join(out_lines)
 
 
+def rendered_conversation_signature(
+    messages: list[dict[str, str]],
+    *,
+    subagents: list[SubagentRef] | None = None,
+) -> tuple[tuple[str, int, str], ...]:
+    """Return stable role/length/digest entries for rendered conversation content.
+
+    Only user and assistant content counts toward refresh thresholds. Assistant
+    subagent markers are expanded exactly as they are in the Clean Transcript.
+    """
+    signature: list[tuple[str, int, str]] = []
+    ref_index = [0]
+    for message in messages:
+        role = message.get("role", "")
+        if role not in {"user", "assistant"}:
+            continue
+        content = message.get("content", "")
+        if role == "assistant" and subagents:
+            content = _expand_subagent_markers(content, subagents, ref_index)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        signature.append((role, len(content), digest))
+    return tuple(signature)
+
+
 def assistant_metrics(
     messages: list[dict[str, str]],
     *,
     subagents: list[SubagentRef] | None = None,
 ) -> tuple[int, int]:
     """Return assistant turn count and rendered Clean Transcript text characters."""
-    contents: list[str] = []
-    ref_index = [0]
-    for message in messages:
-        if message.get("role") != "assistant":
-            continue
-        content = message.get("content", "")
-        if subagents:
-            content = _expand_subagent_markers(content, subagents, ref_index)
-        contents.append(content)
-    return len(contents), sum(len(content) for content in contents)
+    signature = rendered_conversation_signature(messages, subagents=subagents)
+    assistant_entries = [entry for entry in signature if entry[0] == "assistant"]
+    return len(assistant_entries), sum(entry[1] for entry in assistant_entries)
 
 
 def read_assistant_metrics(transcript_path: str) -> tuple[int, int]:

@@ -44,7 +44,7 @@ function refreshSessionIndexEnv(sessionManager: Parameters<typeof buildSessionIn
 	return sessionEnv;
 }
 
-function buildIndexerSpawn(mode: "fast" | "full", sessionFile: string, sessionEnv: SessionIndexEnv | undefined) {
+function buildIndexerSpawn(mode: "fast" | "full" | "turn" | "exit", sessionFile: string, sessionEnv: SessionIndexEnv | undefined) {
 	const env = overlaySessionIndexEnv(process.env, sessionEnv);
 	env.SESSION_INDEX_PROVIDER = "pi";
 	return {
@@ -54,7 +54,7 @@ function buildIndexerSpawn(mode: "fast" | "full", sessionFile: string, sessionEn
 }
 
 function spawnIndexer(
-	mode: "fast" | "full",
+	mode: "fast" | "full" | "turn" | "exit",
 	sessionFile: string,
 	sessionEnv: SessionIndexEnv | undefined,
 	spawnProcess: SpawnProcess,
@@ -321,7 +321,7 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 
 	return function registerSessionIndexExtension(pi: ExtensionAPI) {
 		let injectedForSession: string | undefined;
-		let lastFastIndexKey: string | undefined;
+		let lastTurnIndexKey: string | undefined;
 
 		pi.registerCommand("current-session", {
 			description: "Show Current Session metadata without sending it to the model",
@@ -363,7 +363,7 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 
 		pi.on("session_start", async (_event, ctx) => {
 			injectedForSession = undefined;
-			lastFastIndexKey = undefined;
+			lastTurnIndexKey = undefined;
 			refreshSessionIndexEnv(ctx.sessionManager);
 		});
 
@@ -404,9 +404,9 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 			if (!sessionFile) return;
 			const leaf = sessionEnv?.SESSION_INDEX_LEAF_ID ?? ctx.sessionManager.getLeafId?.() ?? "";
 			const key = `${sessionFile}:${leaf}`;
-			if (key === lastFastIndexKey) return;
-			lastFastIndexKey = key;
-			spawnIndexer("fast", sessionFile, sessionEnv, spawnProcess);
+			if (key === lastTurnIndexKey) return;
+			lastTurnIndexKey = key;
+			spawnIndexer("turn", sessionFile, sessionEnv, spawnProcess);
 		});
 
 		pi.on("session_shutdown", async (event, ctx) => {
@@ -414,7 +414,7 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 			const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
 			const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.();
 			if (!sessionFile) return;
-			spawnIndexer("full", sessionFile, sessionEnv, spawnProcess);
+			spawnIndexer("exit", sessionFile, sessionEnv, spawnProcess);
 		});
 	};
 }

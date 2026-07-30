@@ -685,3 +685,53 @@ def test_current_session_command_registers_and_fails_missing_pi_identity_without
         assert.equal(/fallback|guess/i.test(rendered.join("\n")), false);
         '''
     )
+
+
+def test_pi_lifecycle_queues_turn_and_forced_exit_refreshes():
+    _run_node(
+        r'''
+        import assert from "node:assert/strict";
+        import { EventEmitter } from "node:events";
+        import { createSessionIndexExtension } from "./pi-extension/index.ts";
+
+        const handlers = new Map();
+        const spawns = [];
+        const spawnProcess = (command, args, options) => {
+          const child = fakeChildProcess(EventEmitter);
+          spawns.push({ command, args, options });
+          return child;
+        };
+        createSessionIndexExtension({ spawnProcess })({
+          registerCommand: () => {},
+          on: (name, handler) => handlers.set(name, handler),
+          exec: async () => ({ code: 0, stdout: "" }),
+        });
+
+        const sessionManager = {
+          getSessionFile: () => "/tmp/pi-session.jsonl",
+          getSessionId: () => "pi-session",
+          getLeafId: () => "leaf-1",
+        };
+        const ctx = { sessionManager };
+
+        await handlers.get("session_start")({ reason: "startup" }, ctx);
+        await handlers.get("agent_end")({}, ctx);
+        await handlers.get("agent_end")({}, ctx);
+        await handlers.get("session_shutdown")({ reason: "reload" }, ctx);
+        await handlers.get("session_shutdown")({ reason: "quit" }, ctx);
+
+        assert.equal(spawns.length, 2, "duplicate leaf and reload shutdown should not enqueue");
+        assert.deepEqual(spawns.map((spawn) => spawn.args.slice(2)), [
+          ["--mode", "turn", "--session-file", "/tmp/pi-session.jsonl"],
+          ["--mode", "exit", "--session-file", "/tmp/pi-session.jsonl"],
+        ]);
+        for (const spawn of spawns) {
+          assert.equal(spawn.command, "uv");
+          assert.equal(spawn.args[0], "run");
+          assert.ok(spawn.args[1].endsWith("/hooks/pi_index.py"));
+          assert.equal(spawn.options.detached, true);
+          assert.equal(spawn.options.env.SESSION_INDEX_SESSION_ID, "pi:pi-session");
+          assert.equal(spawn.options.env.SESSION_INDEX_LEAF_ID, "leaf-1");
+        }
+        '''
+    )

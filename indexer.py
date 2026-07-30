@@ -49,6 +49,8 @@ class IndexResult:
     headline_generated: bool = False
     transcript_path: str | None = None
     tool_log_path: str | None = None
+    rendered_content_chars: int = 0
+    rendered_content_signature: tuple[tuple[str, int, str], ...] = field(default_factory=tuple)
     skipped_reason: str = ""
     stages: frozenset[IndexStage] = field(default_factory=frozenset)
 
@@ -343,6 +345,14 @@ def index_source_transcript(
         return result
 
     parsed_subagents = _parse_subagents_for_stages(source, path, stages)
+    from transcript import rendered_conversation_signature
+
+    rendered_signature = rendered_conversation_signature(
+        session.messages,
+        subagents=_subagent_refs(parsed_subagents) or None,
+    )
+    result.rendered_content_signature = rendered_signature
+    result.rendered_content_chars = sum(entry[1] for entry in rendered_signature)
 
     enriched_files = session.files_touched
     if stages & {IndexStage.SUMMARY, IndexStage.SUBAGENT_TRANSCRIPTS}:

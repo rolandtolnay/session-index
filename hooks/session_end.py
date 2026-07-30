@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""SessionEnd hook — launches detached worker for LLM summary + transcript.
+"""Claude SessionEnd hook — queue a forced final session refresh.
 
-Critical constraint: SessionEnd timeout is ~1.5s, LLM takes ~2.4s.
-Solution: fork detached subprocess via Popen(start_new_session=True), exit immediately.
+The hook only persists a job and ensures the detached shared coordinator is
+running, so Claude's short SessionEnd timeout never waits for indexing or LLMs.
 """
 
 import json
 import os
-import subprocess
 import sys
 
 # Add parent dir to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 from logger import log
+from session_refresh import enqueue_refresh
 
 
 def main() -> None:
@@ -24,24 +24,21 @@ def main() -> None:
     hook_input = json.load(sys.stdin)
     session_id = hook_input.get("session_id", "")
     transcript_path = hook_input.get("transcript_path", "")
-
     if not session_id or not transcript_path:
         return
 
-    log(session_id, "session_end", "launching worker")
+    if not os.path.exists(transcript_path):
+        log(session_id, "session_end", f"jsonl not found: {transcript_path}")
+        return
 
-    worker = os.path.join(os.path.dirname(os.path.realpath(__file__)), "_session_end_worker.py")
-
-    # Fork detached subprocess — parent exits immediately
-    subprocess.Popen(
-        [sys.executable, worker, session_id, transcript_path],
-        start_new_session=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    job_path = enqueue_refresh(
+        "claude",
+        session_id,
+        transcript_path,
+        event_id="session-end",
+        force_summary=True,
     )
-
-    log(session_id, "session_end", "worker launched")
+    log(session_id, "session_end", f"queued final refresh {os.path.basename(job_path)}")
 
 
 if __name__ == "__main__":
