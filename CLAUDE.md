@@ -9,7 +9,8 @@
 - **Hooks never block:** All hooks exit 0, wrap everything in try/except, self-imposed timeouts
 - **Message threshold:** Sessions need at least 1 user + 1 assistant message to be indexed
 - **WAL mode:** SQLite uses WAL journal mode for concurrent read/write safety from hooks
-- **Detached workers:** Claude SessionEnd and Codex Stop fork detached subprocesses so indexing and Pi/GPT summaries never block hook completion
+- **Detached refresh coordinator:** Claude Stop/SessionEnd, Pi turn/shutdown, and Codex Stop queue per-session detached workers so deterministic indexing and Pi/GPT summaries never block hooks or extension events
+- **Hybrid summary refresh:** First qualifying snapshots summarize immediately; later descriptions refresh after 180 idle seconds or 10,000 new rendered conversation characters, with a 60-second content-trigger cooldown
 
 ## Data locations
 - **Database:** `~/.session-index/sessions.db`
@@ -18,7 +19,7 @@
 - **Claude Source JSONL:** `~/.claude/projects/{encoded_path}/{session_id}.jsonl`
 - **Pi Source JSONL:** `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`
 - **Codex Source JSONL:** `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`
-- **Codex hook jobs:** `~/.session-index/codex-jobs/<session-id>/`
+- **Refresh jobs/state:** `~/.session-index/refresh-jobs/{source}/{session-id}/`
 
 ## Log format
 ```

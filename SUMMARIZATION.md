@@ -14,6 +14,10 @@ Production summarization now uses headless Pi print mode with `openai-codex/gpt-
 
 After a summary succeeds, a second isolated headless Pi process uses fixed `openai-codex/gpt-5.4-mini` with low thinking to compress that summary into a Session Headline. Headlines target 8-15 words with a hard 15-word limit, preserve distinguishing identifiers/components/outcomes, and omit project, branch, and date metadata because recent-context formatting appends those deterministically. A headline failure does not invalidate the summary and preserves any prior headline.
 
+## Active-session refresh lifecycle
+
+Claude, Pi, and Codex share a detached per-session refresh coordinator. The first snapshot with at least one user and one assistant message writes deterministic artifacts and immediately attempts a Session Summary and Session Headline. Every later assistant-turn event refreshes deterministic artifacts immediately. Descriptions regenerate after either 180 seconds without a newer assistant turn or 10,000 newly rendered user/assistant characters since the last successful summary; content-trigger attempts have a 60-second cooldown. Failed summaries preserve prior descriptions and do not advance the successful-summary content watermark. Claude SessionEnd and Pi shutdown force a final refresh; Codex has no distinct exit event and therefore finalizes through its idle trigger.
+
 Benchmark result on the 19-session ground-truth set: **13.47/15** composite for `gpt-5.4-mini + rich + compact prompt`.
 
 Historical baselines:

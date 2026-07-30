@@ -4,9 +4,10 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 
 ## What it does
 
-- **Claude Code hooks** — index metadata on Stop, summarize/write transcripts on SessionEnd, inject recent context on SessionStart
-- **Pi extension** — indexes Pi sessions after turns/shutdown and injects recent context before the first prompt in a session
-- **Codex hooks** — write deterministic artifacts after each Stop and refresh summaries after 300 idle seconds
+- **Claude Code hooks** — refresh active-session artifacts after turns, force a final refresh on SessionEnd, and inject recent context on SessionStart
+- **Pi extension** — refreshes active-session artifacts after turns/shutdown and injects recent context before the first prompt in a session
+- **Codex hooks** — refresh active-session artifacts after each Stop (Codex has no distinct session-exit event)
+- **Hybrid summary refresh** — summarize the first qualifying turn immediately, then after 180 idle seconds or 10,000 new conversation characters
 - **Unified DB** — stores all supported sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
@@ -65,10 +66,14 @@ Summaries and their separately generated Session Headlines (target 8-15 words, h
 SESSION_INDEX_SUMMARY_MODEL=openai-codex/gpt-5.4-mini
 SESSION_INDEX_SUMMARY_THINKING=low
 SESSION_INDEX_SUMMARY_TIMEOUT=180
-SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS=300
+SESSION_INDEX_SUMMARY_IDLE_SECONDS=180
+SESSION_INDEX_SUMMARY_CONTENT_CHARS=10000
+SESSION_INDEX_SUMMARY_CONTENT_COOLDOWN_SECONDS=60
 ```
 
 The model/thinking overrides apply to full summaries. Session Headlines use fixed `openai-codex/gpt-5.4-mini` with low thinking. Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy summary fallback path; headlines require Pi.
+
+For every supported provider, the first session snapshot with at least one user and one assistant message gets deterministic artifacts plus an immediate summary/headline attempt. Later assistant turns refresh deterministic artifacts immediately. Summary/headline refreshes are coalesced per session and run after either the idle interval or the configured amount of newly rendered user/assistant content; content-trigger attempts observe the cooldown. Claude SessionEnd and Pi shutdown force a final refresh. Codex exposes only turn-level Stop, so its latest snapshot is finalized by the normal idle refresh. `SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS` remains a compatibility fallback when the shared idle variable is unset.
 
 ## Backfill existing conversations
 
@@ -160,7 +165,7 @@ uv run cli.py current --native # provider-native session ID
 uv run cli.py current --json   # full current-session metadata
 ```
 
-In Pi TUI, use `/current-session` to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `Ctrl+R` explicitly runs Manual Current Session Indexing: the same full Pi indexing pass used on session shutdown for the current snapshot, then refreshes artifact statuses if the display remains open. The CLI remains the terminal/API-oriented interface.
+In Pi TUI, use `/current-session` to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `Ctrl+R` explicitly runs a full indexing pass for the current snapshot, then refreshes artifact statuses if the display remains open. Automatic Pi shutdown queues equivalent final stages through the detached coordinator. The CLI remains the terminal/API-oriented interface.
 
 In Codex, use `$current-session`. The dedicated skill runs the focused `--cleaned-paths` output and returns only the absolute Clean Transcript and Tool Log paths with `[exists]` or `[missing]` status.
 
@@ -237,7 +242,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 - Codex source JSONL: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - Codex archived source JSONL: `~/.codex/archived_sessions/rollout-*.jsonl`
 - Codex metadata: `~/.codex/session_index.jsonl`, `~/.codex/state_5.sqlite`
-- Codex pending jobs/locks: `~/.session-index/codex-jobs/`
+- Active refresh jobs/state: `~/.session-index/refresh-jobs/{source}/{session-id}/`
 
 ## Reset data
 
