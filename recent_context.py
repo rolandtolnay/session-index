@@ -127,7 +127,11 @@ def build_recent_context(cwd: str) -> str | None:
         "# Recent Sessions",
         f"Transcript root: {transcript_root}",
         "",
-        "Read a listed transcript when the user refers to one of these sessions. "
+        "Read a listed transcript when the user refers to one of these sessions, "
+        "or when a headline shows earlier work directly relevant to the task at hand — "
+        "sessions often build on one another, and past sessions doing similar work can "
+        "carry decisions, lessons, and preferences worth reusing. Transcripts are long, "
+        "so read at most the one or two most relevant. "
         "If the needed session is not listed, use the session-search skill.",
     ]
 
