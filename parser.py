@@ -446,6 +446,8 @@ def parse_jsonl(path: str) -> ParsedSession:
             raw_text = _extract_user_text(content)
             cmd = _extract_command(raw_text)
             cleaned = cmd if cmd else _clean_text(raw_text)
+            if cleaned and _is_noise_command(cleaned):
+                cleaned = ""
             user_content = "\n\n".join(part for part in (question_text, cleaned) if part)
             if user_content:
                 session.user_messages.append(user_content)
@@ -561,7 +563,16 @@ def _strip_narration(text: str) -> str:
 _NOISE_COMMANDS = {"/clear", "/exit", "/compact", "/resume", "/init", "/login",
                    "/logout", "/status", "/config", "/help", "/model", "/cost",
                    "/memory", "/doctor", "/bug", "/terminal-setup", "/listen",
-                   "/mcp", "/permissions", "/approved-tools"}
+                   "/mcp", "/permissions", "/approved-tools", "/plugin",
+                   "/reload-plugins", "/effort"}
+
+
+def _is_noise_command(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    first = stripped.split(maxsplit=1)[0].rstrip("</> \n\t")
+    return first in _NOISE_COMMANDS
 
 
 def clean_user_messages(messages: list[str]) -> list[str]:
@@ -577,8 +588,8 @@ def clean_user_messages(messages: list[str]) -> list[str]:
         text = _NOISE_TAGS.sub("", msg).strip()
         if not text:
             continue
-        # Drop if what remains is just a noise command name
-        if text.strip().rstrip("</> \n\t") in _NOISE_COMMANDS:
+        # Drop lifecycle commands, including invocations with arguments.
+        if _is_noise_command(text):
             continue
         cleaned.append(text)
     return cleaned

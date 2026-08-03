@@ -161,10 +161,51 @@ def test_clean_preserves_mixed_messages():
 
 
 def test_clean_drops_noise_commands_as_plain_text():
-    """Even without XML tags, bare /exit or /clear should be dropped."""
-    messages = ["/exit", "/clear", "Fix the bug"]
+    """Even without XML tags, lifecycle commands should be dropped."""
+    messages = [
+        "/exit",
+        "/clear",
+        "/plugin install cloudflare@cloudflare",
+        "/reload-plugins",
+        "/effort xhigh",
+        "Fix the bug",
+    ]
     result = clean_user_messages(messages)
     assert result == ["Fix the bug"]
+
+
+def test_extract_command_drops_plugin_and_effort_commands():
+    for command, args in (
+        ("plugin", "install cloudflare@cloudflare"),
+        ("reload-plugins", ""),
+        ("effort", "xhigh"),
+    ):
+        raw = (
+            f"<command-name>/{command}</command-name>\n"
+            f"<command-message>{command}</command-message>\n"
+            f"<command-args>{args}</command-args>"
+        )
+        assert _extract_command(raw) is None
+
+
+def test_parse_drops_plain_plugin_reload_and_effort_commands(tmp_path):
+    source = tmp_path / "noise-commands.jsonl"
+    entries = [
+        {"type": "user", "sessionId": "noise-commands", "message": {"role": "user", "content": command}}
+        for command in ("/plugin install cloudflare@cloudflare", "/reload-plugins", "/effort xhigh")
+    ]
+    entries.append({
+        "type": "assistant",
+        "sessionId": "noise-commands",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "Command handled."}]},
+    })
+    source.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+    session = parse_jsonl(str(source))
+
+    assert session.user_messages == []
+    assert session.user_message_count == 0
+    assert session.assistant_message_count == 1
 
 
 # ── _git_root worktree tests ────────────────────────────────────────────────
