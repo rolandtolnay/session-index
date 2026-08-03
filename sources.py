@@ -41,6 +41,30 @@ def get_pi_session_dir(explicit: str | None = None) -> str:
     return os.path.join(pi_agent_dir, "sessions")
 
 
+def _claude_source_score(path: str) -> tuple[bool, int, int, int, str]:
+    """Rank duplicate Claude Source Transcripts by parser-visible completeness."""
+    from parser import parse_jsonl
+
+    try:
+        session = parse_jsonl(path)
+        user_messages = session.user_message_count
+        assistant_messages = session.assistant_message_count
+    except Exception:
+        user_messages = 0
+        assistant_messages = 0
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = -1
+    return (
+        bool(user_messages and assistant_messages),
+        min(user_messages, assistant_messages),
+        user_messages + assistant_messages,
+        size,
+        path,
+    )
+
+
 def discover_claude_sessions(session_id: str | None = None) -> list[SourceSessionFile]:
     projects_dir = os.path.expanduser("~/.claude/projects")
     if not os.path.exists(projects_dir):
@@ -49,7 +73,17 @@ def discover_claude_sessions(session_id: str | None = None) -> list[SourceSessio
         pattern = os.path.join(projects_dir, "*", f"{session_id}.jsonl")
     else:
         pattern = os.path.join(projects_dir, "*", "*.jsonl")
-    return [SourceSessionFile("claude", path) for path in sorted(glob.glob(pattern))]
+
+    by_session_id: dict[str, list[str]] = {}
+    for path in glob.glob(pattern):
+        native_id = os.path.splitext(os.path.basename(path))[0]
+        by_session_id.setdefault(native_id, []).append(path)
+
+    selected = [
+        paths[0] if len(paths) == 1 else max(paths, key=_claude_source_score)
+        for paths in by_session_id.values()
+    ]
+    return [SourceSessionFile("claude", path) for path in sorted(selected)]
 
 
 def is_nested_pi_subagent_session(path: str) -> bool:

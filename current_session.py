@@ -199,8 +199,8 @@ def _locate_claude_source_path(session_id: str) -> str | None:
 
     Deterministic resolution of a *known* id's file — the same
     ~/.claude/projects/*/<id>.jsonl glob sources.discover_claude_sessions uses,
-    not a latest/most-recent guess. If the id is missing or duplicated, resolution
-    fails instead of choosing a filesystem winner.
+    not a latest/most-recent guess. Discovery resolves duplicate provider files
+    by parser-visible conversational completeness; missing ids still fail.
     """
     from sources import discover_claude_sessions
 
@@ -322,9 +322,9 @@ def resolve_current_session(env: Mapping[str, str] | None = None) -> CurrentSess
     explicit failure because guessing can identify the wrong parallel session.
     Session Index's public SESSION_INDEX_* contract takes precedence. Claude's
     native env is accepted via CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID or
-    CODEX_THREAD_ID. Provider source transcripts are located by exact native id,
-    requiring one unique match so duplicate files fail clearly instead of being
-    guessed.
+    CODEX_THREAD_ID. Provider source transcripts are located by exact native id;
+    Claude duplicate files are resolved by conversational completeness, while
+    duplicate Codex rollouts fail instead of being guessed.
     """
     env = os.environ if env is None else env
 

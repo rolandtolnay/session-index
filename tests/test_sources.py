@@ -1,9 +1,43 @@
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sources import discover_codex_sessions, discover_pi_sessions, is_nested_pi_subagent_session
+import sources
+from sources import discover_claude_sessions, discover_codex_sessions, discover_pi_sessions, is_nested_pi_subagent_session
+
+
+def test_discover_claude_sessions_deduplicates_by_conversational_completeness(tmp_path, monkeypatch):
+    projects = tmp_path / ".claude" / "projects"
+    stub = projects / "project-a" / "duplicate.jsonl"
+    complete = projects / "project-b" / "duplicate.jsonl"
+    unique = projects / "project-c" / "unique.jsonl"
+    for path in (stub, complete, unique):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Raw role counting would prefer this larger candidate, but its assistant
+    # entries contain only tool uses and therefore produce no Clean Transcript response.
+    stub.write_text("\n".join((
+        json.dumps({"type": "user", "message": {"role": "user", "content": "Fix it"}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tool-1", "name": "Read", "input": {"file_path": "x" * 5_000}},
+        ]}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tool-2", "name": "Read", "input": {"file_path": "y"}},
+        ]}}),
+    )) + "\n")
+    complete.write_text("\n".join((
+        json.dumps({"type": "user", "message": {"role": "user", "content": "Fix it"}}),
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": "Done"}}),
+    )) + "\n")
+    unique.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "Hello"}}) + "\n")
+    monkeypatch.setattr(sources.os.path, "expanduser", lambda _path: str(projects))
+
+    sessions = discover_claude_sessions()
+
+    assert [item.path for item in sessions] == [str(complete), str(unique)]
+    assert [item.path for item in discover_claude_sessions("duplicate")] == [str(complete)]
 
 
 def test_nested_pi_subagent_session_path_detection(tmp_path):
