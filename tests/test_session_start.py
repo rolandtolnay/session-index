@@ -135,7 +135,16 @@ def test_build_recent_context_limits_filters_and_instructs(tmp_path, monkeypatch
     data_dir.mkdir()
     monkeypatch.setattr(db, "DATA_DIR", str(data_dir))
     monkeypatch.setattr(db, "DB_PATH", str(data_dir / "sessions.db"))
-    monkeypatch.setattr(recent_context, "_project_from_cwd", lambda _cwd: "current")
+    monkeypatch.setattr(
+        recent_context,
+        "_project_root_from_cwd",
+        lambda _cwd: str(tmp_path / "current"),
+    )
+    monkeypatch.setattr(
+        recent_context,
+        "PROJECT_CONTEXT_CONFIG_PATH",
+        str(tmp_path / "missing-project-context.json"),
+    )
 
     conn = db.get_connection()
     init_db(conn)
@@ -230,6 +239,142 @@ def test_build_recent_context_limits_filters_and_instructs(tmp_path, monkeypatch
     assert "missing transcript entry" not in context
     assert "old cross project task" not in context
     assert "use the session-search skill" in context
+
+
+def test_build_recent_context_surfaces_matching_project_group_separately(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    workspace = tmp_path / "workspace"
+    current_root = workspace / "synapto-current"
+    current_cwd = current_root / "src"
+    api_root = workspace / "synapto-api"
+    duplicate_name_root = workspace / "archive" / "synapto-current"
+    dashboard_root = workspace / "dashboard-web"
+    current_cwd.mkdir(parents=True)
+
+    config_path = tmp_path / "project-context.json"
+    config_path.write_text(json.dumps({
+        "version": 1,
+        "groups": [{
+            "name": "synapto-systems",
+            "projects": [str(workspace / "**" / "synapto-*"), str(dashboard_root)],
+            "files": ["project-context/synapto-systems.md"],
+        }],
+    }))
+    monkeypatch.setattr(db, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(db, "DB_PATH", str(data_dir / "sessions.db"))
+    monkeypatch.setattr(
+        recent_context,
+        "_project_root_from_cwd",
+        lambda _cwd: str(current_root),
+    )
+    monkeypatch.setattr(recent_context, "PROJECT_CONTEXT_CONFIG_PATH", str(config_path))
+
+    conn = db.get_connection()
+    init_db(conn)
+    now = datetime.now(timezone.utc)
+    upsert_session(
+        conn,
+        session_id="current",
+        project_path=str(current_root),
+        project="synapto-current",
+        branch="main",
+        started_at=now.isoformat(),
+        headline="Implemented the current project task",
+        transcript_path=_transcript(tmp_path, "current"),
+    )
+    for i in range(75):
+        upsert_session(
+            conn,
+            session_id=f"current-history-{i}",
+            project_path=str(current_root),
+            project="synapto-current",
+            branch="main",
+            started_at=(now + timedelta(days=100, minutes=-i)).isoformat(),
+            headline=f"Implemented current project history number {i}",
+            transcript_path=_transcript(tmp_path, f"current-history-{i}"),
+        )
+
+    for i in range(9):
+        started_at = now - (timedelta(hours=i) if i < 5 else timedelta(days=30 + i))
+        project_path = api_root if i % 2 == 0 else dashboard_root
+        upsert_session(
+            conn,
+            session_id=f"group-{i}",
+            project_path=str(project_path),
+            project=project_path.name,
+            branch="main",
+            started_at=started_at.isoformat(),
+            headline=f"Implemented grouped project task number {i}",
+            transcript_path=_transcript(tmp_path, f"group-{i}"),
+        )
+
+    nested_source = tmp_path / "parent-session" / "review-run" / "run-0" / "session.jsonl"
+    upsert_session(
+        conn,
+        session_id="nested-group-child",
+        source="pi",
+        source_path=str(nested_source),
+        project_path=str(api_root),
+        project="synapto-api",
+        started_at=(now + timedelta(hours=2)).isoformat(),
+        headline="Reviewed grouped work as a nested child agent",
+        transcript_path=_transcript(tmp_path, "nested-group-child"),
+    )
+    upsert_session(
+        conn,
+        session_id="dangling-group",
+        project_path=str(api_root),
+        project="synapto-api",
+        started_at=(now + timedelta(hours=1)).isoformat(),
+        headline="Implemented grouped work with a missing transcript",
+        transcript_path=str(tmp_path / "missing-group.md"),
+    )
+
+    for i in range(25):
+        upsert_session(
+            conn,
+            session_id=f"other-{i}",
+            project_path=str(tmp_path / "unrelated" / f"other-{i % 3}"),
+            project=f"other-{i % 3}",
+            branch="main",
+            started_at=(now - timedelta(hours=i)).isoformat(),
+            headline=f"Reviewed unrelated project task number {i}",
+            transcript_path=_transcript(tmp_path, f"other-{i}"),
+            user_message_count=i + 1,
+            assistant_message_count=i + 1,
+            assistant_char_count=(i + 1) * 100,
+        )
+
+    upsert_session(
+        conn,
+        session_id="duplicate-project-name",
+        project_path=str(duplicate_name_root),
+        project="synapto-current",
+        branch="main",
+        started_at=(now + timedelta(hours=3)).isoformat(),
+        headline="Implemented grouped work in a duplicate project basename",
+        transcript_path=_transcript(tmp_path, "duplicate-project-name"),
+    )
+    conn.close()
+
+    context = recent_context.build_recent_context(str(current_cwd))
+    assert context is not None
+    assert context.count(".md`") == 35
+    assert "## synapto-current (latest 7)" in context
+    assert "## synapto-systems group (latest 7)" in context
+    assert "## Other projects (top 21 from the last 7 days)" in context
+
+    _current_section, remainder = context.split("## synapto-systems group", 1)
+    group_section, other_section = remainder.split("## Other projects", 1)
+    assert "duplicate project basename" in group_section
+    assert "grouped project task number 0" in group_section
+    assert "grouped project task number 5" in group_section
+    assert "grouped project task number 6" not in context
+    assert "grouped project task" not in other_section
+    assert "nested child agent" not in context
+    assert "missing transcript" not in context
+    assert "(main)" not in group_section
 
 
 def test_claude_hook_injects_shared_context(monkeypatch, capsys):

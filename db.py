@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     parent_session_path TEXT,
     parent_native_session_id TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_project_path_started_at
+ON sessions(project_path, started_at DESC);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
     user_messages,
@@ -550,17 +552,56 @@ def get_recent_cross_project(
 
 
 def get_headlined_by_project(
-    conn: sqlite3.Connection, project: str,
+    conn: sqlite3.Connection, project: str, project_path: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Get headlined sessions with Clean Transcript paths, newest first."""
+    """Get headlined sessions for a project root, newest first."""
+    if project_path is None:
+        identity_clause = "project = :project"
+    else:
+        identity_clause = """(
+            project_path = :project_path OR (
+                (project_path IS NULL OR trim(project_path) = '') AND project = :project
+            )
+        )"""
     cursor = conn.execute(f"""
         SELECT * FROM sessions
-        WHERE project = :project
+        WHERE {identity_clause}
           AND {TOP_LEVEL_SESSION_PREDICATE}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY started_at DESC, session_id DESC
-    """, {"project": project})
+    """, {"project": project, "project_path": project_path})
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_headlined_project_paths(conn: sqlite3.Connection) -> list[str]:
+    """Get distinct project roots that have eligible headlined sessions."""
+    cursor = conn.execute(f"""
+        SELECT DISTINCT project_path FROM sessions
+        WHERE project_path IS NOT NULL AND trim(project_path) != ''
+          AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND headline IS NOT NULL AND trim(headline) != ''
+          AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
+    """)
+    return [row[0] for row in cursor.fetchall()]
+
+
+def get_headlined_by_project_paths(
+    conn: sqlite3.Connection, project_paths: list[str], *, limit: int,
+) -> list[dict[str, Any]]:
+    """Get a bounded set of eligible sessions for exact project roots."""
+    if not project_paths or limit <= 0:
+        return []
+    placeholders = ", ".join("?" for _path in project_paths)
+    cursor = conn.execute(f"""
+        SELECT * FROM sessions
+        WHERE project_path IN ({placeholders})
+          AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND headline IS NOT NULL AND trim(headline) != ''
+          AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
+        ORDER BY started_at DESC, session_id DESC
+        LIMIT ?
+    """, [*project_paths, limit])
     return [dict(row) for row in cursor.fetchall()]
 
 
