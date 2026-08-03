@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -210,6 +211,67 @@ def test_backfill_help_makes_summary_regeneration_opt_in(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "--with-summary" in out
     assert "--no-summary" not in out
+
+
+def _backfill_args(**overrides):
+    defaults = {
+        "source": "claude",
+        "session": None,
+        "pi_session_dir": None,
+        "codex_session_dir": None,
+        "codex_archived_dir": None,
+        "prune": False,
+        "force": True,
+        "project": None,
+        "with_summary": False,
+        "no_summary": False,
+    }
+    return SimpleNamespace(**(defaults | overrides))
+
+
+def _stub_single_backfill_source(monkeypatch, tmp_path, parsed, result=None):
+    import indexer
+    import sources
+
+    source_path = tmp_path / "incomplete-session.jsonl"
+    source_path.write_text("{}\n")
+    source_file = sources.SourceSessionFile("claude", str(source_path))
+    monkeypatch.setattr(sources, "discover_sessions", lambda *args, **kwargs: [source_file])
+    monkeypatch.setattr(indexer, "parse_session_file", lambda *args, **kwargs: parsed)
+    if result is not None:
+        monkeypatch.setattr(indexer, "index_source_transcript", lambda *args, **kwargs: result)
+    else:
+        monkeypatch.setattr(indexer, "index_source_transcript", lambda *args, **kwargs: pytest.fail("indexing should not run"))
+    monkeypatch.setattr(cli, "get_connection", lambda: _DummyConn())
+    monkeypatch.setattr(cli, "init_db", lambda _conn: None)
+
+
+def test_backfill_prints_indexer_skip_reason(monkeypatch, capsys, tmp_path):
+    parsed = SimpleNamespace(session_id="incomplete-session", project="project")
+    result = SimpleNamespace(skipped_reason="1 user, 0 assistant msgs")
+    _stub_single_backfill_source(monkeypatch, tmp_path, parsed, result)
+
+    cli.cmd_backfill(_backfill_args())
+
+    out = capsys.readouterr().out
+    assert "skipped (1 user, 0 assistant msgs)" in out
+    assert "Done: 0 processed, 1 skipped, 0 errors" in out
+
+
+@pytest.mark.parametrize(("parsed", "args", "completed", "reason"), [
+    (SimpleNamespace(session_id="", project="project"), _backfill_args(), set(), "missing session ID"),
+    (SimpleNamespace(session_id="complete", project="project"), _backfill_args(force=False), {"complete"}, "already complete"),
+    (SimpleNamespace(session_id="other-project", project="other"), _backfill_args(project="wanted"), set(), "project other does not match wanted"),
+])
+def test_backfill_prints_early_skip_reasons(monkeypatch, capsys, tmp_path, parsed, args, completed, reason):
+    _stub_single_backfill_source(monkeypatch, tmp_path, parsed)
+    monkeypatch.setattr(cli, "_completed_backfill_sessions", lambda *args, **kwargs: completed)
+
+    cli.cmd_backfill(args)
+
+    out = capsys.readouterr().out
+    assert f"skipped ({reason})" in out
+    assert "Done: 0 processed, 1 skipped, 0 errors" in out
 
 
 def test_search_is_not_registered_as_primary_cli_command(monkeypatch, capsys):

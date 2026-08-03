@@ -178,6 +178,10 @@ def _completed_backfill_sessions(conn, options) -> set[str]:
     return {row[0] for row in cursor.fetchall()}
 
 
+def _print_backfill_skip(index: int, total: int, source: str, session_id: str, reason: str) -> None:
+    print(f"[{index}/{total}] {source}:{session_id[:12]}... skipped ({reason})")
+
+
 def cmd_backfill(args: argparse.Namespace) -> None:
     """Process JSONL files from Claude Code, Pi, and/or Codex."""
     from indexer import (
@@ -237,20 +241,25 @@ def cmd_backfill(args: argparse.Namespace) -> None:
             session_id = session.session_id or display_id
 
             if not session.session_id:
+                _print_backfill_skip(i, total, source_name, display_id, "missing session ID")
                 skipped += 1
                 continue
 
             if session.session_id in existing:
+                _print_backfill_skip(i, total, source_name, session_id, "already complete")
                 skipped += 1
                 continue
 
             # Filter by project name before invoking expensive stages.
-            if args.project and session.project.lower() != args.project.lower():
+            if args.project and (session.project or "").lower() != args.project.lower():
+                reason = f"project {session.project or '(unknown)'} does not match {args.project}"
+                _print_backfill_skip(i, total, source_name, session_id, reason)
                 skipped += 1
                 continue
 
             result = index_source_transcript(source_name, path, options, parsed_session=session)
             if result.skipped_reason:
+                _print_backfill_skip(i, total, source_name, session_id, result.skipped_reason)
                 skipped += 1
                 continue
 
