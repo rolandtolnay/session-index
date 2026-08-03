@@ -217,6 +217,62 @@ def test_prompt_role():
     assert parsed.messages[0]["role"] == "prompt"
 
 
+def test_question_answer_is_preserved_as_subagent_user_input(tmp_path):
+    question = "Which scope?"
+    entries = [
+        {
+            "type": "user",
+            "agentId": "agent-q",
+            "sessionId": "parent-q",
+            "timestamp": "2026-04-02T10:00:00.000Z",
+            "message": {"role": "user", "content": "Review the change"},
+        },
+        {
+            "type": "assistant",
+            "agentId": "agent-q",
+            "sessionId": "parent-q",
+            "timestamp": "2026-04-02T10:00:01.000Z",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "question-1",
+                    "name": "AskUserQuestion",
+                    "input": {"questions": [{
+                        "header": "Scope",
+                        "question": question,
+                        "multiSelect": False,
+                        "options": [{"label": "Broad", "description": "Cover all files"}],
+                    }]},
+                }],
+            },
+        },
+        {
+            "type": "user",
+            "agentId": "agent-q",
+            "sessionId": "parent-q",
+            "timestamp": "2026-04-02T10:00:02.000Z",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "question-1",
+                    "content": f'User has answered your questions: "{question}"="No "wedding" root".',
+                }],
+            },
+        },
+    ]
+    fixture = tmp_path / "agent-question.jsonl"
+    fixture.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    parsed = parse_subagent_jsonl(str(fixture))
+    assert any(
+        message["role"] == "user" and "[question] Scope" in message["content"]
+        and '[answer] No "wedding" root' in message["content"]
+        for message in parsed.messages
+    )
+
+
 # ── discover_subagents ────────────────────────────────────────────────────
 
 

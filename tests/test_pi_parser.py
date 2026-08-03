@@ -88,6 +88,48 @@ def test_parse_pi_normalizes_question_selection_and_synthesizes_result(monkeypat
     assert "User answered questions:" in call.result
     assert "Future + existing" in call.result
 
+    answered = session.user_messages[-1]
+    assert "[question] Scope" in answered
+    assert "[answer] Future + existing" in answered
+
+
+def test_parse_pi_question_custom_and_multiselect_answers_are_user_input(tmp_path):
+    fixture = tmp_path / "session.jsonl"
+    questions = [
+        {
+            "header": "Coverage",
+            "question": "Which checks?",
+            "multiSelect": True,
+            "options": [
+                {"label": "Tests", "description": "Run tests"},
+                {"label": "Docs", "description": "Check docs"},
+            ],
+        },
+        {
+            "header": "Notes",
+            "question": "Anything else?",
+            "multiSelect": False,
+            "options": [{"label": "No", "description": "No additions"}],
+        },
+    ]
+    entries = [
+        {"type": "session", "version": 3, "id": "pi-q", "timestamp": "2026-04-02T10:00:00.000Z", "cwd": "/tmp/project"},
+        {"type": "message", "id": "u1", "parentId": None, "timestamp": "2026-04-02T10:00:01.000Z", "message": {"role": "user", "content": "Prepare the change"}},
+        {"type": "message", "id": "a1", "parentId": "u1", "timestamp": "2026-04-02T10:00:02.000Z", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "call-q", "name": "question", "arguments": {"questions": questions}}]}},
+        {"type": "message", "id": "tr-q", "parentId": "a1", "timestamp": "2026-04-02T10:00:03.000Z", "message": {"role": "toolResult", "toolCallId": "call-q", "toolName": "question", "content": [], "details": {"selections": [
+            {"question": "Which checks?", "selectedOptions": ["Tests", "Docs"], "customText": "Keep migration notes", "answer": "Tests, Docs, Keep migration notes"},
+            {"question": "Anything else?", "selectedOptions": [], "answer": "Include migration notes"},
+        ], "cancelled": False}, "isError": False}},
+    ]
+    fixture.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    session = parse_pi_jsonl(str(fixture))
+    answered = session.user_messages[-1]
+    assert session.user_message_count == 2
+    assert answered.count("[question]") == 2
+    assert "[answer] Tests, Docs, Keep migration notes" in answered
+    assert "[answer] Include migration notes" in answered
+
 
 def test_parse_pi_subagent_normalizes_question_selection_and_synthesizes_result(tmp_path):
     fixture = tmp_path / "session.jsonl"
@@ -107,3 +149,7 @@ def test_parse_pi_subagent_normalizes_question_selection_and_synthesizes_result(
     assert call.question_selections[0].selected_labels == ["Broad"]
     assert "User answered questions:" in call.result
     assert "Which scope? -> Broad" in call.result
+    assert any(
+        message["role"] == "user" and "[answer] Broad" in message["content"]
+        for message in subagent.messages
+    )

@@ -18,7 +18,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from parser import ParsedQuestionSelection, ParsedSession, ParsedToolCall, _clean_text, _format_bash_result, _git_root, _strip_narration
+from parser import (
+    ParsedQuestionSelection,
+    ParsedSession,
+    ParsedToolCall,
+    _clean_text,
+    _format_bash_result,
+    _format_question_answers,
+    _git_root,
+    _strip_narration,
+)
 from subagent_parser import ParsedSubagent, SubagentInfo
 
 PI_SOURCE = "pi"
@@ -267,6 +276,9 @@ def _question_outcome_from_details(details: dict[str, Any]) -> tuple[list[Parsed
             opts = sel.get("selectedOptions")
             if isinstance(opts, list):
                 labels.extend(str(opt) for opt in opts if str(opt).strip())
+            custom_text = sel.get("customText")
+            if isinstance(custom_text, str) and custom_text.strip():
+                labels.append(custom_text)
             if not labels:
                 answer = sel.get("answer")
                 if isinstance(answer, str) and answer.strip():
@@ -432,6 +444,7 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
 
     # Second pass: cleaned transcript/search messages.
     pending_tool_calls: list[dict[str, Any]] = []
+    tool_calls_by_id = {call.tool_call_id: call for call in raw_tool_calls if call.tool_call_id}
 
     for entry in branch:
         entry_type = entry.get("type")
@@ -497,9 +510,21 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
                     session.messages.append({"role": "assistant", "content": combined, "timestamp": ts})
 
         elif role == "toolResult":
-            # Keep parity with Claude parser: only surface failed bash output.
             tool_call_id = msg.get("toolCallId", "")
             result = tool_results.get(tool_call_id, {}) if isinstance(tool_call_id, str) else {}
+            call = tool_calls_by_id.get(tool_call_id) if isinstance(tool_call_id, str) else None
+            if call and not result.get("is_error"):
+                answered = _format_question_answers(
+                    call.tool_name,
+                    call.arguments,
+                    str(result.get("content", "")),
+                    selections=result.get("question_selections") or [],
+                    cancelled=bool(result.get("question_cancelled", False)),
+                )
+                if answered:
+                    session.user_messages.append(answered)
+                    session.messages.append({"role": "user", "content": answered, "timestamp": ts})
+            # Keep parity with Claude parser: otherwise only surface failed bash output.
             if result.get("is_error") and result.get("tool_name") == "bash":
                 result_text = _format_bash_result(str(result.get("content", "")), is_error=True)
                 if result_text and session.messages and session.messages[-1]["role"] == "assistant":
@@ -615,8 +640,21 @@ def parse_pi_subagent_jsonl(jsonl_path: str, agent_id: str = "", agent_type: str
 
         elif role == "toolResult":
             tool_call_id = msg.get("toolCallId", "")
+            tool_result: dict[str, Any] = {}
             if isinstance(tool_call_id, str) and tool_call_id:
-                tool_results[tool_call_id] = _tool_result_record(msg)
+                tool_result = _tool_result_record(msg)
+                tool_results[tool_call_id] = tool_result
+                call = next((candidate for candidate in raw_tool_calls if candidate.tool_call_id == tool_call_id), None)
+                if call and not tool_result.get("is_error"):
+                    answered = _format_question_answers(
+                        call.tool_name,
+                        call.arguments,
+                        str(tool_result.get("content", "")),
+                        selections=tool_result.get("question_selections") or [],
+                        cancelled=bool(tool_result.get("question_cancelled", False)),
+                    )
+                    if answered:
+                        result.messages.append({"role": "user", "content": answered, "timestamp": ts})
             if msg.get("isError"):
                 text = _format_bash_result(_collect_tool_result_text(msg), is_error=True)
                 if text:

@@ -62,6 +62,89 @@ class ParsedSession:
     tool_calls: list[ParsedToolCall] = field(default_factory=list)
 
 
+_QUESTION_TOOL_NAMES = {"question", "askuserquestion"}
+
+
+def _is_question_tool(name: str) -> bool:
+    return (name or "").rsplit(".", 1)[-1].lower() in _QUESTION_TOOL_NAMES
+
+
+def _question_answer_from_result(
+    result: str,
+    question: str,
+    all_questions: list[str],
+) -> list[str]:
+    """Extract Claude's echoed answer for one question-tool prompt."""
+    if not result or not question:
+        return []
+    marker = f'"{question}"="'
+    start = result.find(marker)
+    if start == -1:
+        return []
+    start += len(marker)
+
+    # Answers are free text and may themselves contain quotes. Prefer the next
+    # known question pair as the boundary; for the final answer, the wrapper's
+    # closing quote is the last quote in Claude's result sentence.
+    boundaries = [
+        boundary
+        for candidate in all_questions
+        if candidate != question
+        and (boundary := result.find(f'", "{candidate}"="', start)) != -1
+    ]
+    end = min(boundaries) if boundaries else result.rfind('"')
+    answer = (result[start:] if end < start else result[start:end]).strip()
+    return [answer] if answer else []
+
+
+def _format_question_answers(
+    tool_name: str,
+    arguments: Any,
+    result: str,
+    *,
+    selections: list[ParsedQuestionSelection] | None = None,
+    cancelled: bool = False,
+) -> str:
+    """Render answered question-tool prompts as readable user input."""
+    if not _is_question_tool(tool_name) or cancelled or not isinstance(arguments, dict):
+        return ""
+    questions = arguments.get("questions")
+    if not isinstance(questions, list):
+        return ""
+
+    normalized = selections or []
+    question_texts = [
+        item.get("question")
+        for item in questions
+        if isinstance(item, dict) and isinstance(item.get("question"), str)
+    ]
+    blocks: list[str] = []
+    for index, item in enumerate(questions):
+        if not isinstance(item, dict):
+            continue
+        question = item.get("question")
+        if not isinstance(question, str) or not question.strip():
+            continue
+
+        selection = next((candidate for candidate in normalized if candidate.question == question), None)
+        if selection is None and index < len(normalized):
+            selection = normalized[index]
+        answers = (
+            selection.selected_labels
+            if selection
+            else _question_answer_from_result(result, question, question_texts)
+        )
+        answers = [str(answer).strip() for answer in answers if str(answer).strip()]
+        if not answers:
+            continue
+
+        header = item.get("header")
+        heading = f"[question] {header.strip()}" if isinstance(header, str) and header.strip() else "[question]"
+        blocks.append(f"{heading}\n{question.strip()}\n[answer] {', '.join(answers)}")
+
+    return "\n\n".join(blocks)
+
+
 def _git_root(cwd: str) -> str:
     """Derive git root from cwd. Returns cwd if git fails."""
     try:
@@ -304,6 +387,7 @@ def parse_jsonl(path: str) -> ParsedSession:
 
     # Second pass: build messages
     pending_tool_uses: list[dict] = []  # tool_use blocks from current assistant turn
+    tool_calls_by_id = {call.tool_call_id: call for call in raw_tool_calls if call.tool_call_id}
 
     for entry in entries:
         entry_type = entry.get("type", "")
@@ -317,8 +401,34 @@ def parse_jsonl(path: str) -> ParsedSession:
             # Skip system-injected meta messages (skill expansions, commit context, etc.)
             if entry.get("isMeta", False):
                 continue
-            # Skip entries that are only tool results
+
+            answered_questions: list[str] = []
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "tool_result":
+                        continue
+                    tool_call_id = item.get("tool_use_id", "")
+                    call = tool_calls_by_id.get(tool_call_id)
+                    tr = tool_results.get(tool_call_id, {})
+                    if call and not tr.get("is_error", False):
+                        rendered = _format_question_answers(
+                            call.tool_name,
+                            call.arguments,
+                            str(tr.get("content", "")),
+                        )
+                        if rendered:
+                            answered_questions.append(rendered)
+            question_text = "\n\n".join(answered_questions)
+
+            # Skip entries that are only tool results, except answered questions.
             if _is_only_tool_results(content):
+                if question_text:
+                    session.user_messages.append(question_text)
+                    session.messages.append({
+                        "role": "user",
+                        "content": question_text,
+                        "timestamp": entry.get("timestamp", ""),
+                    })
                 # Append error bash results to last assistant message
                 for tu in pending_tool_uses:
                     if tu.get("name") == "Bash":
@@ -336,9 +446,10 @@ def parse_jsonl(path: str) -> ParsedSession:
             raw_text = _extract_user_text(content)
             cmd = _extract_command(raw_text)
             cleaned = cmd if cmd else _clean_text(raw_text)
-            if cleaned:
-                session.user_messages.append(cleaned)
-                session.messages.append({"role": "user", "content": cleaned, "timestamp": entry.get("timestamp", "")})
+            user_content = "\n\n".join(part for part in (question_text, cleaned) if part)
+            if user_content:
+                session.user_messages.append(user_content)
+                session.messages.append({"role": "user", "content": user_content, "timestamp": entry.get("timestamp", "")})
 
         elif entry_type == "assistant":
             parts = []

@@ -1,5 +1,6 @@
 """Tests for the JSONL conversation parser."""
 
+import json
 import os
 import sys
 
@@ -8,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import patch, MagicMock
 from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _git_root, _clean_text, _strip_narration, _extract_command
+from transcript import render_transcript
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
 
@@ -228,6 +230,86 @@ def test_successful_bash_not_in_transcript():
     session = parse_jsonl(FIXTURE)
     all_content = " ".join(m["content"] for m in session.messages)
     assert "PASSED test_login" not in all_content
+
+
+def test_question_answers_render_as_user_input(tmp_path):
+    questions = [
+        {
+            "header": "Scope",
+            "question": "Which scope?",
+            "multiSelect": False,
+            "options": [{"label": "API only", "description": "Limit the change"}],
+        },
+        {
+            "header": "Coverage",
+            "question": "Which checks?",
+            "multiSelect": True,
+            "options": [
+                {"label": "Tests", "description": "Run tests"},
+                {"label": "Docs", "description": "Check docs"},
+            ],
+        },
+        {
+            "header": "Notes",
+            "question": "Anything else?",
+            "multiSelect": False,
+            "options": [{"label": "No", "description": "No additions"}],
+        },
+    ]
+    result_text = (
+        'User has answered your questions: "Which scope?"="API only", '
+        '"Which checks?"="Tests, "Docs"", "Anything else?"=""Wed" locks out verticals". '
+        "You can now continue with the user's answers in mind."
+    )
+    entries = [
+        {
+            "type": "user",
+            "sessionId": "question-session",
+            "timestamp": "2026-04-02T10:00:00.000Z",
+            "message": {"role": "user", "content": "Prepare the change"},
+        },
+        {
+            "type": "assistant",
+            "sessionId": "question-session",
+            "timestamp": "2026-04-02T10:00:01.000Z",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "question-1",
+                    "name": "AskUserQuestion",
+                    "input": {"questions": questions},
+                }],
+            },
+        },
+        {
+            "type": "user",
+            "sessionId": "question-session",
+            "timestamp": "2026-04-02T10:00:02.000Z",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "question-1",
+                    "content": result_text,
+                }],
+            },
+        },
+    ]
+    fixture = tmp_path / "claude-question.jsonl"
+    fixture.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    session = parse_jsonl(str(fixture))
+    answered = session.user_messages[-1]
+    assert session.user_message_count == 2
+    assert answered.count("[question]") == 3
+    assert "[answer] API only" in answered
+    assert '[answer] Tests, "Docs"' in answered
+    assert '[answer] "Wed" locks out verticals' in answered
+
+    rendered = render_transcript(session.messages, project="project")
+    assert "[user]" in rendered
+    assert answered in rendered
 
 
 # ── _clean_text tests ──────────────────────────────────────────────────────────

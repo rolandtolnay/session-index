@@ -11,7 +11,7 @@ import os
 from collections import Counter
 from dataclasses import dataclass, field
 
-from parser import ParsedToolCall, _clean_text, _NOISE_TAGS, _ANSI_ESCAPE
+from parser import ParsedToolCall, _clean_text, _format_question_answers, _NOISE_TAGS, _ANSI_ESCAPE
 
 
 @dataclass
@@ -257,6 +257,7 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
     # Second pass: build messages with subagent cleaning rules
     pending_tool_uses: list[dict] = []
     is_first_user = True
+    tool_calls_by_id = {call.tool_call_id: call for call in raw_tool_calls if call.tool_call_id}
 
     for entry in entries:
         entry_type = entry.get("type", "")
@@ -271,13 +272,35 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
             if entry.get("isMeta", False):
                 continue
 
+            answered_questions: list[str] = []
             # Check if only tool results
             if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "tool_result":
+                        continue
+                    tool_call_id = item.get("tool_use_id", "")
+                    call = tool_calls_by_id.get(tool_call_id)
+                    tr = tool_results.get(tool_call_id, {})
+                    if call and not tr.get("is_error", False):
+                        rendered = _format_question_answers(
+                            call.tool_name,
+                            call.arguments,
+                            str(tr.get("content", "")),
+                        )
+                        if rendered:
+                            answered_questions.append(rendered)
+
                 is_only_results = all(
                     isinstance(item, dict) and item.get("type") == "tool_result"
                     for item in content if isinstance(item, dict)
                 )
                 if is_only_results:
+                    if answered_questions:
+                        result.messages.append({
+                            "role": "user",
+                            "content": "\n\n".join(answered_questions),
+                            "timestamp": ts,
+                        })
                     # Check for errors in pending tool uses → emit ERROR blocks
                     for tu in pending_tool_uses:
                         tuid = tu.get("id", "")
@@ -310,12 +333,13 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
             else:
                 text = ""
 
-            if text:
+            user_content = "\n\n".join(part for part in ("\n\n".join(answered_questions), text) if part)
+            if user_content:
                 role = "prompt" if is_first_user else "user"
                 is_first_user = False
-                result.messages.append({"role": role, "content": text, "timestamp": ts})
+                result.messages.append({"role": role, "content": user_content, "timestamp": ts})
                 if role == "prompt":
-                    result.initial_prompt = text
+                    result.initial_prompt = user_content
 
         elif entry_type == "assistant":
             parts = []
