@@ -99,7 +99,7 @@ def add_find_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
     parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
     parser.add_argument("--session", help="Only this canonical session ID")
-    parser.add_argument("--limit", type=int, default=20, help="Maximum candidates to return")
+    parser.add_argument("--limit", type=int, default=8, help="Maximum candidates to return (default 8; the payload sets truncated=true when the limit fills)")
 
 
 def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:

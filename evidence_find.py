@@ -449,7 +449,7 @@ def find_candidates(
     since: str | None = None,
     until: str | None = None,
     session: str | None = None,
-    limit: int = 20,
+    limit: int = 8,
     mutation_mode: str = "session",
 ) -> dict[str, list[dict[str, Any]]]:
     """Return compact JSON-ready Evidence Find candidates."""

@@ -19,7 +19,8 @@ def test_find_topic_returns_compact_session_refs_without_evidence_text(tmp_path)
     assert len(data["results"]) == 1
     result = data["results"][0]
     assert result["ref"] == "session/pi:abc"
-    assert result["inspect_refs"]["primary"] == "session/pi:abc"
+    # Session candidates carry no duplicate refs: context would equal ref.
+    assert result["inspect_refs"] == {}
     assert result["match"] == {"kind": "topic", "topic": "session index", "match_mode": "exact"}
     assert result["session"]["summary"] == "Worked on session index evidence retrieval."
     assert "artifacts" not in result
@@ -315,7 +316,7 @@ def test_find_mutation_event_mode_preserves_event_level_file_mutations(tmp_path)
     result = find_candidates(conn, mutated="prd/example", mutation_mode="event")["results"][0]
 
     assert result["ref"] == "tool/pi:abc/12"
-    assert result["inspect_refs"]["primary"] == "tool/pi:abc/12"
+    assert result["inspect_refs"] == {"context": "session/pi:abc"}
     assert result["match"]["kind"] == "file_mutation"
     assert result["match"]["path"] == "etc/prd/example.md"
 
@@ -357,6 +358,10 @@ def test_find_session_filters_are_not_topic_matches(tmp_path):
         "until": "2026-05-31",
         "session": "pi:abc",
     }
+
+    # Unused filters stay out of the match instead of appearing as nulls.
+    sparse = find_candidates(conn, project="session")["results"][0]
+    assert sparse["match"] == {"kind": "session_filter", "project": "session"}
 
 
 def test_find_topic_event_filters_use_scoped_sessions(tmp_path):

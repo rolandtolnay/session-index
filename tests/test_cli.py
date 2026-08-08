@@ -129,7 +129,7 @@ def test_cmd_find_emits_compact_json_candidates(tmp_path, monkeypatch, capsys):
     data = json.loads(capsys.readouterr().out)
     result = data["results"][0]
     assert result["ref"] == "session/pi:abc"
-    assert result["inspect_refs"]["primary"] == "session/pi:abc"
+    assert result["inspect_refs"] == {}
     assert "evidence" not in result
     # Candidate discovery remains compact and does not include transcript/tool-log evidence text.
     assert "Scoped evidence text." not in json.dumps(result)
@@ -146,7 +146,9 @@ def test_cmd_find_mutated_default_emits_session_ref(tmp_path, monkeypatch, capsy
 
     result = json.loads(capsys.readouterr().out)["results"][0]
     assert result["ref"] == "session/pi:abc"
-    assert result["inspect_refs"]["primary"] == "session/pi:abc"
+    assert result["inspect_refs"]["related_tools"] == ["tool/pi:abc/12"]
+    assert "primary" not in result["inspect_refs"]
+    assert "context" not in result["inspect_refs"]
 
 
 def test_cmd_find_mutated_event_ref_can_be_passed_to_inspect(tmp_path, monkeypatch, capsys):

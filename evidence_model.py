@@ -39,7 +39,12 @@ def candidate(
     *,
     inspect_refs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    refs = {"primary": ref, "context": format_ref(SessionRef(session_id=session["session_id"]))}
+    # inspect_refs carries only refs that add information beyond `ref`:
+    # the parent-session context for event candidates, plus criterion extras.
+    refs: dict[str, Any] = {}
+    context = format_ref(SessionRef(session_id=session["session_id"]))
+    if context != ref:
+        refs["context"] = context
     if inspect_refs:
         refs.update(inspect_refs)
     return {
@@ -145,13 +150,11 @@ def topic_match(topic: str, *, match_mode: str = "exact", score: float | None = 
 
 
 def session_filter_match(*, project: str | None, since: str | None, until: str | None, session: str | None) -> dict[str, Any]:
-    return {
-        "kind": "session_filter",
-        "project": project,
-        "since": since,
-        "until": until,
-        "session": session,
-    }
+    match: dict[str, Any] = {"kind": "session_filter"}
+    for key, value in (("project", project), ("since", since), ("until", until), ("session", session)):
+        if value is not None:
+            match[key] = value
+    return match
 
 
 def session_query_match(query: str | None = None) -> dict[str, Any]:
