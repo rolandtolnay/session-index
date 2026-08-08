@@ -195,7 +195,10 @@ def _completed_backfill_sessions(conn, options) -> set[str]:
     )
     cursor = conn.execute(
         f"SELECT session_id FROM sessions WHERE {done_predicate} "
-        "AND (tools_used IS NULL OR tools_used = '' OR tool_log_path IS NOT NULL)"
+        "AND (tools_used IS NULL OR tools_used = '' OR ("
+        "tool_log_path IS NOT NULL AND EXISTS ("
+        "SELECT 1 FROM tool_calls WHERE tool_calls.session_id = sessions.session_id"
+        ")))"
     )
     return {row[0] for row in cursor.fetchall()}
 
@@ -241,8 +244,8 @@ def cmd_backfill(args: argparse.Namespace) -> None:
     options = _backfill_options(args)
 
     # Skip sessions already complete for the requested pass (--force re-does all).
-    # The tool-log clause keeps re-indexing sessions that still lack tool logs /
-    # fact tables (no tools at all, or never got a tool log) so they get caught up.
+    # Tool-using sessions stay incomplete until both the Tool Log and structured
+    # tool-call facts exist, so legacy rows get caught up automatically.
     existing = set()
     if not args.force:
         existing = _completed_backfill_sessions(conn, options)

@@ -61,9 +61,11 @@ def _load_jsonl(path: str) -> list[dict[str, Any]]:
             if not line:
                 continue
             try:
-                entries.append(json.loads(line))
+                entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(entry, dict):
+                entries.append(entry)
     return entries
 
 
@@ -91,6 +93,76 @@ def _select_active_branch(entries: list[dict[str, Any]]) -> PiParsedFile:
     # If parent links are missing or malformed, fall back to chronological body.
     branch = list(reversed(branch_rev)) if branch_rev else body
     return PiParsedFile(header=header, entries=body, branch=branch)
+
+
+def _conversation_entry_identity(entry: dict[str, Any]) -> tuple[str, str, str, str] | None:
+    """Return copy-stable identity for one raw Pi user/assistant entry."""
+    if entry.get("type") != "message":
+        return None
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return None
+    role = message.get("role")
+    entry_id = entry.get("id")
+    timestamp = entry.get("timestamp")
+    if role not in {"user", "assistant"} or not isinstance(entry_id, str) or not entry_id:
+        return None
+    if not isinstance(timestamp, str) or not timestamp:
+        return None
+    message_timestamp = message.get("timestamp")
+    stable_message_timestamp = str(message_timestamp) if message_timestamp is not None else ""
+    return entry_id, timestamp, role, stable_message_timestamp
+
+
+def _resolve_parent_session_path(path: str, parent_session: str) -> str:
+    parent_session = os.path.expanduser(parent_session)
+    if os.path.isabs(parent_session):
+        return parent_session
+    return os.path.abspath(os.path.join(os.path.dirname(path), parent_session))
+
+
+def new_pi_conversation_counts(path: str) -> tuple[int, int] | None:
+    """Count non-inherited user/assistant messages in a parented Pi session.
+
+    Pi clones retain raw entry IDs and timestamps from their parent. Return None
+    when lineage cannot be proven so callers conservatively keep the session.
+    """
+    try:
+        child = _select_active_branch(_load_jsonl(path))
+    except OSError:
+        return None
+
+    parent_session = child.header.get("parentSession")
+    if not isinstance(parent_session, str) or not parent_session:
+        return None
+    parent_path = _resolve_parent_session_path(path, parent_session)
+    try:
+        parent = _select_active_branch(_load_jsonl(parent_path))
+    except OSError:
+        return None
+
+    parent_identities = {
+        identity
+        for entry in parent.entries
+        if (identity := _conversation_entry_identity(entry)) is not None
+    }
+    new_users = 0
+    new_assistants = 0
+    for entry in child.branch:
+        message = entry.get("message")
+        if entry.get("type") != "message" or not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        identity = _conversation_entry_identity(entry)
+        if identity is not None and identity in parent_identities:
+            continue
+        if role == "user":
+            new_users += 1
+        else:
+            new_assistants += 1
+    return new_users, new_assistants
 
 
 def _prefixed_session_id(native_id: str) -> str:

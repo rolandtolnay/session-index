@@ -30,6 +30,15 @@ _CODEX_UUID_RE = re.compile(
 _EXIT_CODE_RE = re.compile(r"(?:Process exited with code|Exit code:)\s+(-?\d+)")
 _SLUG_CHARS = re.compile(r"[^a-z0-9-]+")
 
+_UI_TITLE_PROMPT_PREFIXES = (
+    "generate a concise ui title (",
+    "you are a helpful assistant. you will be presented with a user prompt, and your job is "
+    "to provide a short title for a task that will be created from that prompt.",
+)
+_APPROVAL_EVALUATOR_PROMPT_PREFIX = (
+    "the following is the codex agent history whose request action you are assessing."
+)
+
 
 @dataclass(frozen=True)
 class CodexThreadMetadata:
@@ -283,6 +292,52 @@ def _first_user_slug(session: ParsedSession) -> str:
     if not session.user_messages:
         return ""
     return _slugify(session.user_messages[0])
+
+
+def _session_meta_payload(path: str) -> dict[str, Any]:
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "session_meta":
+                    payload = entry.get("payload")
+                    return payload if isinstance(payload, dict) else {}
+    except OSError:
+        pass
+    return {}
+
+
+def internal_codex_session_reason(session: ParsedSession, path: str = "") -> str:
+    """Classify provider-internal rollouts that are not user conversations."""
+    if not session.user_messages:
+        return ""
+    first_user = session.user_messages[0].lstrip().casefold()
+    is_title_prompt = first_user.startswith(_UI_TITLE_PROMPT_PREFIXES)
+    is_approval_prompt = first_user.startswith(_APPROVAL_EVALUATOR_PROMPT_PREFIX)
+    if not is_title_prompt and not is_approval_prompt:
+        return ""
+
+    metadata = _session_meta_payload(path) if path else {}
+    if metadata.get("thread_source") == "user":
+        return ""
+
+    if is_title_prompt:
+        if len(session.user_messages) == 1 and metadata.get("source") == "exec":
+            return "Codex UI-title side-call"
+        return ""
+
+    source = metadata.get("source")
+    guardian = (
+        source.get("subagent", {}).get("other")
+        if isinstance(source, dict) and isinstance(source.get("subagent"), dict)
+        else ""
+    )
+    if metadata.get("thread_source") == "subagent" and guardian == "guardian":
+        return "Codex approval-evaluator side-call"
+    return ""
 
 
 def parse_codex_jsonl(path: str) -> ParsedSession:

@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from codex_parser import parse_codex_jsonl
+from codex_parser import internal_codex_session_reason, parse_codex_jsonl
 from parser import ParsedSession, ParsedToolCall, clean_user_messages, parse_jsonl as parse_claude_jsonl
-from pi_parser import parse_pi_jsonl, discover_pi_subagents, parse_pi_subagent_jsonl
+from pi_parser import discover_pi_subagents, new_pi_conversation_counts, parse_pi_jsonl, parse_pi_subagent_jsonl
 from subagent_parser import discover_subagents, parse_subagent_jsonl, ParsedSubagent, SubagentInfo
 from subagent_runs import ParsedSubagentRun, build_subagent_runs
 
@@ -339,6 +339,17 @@ def index_source_transcript(
         files_touched=len(session.files_touched),
         stages=stages,
     )
+
+    if source == "codex":
+        result.skipped_reason = internal_codex_session_reason(session, path)
+        if result.skipped_reason:
+            return result
+
+    if source == "pi" and session.parent_session_path:
+        new_conversation = new_pi_conversation_counts(path)
+        if new_conversation is not None and (new_conversation[0] < 1 or new_conversation[1] < 1):
+            result.skipped_reason = "no new Pi conversation after clone"
+            return result
 
     if session.user_message_count < 1 or session.assistant_message_count < 1:
         result.skipped_reason = f"{session.user_message_count} user, {session.assistant_message_count} assistant msgs"
