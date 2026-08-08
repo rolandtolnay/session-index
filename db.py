@@ -752,6 +752,18 @@ def _get_readonly_connection(db_path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _has_top_level_semicolon(sql: str) -> bool:
+    """True when a ';' appears outside single-quoted string literals."""
+    in_string = False
+    for ch in sql:
+        if ch == "'":
+            # A doubled '' escape toggles twice, so the net state stays correct.
+            in_string = not in_string
+        elif ch == ";" and not in_string:
+            return True
+    return False
+
+
 def _run_select(
     conn: sqlite3.Connection, sql: str, max_rows: int = 50,
 ) -> tuple[list[str], list[list[Any]], bool]:
@@ -761,8 +773,8 @@ def _run_select(
         stripped = stripped[:-1].strip()
     if not stripped:
         raise ValueError("Empty query")
-    if ";" in stripped:
-        raise ValueError("Only a single statement is allowed (no ';')")
+    if _has_top_level_semicolon(stripped):
+        raise ValueError("Only a single statement is allowed (no ';' outside string literals)")
     lowered = stripped.lstrip("( \t\r\n").lower()
     if not (lowered.startswith("select") or lowered.startswith("with")):
         raise ValueError("Only SELECT / WITH queries are allowed")

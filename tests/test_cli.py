@@ -497,3 +497,35 @@ def test_cmd_prune_confirm_treats_missing_generated_artifacts_as_already_absent(
     conn = db.get_connection()
     assert conn.execute("SELECT 1 FROM sessions WHERE session_id='pi:missing'").fetchone() is None
     conn.close()
+
+
+def test_cmd_query_prints_self_correction_hints(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    conn = db.get_connection()
+    init_db(conn)
+    upsert_session(conn, session_id="s1", project="proj")
+    conn.close()
+
+    with pytest.raises(SystemExit):
+        cmd_query(argparse.Namespace(sql="SELECT provider FROM sessions", json=False, limit=50, schema=False))
+    err = capsys.readouterr().err
+    assert "no such column: provider" in err
+    assert "`source`" in err
+
+    with pytest.raises(SystemExit):
+        cmd_query(argparse.Namespace(sql="PRAGMA table_info(tool_calls)", json=False, limit=50, schema=False))
+    err = capsys.readouterr().err
+    assert "pragma_table_info('tool_calls')" in err
+
+
+def test_cmd_footprint_rejects_malformed_dates(tmp_path, monkeypatch, capsys):
+    _isolate_db(tmp_path, monkeypatch)
+    conn = db.get_connection()
+    init_db(conn)
+    conn.close()
+
+    with pytest.raises(SystemExit) as exc:
+        cmd_footprint(argparse.Namespace(session=None, project=None, since="2026-8-1", until=None, limit=20, json=False))
+
+    assert exc.value.code == 2
+    assert "--since" in capsys.readouterr().err

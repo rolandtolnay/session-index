@@ -25,7 +25,7 @@ from db import (
     TOP_LEVEL_SESSION_PREDICATE,
 )
 from logger import log
-from evidence_find import find_candidates
+from evidence_find import find_candidates, validate_date_filter
 from evidence_inspect import EvidenceInspectError, inspect_ref
 from query_reference import query_reference
 from transcript import TRANSCRIPT_DIR
@@ -83,7 +83,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
 
 def add_find_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--topic", help="Session/topic candidate discovery; returns session/<id> refs with summaries, not evidence text")
+    parser.add_argument("--topic", help="Session/topic candidate discovery; terms are AND-joined FTS (OR/NOT supported), with deterministic fuzzy fallback when exact matching is empty")
     parser.add_argument("--tool", help="Tool Call candidate discovery; returns tool/<session_id>/<sequence> refs")
     parser.add_argument("--skill", help="Skill Invocation candidates; returns skill/<session_id>/<sequence> refs")
     parser.add_argument("--mutated", help="File Mutation path fragment; returns session-collapsed candidates by default")
@@ -110,6 +110,28 @@ def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--q", help="Query text for session/subagent Evidence Snippets; omit for session artifact metadata or subagent task area")
     parser.add_argument("--max-snippets", type=int, default=5, help="Maximum transcript Evidence Snippet blocks")
+
+
+def add_current_arguments(parser: argparse.ArgumentParser) -> None:
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
+        "--path",
+        action="store_true",
+        help="Print the deterministic clean transcript path; warn if it does not exist yet",
+    )
+    output.add_argument(
+        "--cleaned-paths",
+        action="store_true",
+        help="Print canonical Clean Transcript and Tool Log paths with existence status",
+    )
+    output.add_argument("--native", action="store_true", help="Print the provider-native session ID")
+    output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")
+
+
+def add_prune_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("sessions", nargs="+", help="Exact Canonical Session ID(s) to audit/prune")
+    parser.add_argument("--confirm", action="store_true", help="Delete eligible audited session IDs and owned generated artifacts")
+    parser.add_argument("--json", action="store_true", help="Output audit/deletion result as JSON")
 
 
 def _warn_missing_path(label: str, path: str) -> None:
@@ -331,6 +353,47 @@ def _print_query_table(columns: list[str], rows: list[list]) -> None:
     print(f"\n{len(rows)} row(s)")
 
 
+# Column names LLM callers repeatedly guess that have no direct equivalent.
+_QUERY_COLUMN_ALIASES = {
+    "provider": "the session source column is named `source`",
+    "provider_name": "the session source column is named `source`",
+    "arguments": (
+        "tool_calls does not store argument text (only skill_invocations has an `arguments` column); "
+        "inspect tool/<session_id>/<sequence> to read the full call from the Tool Log"
+    ),
+    "arguments_preview": (
+        "tool_calls does not store argument text; "
+        "inspect tool/<session_id>/<sequence> to read the full call from the Tool Log"
+    ),
+    "operation": "file_mutations has no operation column; each row is one successful write/edit path",
+}
+
+
+def _query_error_hint(sql: str, error: str) -> str | None:
+    """Turn common self-correctable SQL errors into a one-line fix hint."""
+    import difflib
+
+    from query_reference import known_columns
+
+    if "no such column" in error:
+        column = error.split("no such column:")[-1].strip().split(".")[-1].lower()
+        alias = _QUERY_COLUMN_ALIASES.get(column)
+        if alias:
+            return f"{alias}. Run query --schema for exact columns."
+        close = difflib.get_close_matches(column, known_columns(), n=3)
+        if close:
+            return f"Did you mean: {', '.join(close)}? Run query --schema for exact columns."
+        return "Run query --schema for exact table columns."
+    if "no such table" in error:
+        return "Run query --schema for the exact table list."
+    if "Only SELECT / WITH" in error and (sql or "").lstrip().lower().startswith("pragma"):
+        return (
+            "PRAGMA statements are blocked, but the table-valued form works: "
+            "SELECT name, type FROM pragma_table_info('tool_calls')."
+        )
+    return None
+
+
 def cmd_query(args: argparse.Namespace) -> None:
     """Run a guarded read-only SELECT against the session index."""
     if args.schema:
@@ -353,6 +416,9 @@ def cmd_query(args: argparse.Namespace) -> None:
         _log_query(args.sql, 0, False, int((time.monotonic() - start) * 1000), error=str(e))
         # Print verbatim so the caller can self-correct.
         print(f"Query error: {e}", file=sys.stderr)
+        hint = _query_error_hint(args.sql, str(e))
+        if hint:
+            print(f"Hint: {hint}", file=sys.stderr)
         raise SystemExit(1)
 
     _log_query(args.sql, len(rows), truncated, int((time.monotonic() - start) * 1000))
@@ -699,6 +765,12 @@ def cmd_footprint(args: argparse.Namespace) -> None:
     if not os.path.exists(DB_PATH):
         print("No database found. Run `backfill` to create one.")
         return
+    try:
+        validate_date_filter("--since", args.since)
+        validate_date_filter("--until", args.until)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(2)
     conn = get_connection()
     try:
         init_db(conn)
@@ -1082,19 +1154,7 @@ def main() -> None:
 
     # current
     sp_current = subparsers.add_parser("current", help="Show the active runtime session")
-    current_output = sp_current.add_mutually_exclusive_group()
-    current_output.add_argument(
-        "--path",
-        action="store_true",
-        help="Print the deterministic clean transcript path; warn if it does not exist yet",
-    )
-    current_output.add_argument(
-        "--cleaned-paths",
-        action="store_true",
-        help="Print canonical Clean Transcript and Tool Log paths with existence status",
-    )
-    current_output.add_argument("--native", action="store_true", help="Print the provider-native session ID")
-    current_output.add_argument("--json", action="store_true", help="Print full current-session metadata as JSON")
+    add_current_arguments(sp_current)
     sp_current.set_defaults(func=cmd_current)
 
     # find
@@ -1163,9 +1223,7 @@ def main() -> None:
             "and only when --confirm is supplied. Source JSONL is never deleted."
         ),
     )
-    sp_prune.add_argument("sessions", nargs="+", help="Exact Canonical Session ID(s) to audit/prune")
-    sp_prune.add_argument("--confirm", action="store_true", help="Delete eligible audited session IDs and owned generated artifacts")
-    sp_prune.add_argument("--json", action="store_true", help="Output audit/deletion result as JSON")
+    add_prune_arguments(sp_prune)
     sp_prune.set_defaults(func=cmd_prune)
 
     # status

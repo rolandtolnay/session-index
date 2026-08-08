@@ -411,3 +411,68 @@ def test_find_topic_session_scope_applies_before_limit(tmp_path):
     data = find_candidates(conn, topic="common evidence", session="pi:target", limit=1)
 
     assert [result["ref"] for result in data["results"]] == ["session/pi:target"]
+
+
+def test_fuzzy_fallback_fires_on_typos_against_large_session_blobs(tmp_path):
+    conn = make_memory_conn()
+    filler = " ".join(f"filler{i} lorem ipsum dolor amet consequat" for i in range(120))
+    seed_evidence_graph(
+        conn,
+        tmp_path,
+        summary=f"Planned the detached refresh coordinator worker. {filler}",
+    )
+
+    data = find_candidates(conn, topic="refersh coordinater", limit=3)
+
+    assert [result["ref"] for result in data["results"]] == ["session/pi:abc"]
+    assert data["results"][0]["match"]["match_mode"] == "fuzzy_fallback"
+
+
+def test_find_rejects_malformed_date_filters(tmp_path):
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
+
+    for kwargs in ({"since": "2026-8-1"}, {"until": "7d"}, {"since": "2026-13-40"}):
+        with pytest.raises(ValueError):
+            find_candidates(conn, topic="session index", **kwargs)
+
+
+def test_find_session_accepts_native_id_and_unambiguous_prefix(tmp_path):
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
+    db.upsert_session(
+        conn,
+        session_id="pi:0123456789abcdef",
+        source="pi",
+        native_session_id="0123456789abcdef",
+        project="session-index",
+        started_at="2026-06-01T10:00:00Z",
+        summary="Native id session about evidence.",
+        user_messages="evidence",
+        transcript_path=str(tmp_path / "native.md"),
+    )
+
+    by_native = find_candidates(conn, session="0123456789abcdef", limit=5)["results"]
+    by_prefix = find_candidates(conn, session="pi:01234567", limit=5)["results"]
+
+    assert [result["ref"] for result in by_native] == ["session/pi:0123456789abcdef"]
+    assert [result["ref"] for result in by_prefix] == ["session/pi:0123456789abcdef"]
+
+    with pytest.raises(ValueError):
+        find_candidates(conn, session="totally-unknown-session")
+
+
+def test_find_reports_truncation_and_empty_hints(tmp_path):
+    conn = make_memory_conn()
+    seed_evidence_graph(conn, tmp_path)
+
+    limited = find_candidates(conn, project="session-index", limit=1)
+    assert limited["truncated"] is True
+
+    empty_topic = find_candidates(conn, topic="banana rocket ocean", limit=5)
+    assert empty_topic["results"] == []
+    assert "truncated" not in empty_topic
+    assert "fuzzy fallback" in empty_topic["hint"]
+
+    empty_skill = find_candidates(conn, skill="nonexistent-skill", limit=5)
+    assert "skill_invocations" in empty_skill["hint"]

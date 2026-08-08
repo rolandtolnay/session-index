@@ -168,3 +168,17 @@ def test_inspect_errors_are_structured(tmp_path, monkeypatch, ref, code):
     payload = exc.value.to_json()
     assert payload["error"]["code"] == code
     assert payload["error"]["message"]
+
+
+def test_inspect_session_query_with_pending_transcript_returns_summary_note(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    conn = make_memory_conn()
+    # write_artifacts=False leaves the transcript path set but the file absent,
+    # matching a recently ended session whose artifacts are not generated yet.
+    seed_evidence_graph(conn, tmp_path)
+
+    packet = inspect_ref(conn, "session/pi:abc", q="evidence")
+
+    assert packet["evidence"] == []
+    assert "Clean Transcript is not available" in packet["note"]
+    assert packet["session"]["summary"] == "Worked on session index evidence retrieval."

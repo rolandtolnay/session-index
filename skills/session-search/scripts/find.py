@@ -4,13 +4,11 @@
 # dependencies = ["rapidfuzz>=3.0"]
 # ///
 """Evidence Find wrapper — resolves repo root via symlink, runs CLI find."""
-from _bootstrap import repo_root
-
-repo_root()
+from _bootstrap import import_cli
 
 import argparse
 
-from cli import add_find_arguments, cmd_find
+add_find_arguments, cmd_find = import_cli("add_find_arguments", "cmd_find")
 
 parser = argparse.ArgumentParser(
     description="Evidence Find: compact JSON candidates with refs, summaries, and match metadata; no evidence text or broad artifact inventories",

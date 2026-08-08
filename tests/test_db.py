@@ -4,6 +4,8 @@ import os
 import sqlite3
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
@@ -661,3 +663,16 @@ def test_run_readonly_select_blocks_writes_even_if_lexically_select(tmp_path, mo
     conn = db.get_connection()
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
     conn.close()
+
+
+def test_run_select_allows_literal_semicolons_but_blocks_multi_statements():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+
+    columns, rows, truncated = db._run_select(conn, "SELECT ';' AS x")
+    assert columns == ["x"]
+    assert rows == [[";"]]
+    assert truncated is False
+
+    with pytest.raises(ValueError):
+        db._run_select(conn, "SELECT 1; SELECT 2")

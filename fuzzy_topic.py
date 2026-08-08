@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections import defaultdict
 from typing import Any
 
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 
 from db import top_level_session_predicate
 
 FUZZY_CANDIDATE_POOL_LIMIT = 1000
-FUZZY_TOPIC_THRESHOLD = 78.0
+FUZZY_TOPIC_THRESHOLD = 85.0
+FUZZY_ANCHOR_THRESHOLD = 90.0
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def _filters(*, project: str | None, since: str | None, until: str | None, session: str | None) -> tuple[list[str], dict[str, Any]]:
@@ -101,12 +105,34 @@ def _blob(row: dict[str, Any], mutation_paths: list[str], tool_names: list[str],
     return "\n".join(str(part) for part in parts if part)
 
 
+def _tokens(text: str) -> list[str]:
+    return _TOKEN_RE.findall(text.lower())
+
+
 def _score(query: str, blob: str) -> float:
-    # Avoid partial-token scoring: it can turn one shared broad word into a 100.
-    return float(max(
-        fuzz.token_set_ratio(query, blob),
-        fuzz.WRatio(query, blob),
-    ))
+    # Score each query token against its best-matching blob token, then average
+    # the strongest ~2/3 of query tokens (always at least two when available).
+    # Whole-blob ratios dilute toward zero as session blobs grow, so near-misses
+    # like "refersh coordinater" never crossed the threshold. Averaging at least
+    # two tokens keeps one shared broad word from carrying an unrelated query,
+    # while the 2/3 coverage rule tolerates a missing word in longer queries.
+    query_tokens = _tokens(query)
+    blob_tokens = list(dict.fromkeys(_tokens(blob)))
+    if not query_tokens or not blob_tokens:
+        return 0.0
+    scores = []
+    for token in query_tokens:
+        best = process.extractOne(token, blob_tokens, scorer=fuzz.ratio)
+        scores.append(best[1] if best else 0.0)
+    scores.sort(reverse=True)
+    # Anchor rule: at least one query word must appear (near-)exactly. Over
+    # thousands of blob tokens every word finds some ~80 lookalike, so without
+    # an anchor, all-noise queries would cross the mean threshold.
+    if scores[0] < FUZZY_ANCHOR_THRESHOLD:
+        return 0.0
+    keep = len(scores) if len(scores) <= 2 else max(2, -(-len(scores) * 2 // 3))
+    kept = scores[:keep]
+    return sum(kept) / len(kept)
 
 
 def find_fuzzy_topic_candidates(

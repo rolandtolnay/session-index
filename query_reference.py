@@ -36,6 +36,14 @@ def _schema_columns(table_name: str) -> list[str]:
     return columns
 
 
+def known_columns() -> list[str]:
+    """Flat sorted list of fact-table column names, for query error hints."""
+    names: set[str] = set()
+    for table_name in _REVIEWED_TABLES:
+        names.update(_schema_columns(table_name))
+    return sorted(names)
+
+
 def _table_reference() -> str:
     sections = []
     for table_name, semantics in _REVIEWED_TABLES.items():
@@ -53,6 +61,10 @@ Use `query` for counts, rankings, aggregates, and custom joins. Use `find` for c
 Tables and semantics
 
 {_table_reference()}
+
+sessions_fts: FTS5 index over user_messages, summary, files_touched, project. Terms are AND-joined; OR and NOT work. Example: SELECT s.session_id, s.started_at FROM sessions_fts f JOIN sessions s ON s.rowid=f.rowid WHERE sessions_fts MATCH 'refresh OR cooldown' ORDER BY rank LIMIT 10;
+
+Column listing: PRAGMA statements are blocked, but the table-valued form works: SELECT name, type FROM pragma_table_info('tool_calls');
 
 Construct Inspection References
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections import Counter
+from datetime import date
 from typing import Any
 
-from db import build_fts_query, find_session_candidates, top_level_session_predicate
+from db import build_fts_query, find_session_candidates, get_session, top_level_session_predicate
 from evidence_model import (
     candidate,
     file_mutation_match,
@@ -25,6 +27,47 @@ from skill_facts import canonical_skill_name
 
 
 FUZZY_TOPIC_SCOPE_LIMIT = 1000
+
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(T\S+)?$")
+
+
+def validate_date_filter(name: str, value: str | None) -> None:
+    """Reject malformed date filters instead of silently matching nothing."""
+    if not value:
+        return
+    if not _ISO_DATE_RE.match(value):
+        raise ValueError(f"{name} must be an ISO date (YYYY-MM-DD, optionally with a T... time suffix), got {value!r}")
+    try:
+        date.fromisoformat(value[:10])
+    except ValueError:
+        raise ValueError(f"{name} is not a valid calendar date: {value!r}")
+
+
+def _empty_result_hint(args: dict[str, Any]) -> str | None:
+    """One actionable sentence for an empty result set."""
+    if args.get("topic"):
+        return (
+            "No exact or fuzzy topic matches. Topic FTS covers user messages, summaries, file paths, "
+            "and project names (not assistant text); terms are AND-joined and the fuzzy fallback scans "
+            "the most recent 1000 in-scope sessions. Try fewer or different terms, OR between "
+            "alternatives, --mutated with a path fragment, or query with summary LIKE."
+        )
+    if args.get("mutated"):
+        return (
+            "No File Mutations matched that path fragment. Matching is substring-based; "
+            "try a shorter fragment such as the file name alone."
+        )
+    for flag, column, table in (
+        ("skill", "skill_name", "skill_invocations"),
+        ("subagent", "requested_agent_type", "subagent_runs"),
+        ("tool", "tool", "tool_calls"),
+    ):
+        if args.get(flag):
+            return (
+                f"No {table} rows matched {args[flag]!r}. List recorded names with: "
+                f"SELECT {column}, COUNT(*) AS n FROM {table} GROUP BY 1 ORDER BY n DESC."
+            )
+    return None
 
 
 def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = "s") -> list[str]:
@@ -410,6 +453,18 @@ def find_candidates(
     mutation_mode: str = "session",
 ) -> dict[str, list[dict[str, Any]]]:
     """Return compact JSON-ready Evidence Find candidates."""
+    validate_date_filter("--since", since)
+    validate_date_filter("--until", until)
+    if session:
+        resolved = get_session(conn, session)
+        if not resolved:
+            raise ValueError(
+                f"--session {session!r} does not match any indexed session; "
+                "it accepts a canonical session ID, a provider-native session ID, "
+                "or an unambiguous prefix of at least 8 characters"
+            )
+        session = resolved["session_id"]
+
     args: dict[str, Any] = {
         "topic": topic,
         "tool": tool,
@@ -456,4 +511,13 @@ def find_candidates(
     else:
         raise ValueError("find requires at least one criterion: --topic, --tool, --skill, --mutated, --subagent, --project, --since, --until, or --session")
 
-    return {"results": results[:args["limit"]]}
+    results = results[:args["limit"]]
+    payload: dict[str, Any] = {"results": results}
+    if results and len(results) == args["limit"]:
+        # The limit was filled; more matches may exist beyond it.
+        payload["truncated"] = True
+    if not results:
+        hint = _empty_result_hint(args)
+        if hint:
+            payload["hint"] = hint
+    return payload

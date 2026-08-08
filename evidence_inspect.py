@@ -111,10 +111,17 @@ def _inspect_session(conn: sqlite3.Connection, raw_ref: str, ref: SessionRef, q:
         packet["evidence"] = []
         return packet
     path = session.get("transcript_path")
-    if not path:
-        raise EvidenceInspectError("Session has no Clean Transcript path", code="missing_artifact", ref=raw_ref)
-    if not os.path.exists(path):
-        raise EvidenceInspectError(f"Clean Transcript artifact is missing: {path}", code="missing_artifact", ref=raw_ref)
+    if not path or not os.path.exists(path):
+        # A pending or missing transcript should not read as "no evidence exists":
+        # return the indexed summary instead of an error so recent sessions stay usable.
+        packet["session"] = session_packet(session, include_summary=True)
+        packet["evidence"] = []
+        packet["note"] = (
+            "Clean Transcript is not available for this session yet, so snippet search was skipped. "
+            "session.summary is the best indexed evidence; generated artifacts appear shortly after "
+            "a session idles or ends, so retry later for transcript snippets."
+        )
+        return packet
     snippets = extract_evidence_snippets(path, q.split(), max_blocks=max_snippets, max_lines=200)
     packet["evidence"] = [snippet_payload(snippet) for snippet in snippets]
     return packet
