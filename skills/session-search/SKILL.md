@@ -12,22 +12,20 @@ arguments:
 
 Use Session Index to move from a user’s vague reference to past work into scoped, inspectable evidence. The canonical LLM-facing surface is this skill plus CLI `--help`; the README is not required for operation.
 
-## Decision tree
-
-1. Use `current` only for the exact active runtime conversation.
-2. Use `query` for counts, rankings, aggregates, custom joins, and audits over structured fact tables.
-3. Use `find` for compact Evidence Find candidates when you need likely sessions/events and Inspection References.
-4. Use `inspect` on selected refs copied unchanged from `find` or constructed from SQL rows.
-5. Use `footprint` to audit generated artifact disk usage and prune eligibility.
-6. Use `prune` only for explicit low-value session IDs after reviewing dry-run output.
-7. Prefer generated Clean Transcripts, Tool Logs, and Subagent Run transcripts. Do not read raw JSONL unless generated artifacts are insufficient.
+## Choosing a path
 
 Most lookup tasks are either:
 
 - `find` → choose a candidate by `session.summary` and `match` → `inspect --ref ...`
 - `query --schema` → SQL aggregate/custom rows → construct refs → `inspect --ref ...`
 
+Evidence escalates in tiers: scoped `inspect` packets first; whole generated artifacts (Clean Transcript, Tool Log, Subagent Run transcripts) when a packet is insufficient; raw Source JSONL only when generated artifacts are insufficient.
+
+Stop once you have enough evidence to answer the user's question — usually one or two `inspect` calls on the best candidates. Widen the search only when the evidence in hand is insufficient or contradictory.
+
 ## Commands
+
+Examples use the Pi install path; substitute your install's skill root (for example `~/.claude/skills/session-search`) or run `uv run cli.py <command>` from the repo. Wrappers resolve the repo through their own symlink.
 
 ### current — identify this active session
 
@@ -69,7 +67,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/find.py [criteria] [filters]
 
 Criteria:
 
-- `--topic TEXT` — session/topic candidates with `session/<session_id>` refs. Exact topic FTS is primary; if exact topic scope is empty, deterministic fuzzy fallback ranks already-indexed session metadata and still honors `--project`, `--since`, `--until`, and `--session`.
+- `--topic TEXT` — session/topic candidates with `session/<session_id>` refs. Exact topic FTS is primary; if exact topic scope is empty, deterministic fuzzy fallback ranks already-indexed session metadata and still honors `--project`, `--since`, `--until`, and `--session`. Terms are AND-joined; `OR` and `NOT` operators work (`--topic "codex OR rollout"`); quoted phrases are not supported. FTS covers user messages, summaries, file paths, and project names — not assistant text. Exact results order by FTS relevance, not recency; fuzzy results order by score. For "most recent session about X", scope with `--since` or check `started_at` rather than trusting the first result.
 - `--tool NAME` — Tool Call candidates with `tool/<session_id>/<sequence>` refs.
 - `--skill NAME` — Skill Invocation candidates with `skill/<session_id>/<sequence>` refs from `skill_invocations`.
 - `--mutated PATH_FRAGMENT` — session-collapsed File Mutation candidates by default, one `session/<session_id>` ref per Canonical Session ID that mutated matching paths.
@@ -77,9 +75,9 @@ Criteria:
 - `--subagent NAME` — Subagent Run candidates with `subagent/<session_id>/<child_index>` refs and parent-call refs when available.
 - `--tool question --question-recommended true|false` — question-answer candidates with question refs.
 
-Filters compose with criteria: `--project`, `--since`, `--until`, `--session`, and `--limit`. `--skill` does not compose with `--tool` because Skill Invocations are not Tool Calls.
+Filters compose with criteria: `--project`, `--since`, `--until`, `--session`, and `--limit`. `--skill` does not compose with `--tool` because Skill Invocations are not Tool Calls. `--session` accepts a canonical session ID, a provider-native ID, or an unambiguous 8+ character prefix; unknown sessions and malformed dates return `invalid_find` errors instead of empty results.
 
-`find` emits compact JSON only. Each candidate includes `ref`, `inspect_refs`, `session`, and `match`. `session.summary` is retained because it is high-signal candidate-selection metadata. `find` does not return Evidence Snippets or broad top-level artifact inventories such as repeated Clean Transcript paths, Tool Log paths, or subagent transcript lists.
+`find` emits compact JSON only. Each candidate includes `ref`, `inspect_refs`, `session`, and `match`. `session.summary` is retained because it is high-signal candidate-selection metadata. `find` does not return Evidence Snippets or broad top-level artifact inventories such as repeated Clean Transcript paths, Tool Log paths, or subagent transcript lists. When results fill `--limit`, the payload carries `"truncated": true` (more matches may exist); an empty result set carries a `hint` with the most useful reformulation.
 
 For default `find --mutated ...` results, `match.kind` is `file_mutation_session`; `match.match_count`, `match.distinct_path_count`, and `match.representative_paths` summarize only matching File Mutation rows. `inspect_refs.related_tools` contains up to five exact `tool/<session>/<sequence>` refs for drill-down without making the default result event-level again.
 
@@ -107,7 +105,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref REF [--q TEXT]
 
 Use refs copied unchanged from `find` or constructed from `query --schema` guidance:
 
-- `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata (including the Clean Transcript artifact path/existence), structured subagent refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets.
+- `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata (including the Clean Transcript artifact path/existence), structured subagent refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets. If the Clean Transcript is not generated yet (typical for still-active or just-ended sessions), the packet returns the session summary plus a `note` instead of an error.
 - `skill/<session_id>/<sequence>` — returns Skill Invocation metadata, locator/preview fields, and primary transcript artifact metadata without inlining the full transcript. Parent invocations use the Clean Transcript as primary; subagent-scope invocations use the subagent transcript as primary and include the parent Clean Transcript as context when available.
 - `tool/<session_id>/<sequence>` — returns the matching Tool Log section plus associated File Mutation paths.
 - `question/<session_id>/<sequence>/<question_index>` — returns question-answer metadata plus the Tool Log section.
@@ -121,7 +119,7 @@ Session inspect artifact metadata has deterministic paths and existence booleans
 
 Session inspect does not expose raw Source Transcript paths and does not list every subagent transcript path. It exposes `inspect_refs.subagents[]` objects with `ref`, `requested_agent_type`, and `task_preview` so you can choose a child run before loading it.
 
-`inspect` emits JSON Evidence Packets with artifact path, locator metadata, and bounded Evidence Snippets. Invalid refs, missing sessions, stale refs, and missing artifacts return JSON errors and a non-zero exit status.
+`inspect` emits JSON Evidence Packets with artifact path, locator metadata, and bounded Evidence Snippets. Invalid refs, missing sessions, stale refs, and missing artifacts return JSON errors and a non-zero exit status, except session refs with a pending Clean Transcript, which return the summary-plus-`note` packet described above.
 
 Examples:
 
@@ -158,7 +156,7 @@ Generated artifacts are the normal evidence path:
 - `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, compact large write/edit argument text with hashes, and larger bounded audit excerpts for mutations/errors.
 - `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
 
-These are more compact than raw JSONL at `~/.claude/projects/`, `~/.pi/agent/sessions/`, or Codex rollout files under `~/.codex/sessions/` and `~/.codex/archived_sessions/`. Prefer them as fallback when `inspect` is insufficient.
+Raw Source JSONL lives at `~/.claude/projects/`, `~/.pi/agent/sessions/`, and Codex rollout files under `~/.codex/sessions/` and `~/.codex/archived_sessions/`.
 
 ## When to use this skill
 
