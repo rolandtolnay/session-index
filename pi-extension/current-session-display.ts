@@ -103,7 +103,7 @@ function acquireFocusedFooterSuppression(): () => void {
 	};
 }
 
-async function withFooterSuppressed<T>(operation: () => Promise<T>): Promise<T> {
+export async function withFooterSuppressed<T>(operation: () => Promise<T>): Promise<T> {
 	const release = acquireFocusedFooterSuppression();
 	try {
 		return await operation();
@@ -188,7 +188,7 @@ function isUnmodifiedKittyKey(data: string, codePoint: number): boolean {
 	return (modifiers & ~lockModifiers) === 0;
 }
 
-function isDismissKey(data: string): boolean {
+export function isDismissKey(data: string): boolean {
 	const normalized = data.toLowerCase().replace(/[\s_]/g, "-");
 	return data === "q"
 		|| data === "Q"

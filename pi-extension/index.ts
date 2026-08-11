@@ -8,6 +8,7 @@ import {
 	type CurrentSessionDisplayMetadata,
 	type CurrentSessionIndexResult,
 } from "./current-session-display.ts";
+import { showRecentSessionsDisplay } from "./recent-sessions-display.ts";
 import {
 	applySessionIndexEnv,
 	buildSessionIndexEnv,
@@ -21,6 +22,7 @@ const piIndexScript = path.join(repoRoot, "hooks", "pi_index.py");
 const piContextScript = path.join(repoRoot, "hooks", "pi_context.py");
 const MANUAL_INDEX_UI_TIMEOUT_MS = 300_000;
 const CURRENT_SESSION_REFRESH_TIMEOUT_MS = 5_000;
+const RECENT_SESSIONS_USAGE_GUIDANCE = "Use this recent-session index as lightweight continuity context. For older or specific past work, load the session-search skill and query the index.";
 
 type CurrentSessionCommandResult = {
 	code: number | null;
@@ -321,7 +323,49 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 
 	return function registerSessionIndexExtension(pi: ExtensionAPI) {
 		let injectedForSession: string | undefined;
+		let recentSessionsContext: string | null | undefined;
+		let recentSessionsLoad: Promise<string | undefined> | undefined;
 		let lastTurnIndexKey: string | undefined;
+
+		async function loadRecentSessionsContext(ctx: {
+			cwd: string;
+			sessionManager: Parameters<typeof buildSessionIndexEnv>[0];
+		}): Promise<string | undefined> {
+			if (recentSessionsContext !== undefined) return recentSessionsContext ?? undefined;
+			if (recentSessionsLoad) return recentSessionsLoad;
+
+			recentSessionsLoad = (async () => {
+				const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
+				let result: { code: number; stdout: string };
+				try {
+					result = await pi.exec(
+						"uv",
+						[
+							"run",
+							piContextScript,
+							"--cwd",
+							ctx.cwd,
+							"--session-id",
+							sessionEnv?.SESSION_INDEX_NATIVE_SESSION_ID ?? ctx.sessionManager.getSessionId?.() ?? "",
+						],
+						{ cwd: repoRoot, timeout: 3000 },
+					);
+				} catch {
+					return undefined;
+				}
+
+				if (result.code !== 0 || !result.stdout.trim()) return undefined;
+				return `${result.stdout.trim()}\n\n${RECENT_SESSIONS_USAGE_GUIDANCE}`;
+			})();
+
+			try {
+				const context = await recentSessionsLoad;
+				recentSessionsContext = context ?? null;
+				return context;
+			} finally {
+				recentSessionsLoad = undefined;
+			}
+		}
 
 		pi.registerCommand("current-session", {
 			description: "Show Current Session metadata without sending it to the model",
@@ -361,8 +405,22 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 			},
 		});
 
+		pi.registerCommand("recent-sessions", {
+			description: "Show the Recent Sessions context injected into this session",
+			handler: async (_args, ctx) => {
+				const context = await loadRecentSessionsContext(ctx);
+				if (!context) {
+					ctx.ui.notify("No Recent Sessions context is available for this session.", "warning");
+					return;
+				}
+				await showRecentSessionsDisplay({ ctx, content: context });
+			},
+		});
+
 		pi.on("session_start", async (_event, ctx) => {
 			injectedForSession = undefined;
+			recentSessionsContext = undefined;
+			recentSessionsLoad = undefined;
 			lastTurnIndexKey = undefined;
 			refreshSessionIndexEnv(ctx.sessionManager);
 		});
@@ -371,30 +429,13 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 			const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
 			const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.() ?? "ephemeral";
 			if (injectedForSession === sessionFile) return;
+
+			const context = await loadRecentSessionsContext(ctx);
 			injectedForSession = sessionFile;
-
-			let result: { code: number; stdout: string };
-			try {
-				result = await pi.exec(
-					"uv",
-					[
-						"run",
-						piContextScript,
-						"--cwd",
-						ctx.cwd,
-						"--session-id",
-						sessionEnv?.SESSION_INDEX_NATIVE_SESSION_ID ?? ctx.sessionManager.getSessionId?.() ?? "",
-					],
-					{ cwd: repoRoot, timeout: 3000 },
-				);
-			} catch {
-				return;
-			}
-
-			if (result.code !== 0 || !result.stdout.trim()) return;
+			if (!context) return;
 
 			return {
-				systemPrompt: `${event.systemPrompt}\n\n${result.stdout.trim()}\n\nUse this recent-session index as lightweight continuity context. For older or specific past work, load the session-search skill and query the index.`,
+				systemPrompt: `${event.systemPrompt}\n\n${context}`,
 			};
 		});
 
