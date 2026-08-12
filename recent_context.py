@@ -268,10 +268,12 @@ def build_recent_context(cwd: str) -> str | None:
     if not same_project and not grouped_sessions and not cross_project:
         return None
 
-    transcript_root = os.path.dirname((same_project or grouped_sessions or cross_project)[0]["transcript_path"])
+    example_path = (same_project or grouped_sessions or cross_project)[0]["transcript_path"]
+    transcript_root = os.path.dirname(example_path)
     lines = [
         "# Recent Sessions",
         f"Transcript root: {transcript_root}",
+        f"Example path: {example_path} (all transcripts, every project, sit flat in this root)",
         "",
         "Read a listed transcript when the user refers to one of these sessions, "
         "or when a headline shows earlier work directly relevant to the task at hand — "
