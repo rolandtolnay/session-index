@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from parser import clean_user_messages  # noqa: E402
+from summarizer import SYSTEM_PROMPT_HEADLINE, _normalize_headline  # noqa: E402
 from summarizer import SYSTEM_PROMPT_LOCAL as EXISTING_VARIANT_F_PROMPT  # noqa: E402
 
 DB_PATH = Path(os.path.expanduser("~/.session-index/sessions.db"))
@@ -108,6 +109,16 @@ Write 2-4 sentences capturing what was done and why. Include specific searchable
 Use the full transcript, but summarize the session outcome rather than the transcript chronology. Prioritize the user's goal, final state, explicit decisions, and successful changes. Mention intermediate debugging/setup only if it explains the outcome. Distinguish planning/research/debugging from implementation. Only state facts visible in the transcript.
 
 Example output style: Implemented SYN-342 payout UX: extracted AddExternalBankAccountModal as a reusable component, added payout-page empty-state and dropdown add-bank-account flows, handled pending verification and non-GBP currency filtering via useEbaSupport(), and created PR #31.
+"""
+
+# Production transcript-based headline prompt lives in summarizer.SYSTEM_PROMPT_HEADLINE.
+HEADLINE_TRANSCRIPT_PROMPT = SYSTEM_PROMPT_HEADLINE
+
+# Legacy summary-compression design (pre-2026-08 production), kept for comparison runs.
+HEADLINE_SUMMARY_PROMPT = """\
+You compress a coding-session summary into a routing headline that helps another AI identify the correct session.
+
+Write one phrase of 8-15 words, with a hard maximum of 15 words. Start with an action verb and preserve the most distinguishing ticket ID, component, file, decision, or outcome. Omit generic wording, project names, branch names, dates, and final punctuation. State only facts from the supplied summary. Output only the headline.
 """
 
 PROMPT_VARIANTS = {
@@ -204,11 +215,16 @@ def _read_text(path: str | None) -> str:
     return p.read_text(errors="replace")
 
 
-def _build_rich_input(session: dict[str, Any]) -> str:
+def _build_rich_input(session: dict[str, Any], task: str = "summary") -> str:
     """Use full cleaned transcript plus less aggressively capped metadata."""
     transcript = _read_text(session.get("transcript_path"))
+    header = (
+        "Summarize the coding session below for a searchable archive."
+        if task == "summary"
+        else "Write a routing headline for the coding session below."
+    )
     parts = [
-        "Summarize the coding session below for a searchable archive.",
+        header,
         "",
         f"Project: {session['project']}",
     ]
@@ -231,7 +247,7 @@ def _build_rich_input(session: dict[str, Any]) -> str:
         for msg in clean_user_messages(session["user_messages"]):
             parts.append(f"- {msg}")
 
-    parts.append("\nSummary:")
+    parts.append("\nSummary:" if task == "summary" else "\nHeadline:")
     return "\n".join(parts)
 
 
@@ -356,6 +372,98 @@ def generate(args: argparse.Namespace) -> None:
             results.append(result)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+    print(f"Wrote {len(results)} results to {out_path}", file=sys.stderr)
+
+
+def _summary_lookup(path: str) -> dict[str, str]:
+    """Map session_id -> generated summary from a prior `generate` output file."""
+    out: dict[str, str] = {}
+    for item in json.loads(Path(path).read_text()):
+        if item.get("error") or not item.get("summary"):
+            continue
+        out.setdefault(item["session_id"], item["summary"])
+    return out
+
+
+def _headline_variant_key(model: str, thinking: str, input_variant: str) -> str:
+    safe_model = model.replace("/", "__")
+    return f"headline-{input_variant}|{safe_model}|{thinking}"
+
+
+def generate_headlines(args: argparse.Namespace) -> None:
+    session_ids = _session_ids_from_arg(args.sessions)
+    input_variant = args.input_variant
+    if input_variant == "summary":
+        if not args.summaries:
+            raise SystemExit("--summaries is required with --input-variant summary")
+        summaries = _summary_lookup(args.summaries)
+        system_prompt = HEADLINE_SUMMARY_PROMPT
+    else:
+        summaries = {}
+        system_prompt = HEADLINE_TRANSCRIPT_PROMPT
+
+    existing: list[dict[str, Any]] = []
+    done: set[tuple[str, str, str, str]] = set()
+    out_path = Path(args.output)
+    if args.resume and out_path.exists():
+        existing = json.loads(out_path.read_text())
+        for item in existing:
+            if not item.get("error"):
+                done.add((item["session_id"], item["model"], item["thinking"], item["input_variant"]))
+
+    results = existing[:]
+    variant_key = _headline_variant_key(args.model, args.thinking, input_variant)
+    for completed, session_id in enumerate(session_ids, start=1):
+        key = (session_id, args.model, args.thinking, input_variant)
+        if key in done:
+            print(f"[{completed}/{len(session_ids)}] skip {session_id[:8]} headline:{input_variant}", file=sys.stderr)
+            continue
+        print(f"[{completed}/{len(session_ids)}] {session_id[:8]} {args.model} {args.thinking} headline:{input_variant}", file=sys.stderr)
+        session = _load_session(session_id)
+        base = {
+            "session_id": session_id,
+            "project": session["project"],
+            "msg_count": session["msg_count"],
+            "model": args.model,
+            "thinking": args.thinking,
+            "task": "headline",
+            "input_variant": input_variant,
+            "variant_key": variant_key,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if input_variant == "summary":
+            summary = summaries.get(session_id)
+            if not summary:
+                results.append({**base, "error": f"no summary for {session_id} in {args.summaries}", "elapsed_s": 0.0})
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+                continue
+            prompt = f"Session summary:\n{summary.strip()}\n\nHeadline:"
+        else:
+            prompt = _build_rich_input(session, task="headline")
+        try:
+            raw, elapsed, stderr = _call_pi(
+                prompt,
+                model=args.model,
+                thinking=args.thinking,
+                system_prompt=system_prompt,
+                timeout=args.timeout,
+            )
+            result = {
+                **base,
+                "prompt_chars": len(prompt),
+                "headline_raw": raw,
+                "headline_raw_words": len(raw.split()),
+                "headline": _normalize_headline(raw),
+                "elapsed_s": round(elapsed, 3),
+            }
+            if stderr:
+                result["stderr_tail"] = stderr[-1000:]
+        except Exception as e:  # keep benchmark resumable
+            result = {**base, "prompt_chars": len(prompt), "error": str(e), "elapsed_s": 0.0}
+        results.append(result)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False))
     print(f"Wrote {len(results)} results to {out_path}", file=sys.stderr)
 
 
@@ -543,6 +651,17 @@ def main() -> None:
     gen.add_argument("--timeout", type=int, default=420)
     gen.add_argument("--resume", action="store_true")
     gen.set_defaults(func=generate)
+
+    genh = sub.add_parser("generate-headlines", help="Generate routing headlines with one Pi model")
+    genh.add_argument("--model", required=True)
+    genh.add_argument("--thinking", default="low")
+    genh.add_argument("--input-variant", default="transcript", choices=["transcript", "summary"])
+    genh.add_argument("--summaries", help="generate output JSON to source summaries from (summary input variant)")
+    genh.add_argument("--sessions")
+    genh.add_argument("--output", required=True)
+    genh.add_argument("--timeout", type=int, default=420)
+    genh.add_argument("--resume", action="store_true")
+    genh.set_defaults(func=generate_headlines)
 
     comb = sub.add_parser("combine", help="Combine generation JSON files")
     comb.add_argument("inputs", nargs="+")

@@ -10,19 +10,20 @@ Any new summarization approach must either use `gemma4:e2b` or bypass Ollama ent
 
 ## Current Quality
 
-Production summarization now uses headless Pi print mode with `openai-codex/gpt-5.4-mini`, low thinking, the compact GPT prompt, and rich transcript input. The Pi call disables sessions, tools, extensions, skills, prompt templates, and context files so summarization does not create recursive index entries or load unrelated project context.
+Production summarization now uses headless Pi print mode with `openai-codex/gpt-5.6-luna`, medium thinking, the compact GPT prompt, and rich transcript input. The Pi call disables sessions, tools, extensions, skills, prompt templates, and context files so summarization does not create recursive index entries or load unrelated project context.
 
-After a summary succeeds, a second isolated headless Pi process uses fixed `openai-codex/gpt-5.4-mini` with low thinking to compress that summary into a Session Headline. Headlines target 8-15 words with a hard 15-word limit, preserve distinguishing identifiers/components/outcomes, and omit project, branch, and date metadata because recent-context formatting appends those deterministically. A headline failure does not invalidate the summary and preserves any prior headline.
+A second isolated headless Pi process (same model and thinking) generates the Session Headline directly from the same rich transcript input, independently of the summary. Headlines target 8-15 words with a hard 15-word limit, preserve distinguishing identifiers/components/outcomes, and omit project, branch, and date metadata because recent-context formatting appends those deterministically. Summary and headline failures are independent: each preserves its own prior value without invalidating the other.
 
 ## Active-session refresh lifecycle
 
 Claude, Pi, and Codex share a detached per-session refresh coordinator. The first snapshot with at least one user and one assistant message writes deterministic artifacts and immediately attempts a Session Summary and Session Headline. Every later assistant-turn event refreshes deterministic artifacts immediately. Descriptions regenerate after either 180 seconds without a newer assistant turn or 10,000 newly rendered user/assistant characters since the last successful summary; content-trigger attempts have a 60-second cooldown. Failed summaries preserve prior descriptions and do not advance the successful-summary content watermark. Claude SessionEnd and Pi shutdown force a final refresh; Codex has no distinct exit event and therefore finalizes through its idle trigger.
 
-Benchmark result on the 19-session ground-truth set: **13.47/15** composite for `gpt-5.4-mini + rich + compact prompt`.
+Benchmark result on the 19-session ground-truth set (August 2026, blind Claude Opus judges — not comparable to earlier GPT-judged scores): **13.13/15** summary and **13.08/15** headline composite for `gpt-5.6-luna medium + rich + compact prompt`, vs 12.61 and 12.21 for the prior `gpt-5.4-mini` production configuration. Transcript-based headlines beat summary-based ones at equal model. See `tests/eval_results/luna_terra_2026_08/report.md`.
 
-Historical baselines:
+Historical baselines (GPT judges, earlier rounds):
 - gemma4:e4b + Variant F prompt: **10.74/15**
 - qwen3.5:4b + improved prompt: **12.05/15**
+- gpt-5.4-mini + rich + compact prompt: **13.47/15**
 - gpt-5.5 + rich input: ~**13.9/15**, but roughly 2x slower than gpt-5.4-mini
 
 ## Decision: Decouple Summarization from Ollama

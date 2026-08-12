@@ -164,20 +164,37 @@ def test_normalize_headline_collapses_lines_and_final_punctuation():
     assert _normalize_headline('"Fixed auth retries\nfor terminal provisioning."') == "Fixed auth retries for terminal provisioning"
 
 
-def test_generate_headline_uses_separate_pi_call(monkeypatch):
+def test_generate_headline_uses_transcript_input(monkeypatch):
     calls = []
 
-    def fake_call(prompt, *, system_prompt, model, thinking):
-        calls.append((prompt, system_prompt, model, thinking))
+    def fake_call(prompt, *, system_prompt):
+        calls.append((prompt, system_prompt))
         return "Implemented compact session routing headlines."
 
     monkeypatch.setattr("summarizer._call_pi", fake_call)
-    assert generate_headline("Added a compact routing field to session records.") == "Implemented compact session routing headlines"
-    assert calls[0][1] == SYSTEM_PROMPT_HEADLINE
-    assert calls[0][2:] == ("openai-codex/gpt-5.4-mini", "low")
-    assert "Added a compact routing field" in calls[0][0]
+    result = generate_headline(
+        project="proj",
+        branch="main",
+        user_messages=["add routing headlines"],
+        files_touched=["summarizer.py"],
+        transcript_text="[user] add routing headlines\n[assistant] done",
+    )
+    assert result == "Implemented compact session routing headlines"
+    prompt, system_prompt = calls[0]
+    assert system_prompt == SYSTEM_PROMPT_HEADLINE
+    assert prompt.startswith("Write a routing headline")
+    assert "[assistant] done" in prompt
+    assert prompt.endswith("Headline:")
+    assert "Summary:" not in prompt
 
 
-def test_generate_headline_skips_empty_summary(monkeypatch):
-    monkeypatch.setattr("summarizer._call_pi", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
-    assert generate_headline("") is None
+def test_generate_headline_returns_none_on_pi_failure(monkeypatch):
+    monkeypatch.setattr("summarizer._call_pi", lambda *args, **kwargs: None)
+    result = generate_headline(
+        project="proj",
+        branch="",
+        user_messages=["fix the bug"],
+        files_touched=[],
+        transcript_text=None,
+    )
+    assert result is None

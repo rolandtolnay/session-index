@@ -3,7 +3,7 @@
 ## Runtime
 - Python 3.11+; runtime dependencies are intentionally minimal. `rapidfuzz` is allowed for deterministic Evidence Find fuzzy fallback (see `docs/adr/0001-rapidfuzz-for-evidence-find.md`).
 - Run scripts with `uv run` (not `python3`)
-- Summaries use headless Pi by default (`openai-codex/gpt-5.4-mini`, low thinking); `client.py` is legacy Ollama fallback
+- Summaries and headlines use headless Pi by default (`openai-codex/gpt-5.6-luna`, medium thinking); headlines are generated from the full transcript, independently of the summary; `client.py` is legacy Ollama fallback
 
 ## Architecture
 - **Hooks never block:** All hooks exit 0, wrap everything in try/except, self-imposed timeouts
@@ -78,9 +78,10 @@ Use `--select-sessions` to list available sessions by bucket.
 | **Framing** | Reads as project description | Acceptable summary | Clear session summary, distinguishes planning vs implementation |
 
 ### Established winners
-- **Production winner:** `openai-codex/gpt-5.4-mini` with low thinking, rich transcript input, and compact prompt: 13.47/15.
+- **Production winner (August 2026):** `openai-codex/gpt-5.6-luna` with medium thinking, rich transcript input, and compact prompt — best summary and headline composites in the blind-judged luna/terra eval; transcript-based headlines beat the old summary-based design at equal model. See `tests/eval_results/luna_terra_2026_08/report.md`.
+- **Prior winner:** `openai-codex/gpt-5.4-mini` with low thinking, rich transcript input, and compact prompt: 13.47/15 (GPT judges; not comparable to the Opus-judged 2026-08 scores).
 - **Quality ceiling tested:** `openai-codex/gpt-5.5` with rich input: ~13.9/15 but roughly 2x slower.
-- Legacy local benchmarks remain in `tests/benchmark.py`; Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py`.
+- Legacy local benchmarks remain in `tests/benchmark.py`; Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py` (summaries via `generate`, headlines via `generate-headlines`).
 - See `tests/eval_results/LEARNINGS.md`, `pi_gpt_benchmark_report.md`, and `pi_gpt_prompt_benchmark_report.md` for findings.
 
 ### Constraint: Ollama single-model

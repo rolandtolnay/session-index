@@ -84,7 +84,7 @@ def _pi_exchange(prefix, user_text, assistant_text, *, parent_id=None, minute=0)
 
 @pytest.fixture(autouse=True)
 def _stub_headline_generation(monkeypatch):
-    monkeypatch.setattr("summarizer.generate_headline", lambda summary: "Implemented compact session headline")
+    monkeypatch.setattr("summarizer.generate_headline", lambda **kwargs: "Implemented compact session headline")
 
 
 def test_index_fast_delegates_to_staged_metadata_only(monkeypatch):
@@ -623,6 +623,7 @@ def test_deterministic_backfill_reprocesses_toolful_rows_missing_structured_fact
 def test_summary_stage_preserves_old_descriptions_when_generation_fails(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     monkeypatch.setattr("summarizer.summarize", lambda **kwargs: None)
+    monkeypatch.setattr("summarizer.generate_headline", lambda **kwargs: None)
     parent = _copy_parent(tmp_path, "summary-failure.jsonl")
     parsed = indexer.parse_session_file("claude", str(parent))
 
@@ -642,10 +643,33 @@ def test_summary_stage_preserves_old_descriptions_when_generation_fails(tmp_path
     assert row["headline"] == "Old headline"
 
 
+def test_summary_stage_updates_headline_independently_when_summary_fails(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: None)
+    monkeypatch.setattr("summarizer.generate_headline", lambda **kwargs: "New headline")
+    parent = _copy_parent(tmp_path, "summary-failure-headline-ok.jsonl")
+    parsed = indexer.parse_session_file("claude", str(parent))
+
+    conn = db.get_connection()
+    db.init_db(conn)
+    db.upsert_session(conn, session_id=parsed.session_id, summary="old summary", headline="Old headline")
+    conn.close()
+
+    result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS, parsed_session=parsed)
+
+    assert result.summary_generated is False
+    assert result.headline_generated is True
+    conn = db.get_connection()
+    row = conn.execute("SELECT summary, headline FROM sessions WHERE session_id = ?", (parsed.session_id,)).fetchone()
+    conn.close()
+    assert row["summary"] == "old summary"
+    assert row["headline"] == "New headline"
+
+
 def test_summary_stage_preserves_old_headline_when_headline_generation_fails(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
     monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "new summary")
-    monkeypatch.setattr("summarizer.generate_headline", lambda summary: None)
+    monkeypatch.setattr("summarizer.generate_headline", lambda **kwargs: None)
     parent = _copy_parent(tmp_path, "headline-failure.jsonl")
     parsed = indexer.parse_session_file("claude", str(parent))
 

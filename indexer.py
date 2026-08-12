@@ -228,8 +228,8 @@ def _enriched_files(session: ParsedSession, parsed_subagents: list[ParsedSubagen
     return sorted(all_files)
 
 
-def _summarize_session(session: ParsedSession, enriched_files: list[str], parsed_subagents: list[ParsedSubagent]) -> str | None:
-    from summarizer import summarize
+def _description_inputs(session: ParsedSession, enriched_files: list[str], parsed_subagents: list[ParsedSubagent]) -> dict:
+    """Shared rich inputs for the summary and headline generation calls."""
     from transcript import render_transcript
 
     subagent_refs = _subagent_refs(parsed_subagents)
@@ -243,19 +243,24 @@ def _summarize_session(session: ParsedSession, enriched_files: list[str], parsed
             subagents=subagent_refs or None,
         )
 
+    return {
+        "project": session.project,
+        "branch": session.branch,
+        "user_messages": clean_user_messages(session.user_messages),
+        "files_touched": enriched_files,
+        "transcript_text": transcript_text,
+    }
+
+
+def _summarize_session(session: ParsedSession, inputs: dict) -> str | None:
+    from summarizer import summarize
+
     short_session_threshold = 5
     last_assistant = None
     if session.user_message_count <= short_session_threshold and session.assistant_messages:
         last_assistant = session.assistant_messages[-1]
 
-    return summarize(
-        project=session.project,
-        branch=session.branch,
-        user_messages=clean_user_messages(session.user_messages),
-        files_touched=enriched_files,
-        last_assistant_message=last_assistant,
-        transcript_text=transcript_text,
-    )
+    return summarize(last_assistant_message=last_assistant, **inputs)
 
 
 def _write_clean_transcript(session: ParsedSession, parsed_subagents: list[ParsedSubagent]) -> str | None:
@@ -373,13 +378,13 @@ def index_source_transcript(
     summary = None
     headline = None
     if IndexStage.SUMMARY in stages:
-        summary = _summarize_session(session, enriched_files, parsed_subagents)
-        result.summary_generated = bool(summary)
-        if summary:
-            from summarizer import generate_headline
+        from summarizer import generate_headline
 
-            headline = generate_headline(summary)
-            result.headline_generated = bool(headline)
+        description_inputs = _description_inputs(session, enriched_files, parsed_subagents)
+        summary = _summarize_session(session, description_inputs)
+        result.summary_generated = bool(summary)
+        headline = generate_headline(**description_inputs)
+        result.headline_generated = bool(headline)
 
     transcript_path = None
     if IndexStage.CLEAN_TRANSCRIPT in stages:
@@ -405,12 +410,11 @@ def index_source_transcript(
 
     stage_overwrite_fields = _stage_overwrite_fields(stages)
     if IndexStage.SUMMARY in stages:
+        # Summary and headline are generated independently; preserve each
+        # existing value when its own generation fails.
         if summary is None:
-            # Preserve existing searchable descriptions when summary generation fails.
             stage_overwrite_fields.discard("summary")
-            stage_overwrite_fields.discard("headline")
-        elif headline is None:
-            # A new summary remains useful even if the separate headline process fails.
+        if headline is None:
             stage_overwrite_fields.discard("headline")
 
     conn = get_connection()

@@ -74,9 +74,9 @@ Distinguish planning, research, debugging, and implementation. Only state facts 
 """
 
 SYSTEM_PROMPT_HEADLINE = """\
-You compress a coding-session summary into a routing headline that helps another AI identify the correct session.
+You compress a coding session into a routing headline that helps another AI identify the correct session.
 
-Write one phrase of 8-15 words, with a hard maximum of 15 words. Start with an action verb and preserve the most distinguishing ticket ID, component, file, decision, or outcome. Omit generic wording, project names, branch names, dates, and final punctuation. State only facts from the supplied summary. Output only the headline.
+You receive session metadata and the full cleaned transcript. Write one phrase of 8-15 words, with a hard maximum of 15 words. Start with an action verb and preserve the most distinguishing ticket ID, component, file, decision, or outcome. Prioritize the user's goal and the final outcome over incidental detours or setup. Omit generic wording, project names, branch names, dates, and final punctuation. State only facts from the transcript. Output only the headline.
 """
 
 SYSTEM_PROMPT_GEMINI = """\
@@ -102,8 +102,8 @@ _GEMINI_URL = (
 )
 _GEMINI_MODEL = "gemini-2.5-flash-lite"
 _LONG_SESSION_THRESHOLD = 30
-_PI_MODEL = "openai-codex/gpt-5.4-mini"
-_PI_THINKING = "low"
+_PI_MODEL = "openai-codex/gpt-5.6-luna"
+_PI_THINKING = "medium"
 _PI_TIMEOUT_SECONDS = 180
 
 
@@ -155,10 +155,16 @@ def _build_rich_prompt(
     user_messages: list[str],
     files_touched: list[str],
     transcript_text: str | None,
+    task: str = "summary",
 ) -> str:
-    """Build the rich Pi summarizer input prompt."""
+    """Build the rich Pi input prompt for the summary or headline task."""
+    header = (
+        "Summarize the coding session below for a searchable archive."
+        if task == "summary"
+        else "Write a routing headline for the coding session below."
+    )
     parts = [
-        "Summarize the coding session below for a searchable archive.",
+        header,
         "",
         f"Project: {project}",
     ]
@@ -179,7 +185,7 @@ def _build_rich_prompt(
         for msg in user_messages:
             parts.append(f"- {msg}")
 
-    parts.append("\nSummary:")
+    parts.append("\nSummary:" if task == "summary" else "\nHeadline:")
     return "\n".join(parts)
 
 
@@ -317,18 +323,28 @@ def _normalize_headline(text: str) -> str | None:
     return " ".join(words[:15])
 
 
-def generate_headline(summary: str) -> str | None:
-    """Generate a compact routing headline from an existing summary."""
-    if not summary or not summary.strip():
+def generate_headline(
+    *,
+    project: str,
+    branch: str,
+    user_messages: list[str],
+    files_touched: list[str],
+    transcript_text: str | None = None,
+) -> str | None:
+    """Generate a compact routing headline from the full session transcript."""
+    try:
+        prompt = _build_rich_prompt(
+            project,
+            branch,
+            user_messages,
+            files_touched,
+            transcript_text,
+            task="headline",
+        )
+        result = _call_pi(prompt, system_prompt=SYSTEM_PROMPT_HEADLINE)
+        return _normalize_headline(result or "")
+    except Exception:
         return None
-    prompt = f"Session summary:\n{summary.strip()}\n\nHeadline:"
-    result = _call_pi(
-        prompt,
-        system_prompt=SYSTEM_PROMPT_HEADLINE,
-        model=_PI_MODEL,
-        thinking=_PI_THINKING,
-    )
-    return _normalize_headline(result or "")
 
 
 def summarize(
