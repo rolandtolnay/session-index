@@ -77,12 +77,14 @@ def test_defaults_and_codex_legacy_idle_fallback(monkeypatch):
 
 def test_canonical_ids_and_provider_scoped_safe_directories(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
-    assert session_refresh.canonical_session_id("claude", "claude:abc") == "abc"
-    assert session_refresh.canonical_session_id("pi", "abc") == "pi:abc"
-    assert session_refresh.canonical_session_id("pi", "pi:abc") == "pi:abc"
-    assert session_refresh.canonical_session_id("codex", "abc") == "codex:abc"
-    assert Path(session_refresh.session_job_dir("pi", "a/b")).parts[-2:] == ("pi", "pi-a-b")
+    assert session_refresh.canonical_session_id("claude", "claude:abc") == "cc:2ce06946efc0323c"
+    assert session_refresh.canonical_session_id("pi", "abc") == "pi:fd12fcf017c532b6"
+    assert session_refresh.canonical_session_id("pi", "pi:abc") == "pi:fd12fcf017c532b6"
+    assert session_refresh.canonical_session_id("codex", "abc") == "codex:baa6b56f143fb187"
+    assert Path(session_refresh.session_job_dir("pi", "abc")).parts[-2:] == ("pi", "pi-fd12fcf017c532b6")
     with pytest.raises(ValueError):
+        session_refresh.canonical_session_id("pi", "a/b")
+    with pytest.raises((KeyError, ValueError)):
         session_refresh.canonical_session_id("unknown", "abc")
 
 
@@ -97,12 +99,12 @@ def test_enqueue_writes_atomic_job_and_launches_only_one_live_worker(monkeypatch
     first = session_refresh.enqueue_refresh("pi", "abc", str(transcript), "turn-1", observed_at=10)
     second = session_refresh.enqueue_refresh("pi", "pi:abc", str(transcript), "turn-2", observed_at=20)
 
-    assert launches == [("pi", "pi:abc")]
+    assert launches == [("pi", "pi:fd12fcf017c532b6")]
     assert Path(first).exists() and Path(second).exists()
     payload = json.loads(Path(second).read_text())
     assert payload == {
         "event_id": "turn-2", "force_summary": False, "observed_at": 20.0,
-        "session_id": "pi:abc", "source": "pi", "transcript_path": str(transcript),
+        "session_id": "pi:fd12fcf017c532b6", "source": "pi", "transcript_path": str(transcript),
     }
 
 

@@ -25,6 +25,8 @@ def test_parse_to_db_to_search():
     upsert_session(
         conn,
         session_id=session.session_id,
+        source="claude",
+        native_session_id=session.native_session_id,
         slug=session.slug,
         project_path=session.project_path,
         project=session.project,
@@ -43,7 +45,7 @@ def test_parse_to_db_to_search():
     # Search should find it
     results = find_session_candidates(conn, query="login bug")
     assert len(results) >= 1
-    assert results[0]["session_id"] == "test-session-abc123"
+    assert results[0]["session_id"] == "cc:bacdfed021c4a799"
 
     # Search by file
     results = find_session_candidates(conn, query="auth.py")

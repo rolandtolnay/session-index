@@ -30,12 +30,12 @@ def test_build_session_index_env_exports_pi_contract_with_leaf():
 
         const env = buildSessionIndexEnv({
           getSessionFile: () => "/tmp/pi-session.jsonl",
-          getSessionId: () => "pi:019pi-session",
+          getSessionId: () => "019pi-session",
           getLeafId: () => "leaf-123",
         });
 
         assert.deepEqual(env, {
-          SESSION_INDEX_SESSION_ID: "pi:019pi-session",
+          SESSION_INDEX_SESSION_ID: "pi:4f4d748a63162aa9",
           SESSION_INDEX_NATIVE_SESSION_ID: "019pi-session",
           SESSION_INDEX_SOURCE: "pi",
           SESSION_INDEX_SOURCE_PATH: "/tmp/pi-session.jsonl",
@@ -56,7 +56,7 @@ def test_build_session_index_env_omits_leaf_and_rejects_insufficient_runtime_ide
           getSessionId: () => "019pi-session",
           getLeafId: () => "   ",
         }), {
-          SESSION_INDEX_SESSION_ID: "pi:019pi-session",
+          SESSION_INDEX_SESSION_ID: "pi:4f4d748a63162aa9",
           SESSION_INDEX_NATIVE_SESSION_ID: "019pi-session",
           SESSION_INDEX_SOURCE: "pi",
           SESSION_INDEX_SOURCE_PATH: "/tmp/pi-session.jsonl",
@@ -69,6 +69,10 @@ def test_build_session_index_env_omits_leaf_and_rejects_insufficient_runtime_ide
         assert.equal(buildSessionIndexEnv({
           getSessionFile: () => "/tmp/pi-session.jsonl",
           getSessionId: () => "",
+        }), undefined);
+        assert.equal(buildSessionIndexEnv({
+          getSessionFile: () => "/tmp/pi-session.jsonl",
+          getSessionId: () => "pi:019pi-session",
         }), undefined);
         '''
     )
@@ -97,7 +101,7 @@ def test_apply_and_overlay_session_index_env_clear_stale_values():
           getLeafId: () => "new-leaf",
         });
         applySessionIndexEnv(target, sessionEnv);
-        assert.equal(target.SESSION_INDEX_SESSION_ID, "pi:new");
+        assert.equal(target.SESSION_INDEX_SESSION_ID, "pi:1e0592193c456fa9");
         assert.equal(target.SESSION_INDEX_NATIVE_SESSION_ID, "new");
         assert.equal(target.SESSION_INDEX_SOURCE_PATH, "/tmp/new.jsonl");
         assert.equal(target.SESSION_INDEX_LEAF_ID, "new-leaf");

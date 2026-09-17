@@ -63,7 +63,8 @@ def test_parse_codex_metadata(monkeypatch):
     monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", "/tmp/no-codex-home")
     session = parse_codex_jsonl(FIXTURE)
 
-    assert session.session_id == "codex:019codex-0000-7000-8000-000000000001"
+    assert session.session_id == "codex:c0f546cdc5709933"
+    assert session.native_session_id == "019codex-0000-7000-8000-000000000001"
     assert session.project == "project"
     assert session.branch == "main"
     assert session.model == "gpt-5.5"

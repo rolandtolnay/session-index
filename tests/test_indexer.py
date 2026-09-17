@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 import indexer
+from session_identity import canonical_session_id
+from summarizer import SummaryResult
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 SAMPLE = os.path.join(FIXTURES, "sample.jsonl")
@@ -280,7 +282,14 @@ def test_index_summary_delegates_to_summary_only_stage(monkeypatch):
 
 def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
-    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "summary text")
+    monkeypatch.setattr(
+        "summarizer.summarize",
+        lambda **kwargs: SummaryResult(
+            "summary text",
+            "substantial",
+            "The session implemented and verified durable indexing behavior.",
+        ),
+    )
     parent = _copy_parent(tmp_path)
     _add_subagent(parent)
 
@@ -299,6 +308,8 @@ def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_pa
     conn.close()
     assert row["summary"] == "summary text"
     assert row["headline"] == "Implemented compact session headline"
+    assert row["substance_band"] == "substantial"
+    assert row["substance_reason"] == "The session implemented and verified durable indexing behavior."
     assert row["assistant_message_count"] > 0
     assert row["assistant_char_count"] > 0
     assert row["transcript_path"] == result.transcript_path
@@ -308,7 +319,7 @@ def test_full_index_writes_summary_transcript_tool_log_and_subagent_paths(tmp_pa
 
 def test_full_index_populates_tool_and_subagent_fact_tables(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
-    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "summary text")
+    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: SummaryResult("summary text"))
     parent = _copy_parent(tmp_path)
     _add_subagent(parent)
 
@@ -330,7 +341,7 @@ def test_full_index_populates_tool_and_subagent_fact_tables(tmp_path, monkeypatc
 
 def test_full_index_populates_file_mutations_idempotently(tmp_path, monkeypatch):
     _isolate_storage(tmp_path, monkeypatch)
-    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "summary text")
+    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: SummaryResult("summary text"))
     parent = _copy_parent(tmp_path)
     _add_subagent(parent)
 
@@ -629,7 +640,16 @@ def test_summary_stage_preserves_old_descriptions_when_generation_fails(tmp_path
 
     conn = db.get_connection()
     db.init_db(conn)
-    db.upsert_session(conn, session_id=parsed.session_id, summary="old summary", headline="Old headline")
+    db.upsert_session(
+        conn,
+        session_id=parsed.session_id,
+        source="claude",
+        native_session_id=parsed.native_session_id,
+        summary="old summary",
+        headline="Old headline",
+        substance_band="substantial",
+        substance_reason="Old classification reason.",
+    )
     conn.close()
 
     result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS, parsed_session=parsed)
@@ -637,10 +657,15 @@ def test_summary_stage_preserves_old_descriptions_when_generation_fails(tmp_path
     assert result.summary_generated is False
     assert result.headline_generated is False
     conn = db.get_connection()
-    row = conn.execute("SELECT summary, headline FROM sessions WHERE session_id = ?", (parsed.session_id,)).fetchone()
+    row = conn.execute(
+        "SELECT summary, headline, substance_band, substance_reason FROM sessions WHERE session_id = ?",
+        (parsed.session_id,),
+    ).fetchone()
     conn.close()
     assert row["summary"] == "old summary"
     assert row["headline"] == "Old headline"
+    assert row["substance_band"] == "substantial"
+    assert row["substance_reason"] == "Old classification reason."
 
 
 def test_summary_stage_updates_headline_independently_when_summary_fails(tmp_path, monkeypatch):
@@ -652,7 +677,14 @@ def test_summary_stage_updates_headline_independently_when_summary_fails(tmp_pat
 
     conn = db.get_connection()
     db.init_db(conn)
-    db.upsert_session(conn, session_id=parsed.session_id, summary="old summary", headline="Old headline")
+    db.upsert_session(
+        conn,
+        session_id=parsed.session_id,
+        source="claude",
+        native_session_id=parsed.native_session_id,
+        summary="old summary",
+        headline="Old headline",
+    )
     conn.close()
 
     result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS, parsed_session=parsed)
@@ -666,16 +698,27 @@ def test_summary_stage_updates_headline_independently_when_summary_fails(tmp_pat
     assert row["headline"] == "New headline"
 
 
-def test_summary_stage_preserves_old_headline_when_headline_generation_fails(tmp_path, monkeypatch):
+def test_summary_stage_preserves_old_headline_and_classification_when_their_generation_fails(
+    tmp_path, monkeypatch,
+):
     _isolate_storage(tmp_path, monkeypatch)
-    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: "new summary")
+    monkeypatch.setattr("summarizer.summarize", lambda **kwargs: SummaryResult("new summary"))
     monkeypatch.setattr("summarizer.generate_headline", lambda **kwargs: None)
     parent = _copy_parent(tmp_path, "headline-failure.jsonl")
     parsed = indexer.parse_session_file("claude", str(parent))
 
     conn = db.get_connection()
     db.init_db(conn)
-    db.upsert_session(conn, session_id=parsed.session_id, summary="old summary", headline="Old headline")
+    db.upsert_session(
+        conn,
+        session_id=parsed.session_id,
+        source="claude",
+        native_session_id=parsed.native_session_id,
+        summary="old summary",
+        headline="Old headline",
+        substance_band="useful",
+        substance_reason="Old useful classification.",
+    )
     conn.close()
 
     result = indexer.index_source_transcript("claude", str(parent), indexer.FULL_INDEX_OPTIONS, parsed_session=parsed)
@@ -683,10 +726,49 @@ def test_summary_stage_preserves_old_headline_when_headline_generation_fails(tmp
     assert result.summary_generated is True
     assert result.headline_generated is False
     conn = db.get_connection()
-    row = conn.execute("SELECT summary, headline FROM sessions WHERE session_id = ?", (parsed.session_id,)).fetchone()
+    row = conn.execute(
+        "SELECT summary, headline, substance_band, substance_reason FROM sessions WHERE session_id = ?",
+        (parsed.session_id,),
+    ).fetchone()
     conn.close()
     assert row["summary"] == "new summary"
     assert row["headline"] == "Old headline"
+    assert row["substance_band"] == "useful"
+    assert row["substance_reason"] == "Old useful classification."
+
+
+def test_metadata_only_stage_does_not_erase_classification(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path, "metadata-only.jsonl")
+    parsed = indexer.parse_session_file("claude", str(parent))
+
+    conn = db.get_connection()
+    db.init_db(conn)
+    db.upsert_session(
+        conn,
+        session_id=parsed.session_id,
+        source="claude",
+        native_session_id=parsed.native_session_id,
+        substance_band="substantial",
+        substance_reason="Existing durable classification.",
+    )
+    conn.close()
+
+    indexer.index_source_transcript(
+        "claude",
+        str(parent),
+        indexer.FAST_INDEX_OPTIONS,
+        parsed_session=parsed,
+    )
+
+    conn = db.get_connection()
+    row = conn.execute(
+        "SELECT substance_band, substance_reason FROM sessions WHERE session_id = ?",
+        (parsed.session_id,),
+    ).fetchone()
+    conn.close()
+    assert row["substance_band"] == "substantial"
+    assert row["substance_reason"] == "Existing durable classification."
 
 
 def test_requested_artifact_stage_can_clear_old_owned_field(tmp_path, monkeypatch):
@@ -699,6 +781,8 @@ def test_requested_artifact_stage_can_clear_old_owned_field(tmp_path, monkeypatc
     db.upsert_session(
         conn,
         session_id=parsed.session_id,
+        source="claude",
+        native_session_id=parsed.native_session_id,
         subagent_transcripts="/old/agent.md",
         tool_log_path="/old/tools.md",
     )
@@ -711,3 +795,69 @@ def test_requested_artifact_stage_can_clear_old_owned_field(tmp_path, monkeypatc
     row = conn.execute("SELECT subagent_transcripts FROM sessions WHERE session_id = ?", (result.session_id,)).fetchone()
     conn.close()
     assert row["subagent_transcripts"] is None
+
+
+def test_identity_conflict_is_rejected_before_artifact_writes(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path, "identity-conflict.jsonl")
+    parsed = indexer.parse_session_file("claude", str(parent))
+
+    conn = db.get_connection()
+    db.init_db(conn)
+    db.upsert_session(
+        conn,
+        session_id=parsed.session_id,
+        source="claude",
+        native_session_id="different-native-id",
+    )
+    conn.close()
+
+    monkeypatch.setattr(
+        indexer,
+        "_write_clean_transcript",
+        lambda *_args: pytest.fail("artifact write must not run before identity validation"),
+    )
+    with pytest.raises(ValueError, match="identity conflict"):
+        indexer.index_source_transcript(
+            "claude",
+            str(parent),
+            indexer.NO_SUMMARY_INDEX_OPTIONS,
+            parsed_session=parsed,
+        )
+
+
+def test_upsert_normalizes_owned_reference_text_but_preserves_native_metadata(tmp_path, monkeypatch):
+    _isolate_storage(tmp_path, monkeypatch)
+    parent = _copy_parent(tmp_path, "normalize-references.jsonl")
+    parsed = indexer.parse_session_file("claude", str(parent))
+    legacy_native = "019efb69-5655-72e1-b7c4-95fdde95169e"
+    legacy_id = f"pi:{legacy_native}"
+    short_id = canonical_session_id("pi", legacy_native)
+    parsed.user_messages = [f"Inspect session/{legacy_id}"]
+    parsed.files_touched = [f"/tmp/.session-index/transcripts/{legacy_id}.md"]
+
+    conn = db.get_connection()
+    db.init_db(conn)
+    indexer.upsert_parsed_session(
+        conn,
+        parsed,
+        source="claude",
+        source_path=f"/provider/raw/{legacy_native}.jsonl",
+        summary=f"Continued session/{legacy_id}",
+        headline=f"Review {legacy_id}.md",
+        substance_reason=f"Evidence in tool/{legacy_id}/1",
+    )
+    row = conn.execute(
+        "SELECT native_session_id, source_path, user_messages, files_touched, summary, headline, substance_reason "
+        "FROM sessions WHERE session_id=?",
+        (parsed.session_id,),
+    ).fetchone()
+    conn.close()
+
+    assert row["native_session_id"] == parsed.native_session_id
+    assert row["source_path"] == f"/provider/raw/{legacy_native}.jsonl"
+    assert row["user_messages"] == f"Inspect session/{short_id}"
+    assert row["files_touched"] == f"/tmp/.session-index/transcripts/{short_id}.md"
+    assert row["summary"] == f"Continued session/{short_id}"
+    assert row["headline"] == f"Review {short_id}.md"
+    assert row["substance_reason"] == f"Evidence in tool/{short_id}/1"

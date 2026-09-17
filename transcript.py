@@ -10,6 +10,8 @@ import os
 import re
 from dataclasses import dataclass
 
+from artifact_references import normalize_references
+
 TRANSCRIPT_DIR = os.path.join(os.path.expanduser("~/.session-index"), "transcripts")
 
 _SUBAGENT_MARKER_RE = re.compile(r"^__SUBAGENT:(.+?):(.*)__$")
@@ -89,6 +91,7 @@ def rendered_conversation_signature(
         content = message.get("content", "")
         if role == "assistant" and subagents:
             content = _expand_subagent_markers(content, subagents, ref_index)
+        content = normalize_references(content)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         signature.append((role, len(content), digest))
     return tuple(signature)
@@ -169,7 +172,7 @@ def render_transcript(
             lines.append(content)
         lines.append("")  # blank line between messages
 
-    return "\n".join(lines)
+    return normalize_references("\n".join(lines))
 
 
 def write_transcript(
@@ -258,7 +261,7 @@ def write_subagent_transcript(session_id: str, parsed: "ParsedSubagent") -> str:
         lines.append("")
 
     with open(path, "w") as f:
-        f.write("\n".join(lines))
+        f.write(normalize_references("\n".join(lines)))
 
     return path
 

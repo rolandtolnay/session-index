@@ -16,7 +16,8 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
 
 def test_parse_session_metadata():
     session = parse_jsonl(FIXTURE)
-    assert session.session_id == "test-session-abc123"
+    assert session.session_id == "cc:bacdfed021c4a799"
+    assert session.native_session_id == "test-session-abc123"
     assert session.slug == "fixing-login-bug"
     assert session.branch == "main"
     assert session.model == "claude-sonnet-4-5-20250514"

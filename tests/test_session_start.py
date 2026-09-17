@@ -15,7 +15,7 @@ import pi_context
 import recent_context
 import session_start
 from db import init_db, upsert_session
-from recent_context import _format_session, rank_cross_project_sessions
+from recent_context import _format_session, select_weekly_sessions
 
 
 def _make_conn():
@@ -75,59 +75,49 @@ def test_format_session_can_omit_redundant_project(tmp_path):
     assert "Added compact session headlines" in result
 
 
-def test_rank_cross_project_balances_turns_and_assistant_length(tmp_path):
+def test_weekly_selection_prefers_substance_then_recency_and_keeps_unknown():
+    def session(sid, band, started, **extra):
+        return dict(session_id=sid, substance_band=band, started_at=started, **extra)
+
     sessions = [
-        {
-            "session_id": "many-turns",
-            "started_at": "2026-07-27T00:00:00Z",
-            "user_message_count": 10,
-            "assistant_message_count": 10,
-            "assistant_char_count": 500,
-            "transcript_path": _transcript(tmp_path, "many"),
-        },
-        {
-            "session_id": "long-review",
-            "started_at": "2026-07-28T00:00:00Z",
-            "user_message_count": 1,
-            "assistant_message_count": 1,
-            "assistant_char_count": 20_000,
-            "transcript_path": _transcript(tmp_path, "review"),
-        },
-        {
-            "session_id": "small",
-            "started_at": "2026-07-28T00:00:00Z",
-            "user_message_count": 1,
-            "assistant_message_count": 1,
-            "assistant_char_count": 100,
-            "transcript_path": _transcript(tmp_path, "small"),
-        },
+        session("long-empty", "low_value", "2026-09-17T12:00:00Z", user_message_count=999),
+        session("useful-new", "useful", "2026-09-17T11:00:00Z"),
+        session("unknown", None, "2026-09-17T10:00:00Z"),
+        session("substantial-old", "substantial", "2026-09-12T09:00:00Z"),
+        session("substantial-new", "substantial", "2026-09-17T09:00:00Z"),
+        session("offset", "substantial", "2026-09-17T10:00:00+02:00"),
     ]
-    ranked = rank_cross_project_sessions(sessions)
-    assert [session["session_id"] for session in ranked] == ["many-turns", "long-review", "small"]
-
-
-def test_rank_cross_project_derives_legacy_metrics_from_assistant_blocks(tmp_path):
-    user_heavy = tmp_path / "user-heavy.md"
-    user_heavy.write_text(f"project\n---\n\n[user] ----\n{'u' * 20_000}\n\n[assistant] ----\nshort")
-    assistant_heavy = tmp_path / "assistant-heavy.md"
-    assistant_heavy.write_text(f"project\n---\n\n[user] ----\nshort\n\n[assistant] ----\n{'a' * 2_000}")
-    sessions = [
-        {"session_id": "user-heavy", "started_at": "2026-07-28T00:00:00Z", "user_message_count": 1, "transcript_path": str(user_heavy)},
-        {"session_id": "assistant-heavy", "started_at": "2026-07-27T00:00:00Z", "user_message_count": 1, "transcript_path": str(assistant_heavy)},
+    selected = select_weekly_sessions(sessions, limit=5)
+    assert [s["session_id"] for s in selected] == [
+        "substantial-new", "offset", "substantial-old", "useful-new", "unknown",
     ]
-    ranked = rank_cross_project_sessions(sessions)
-    assert [session["session_id"] for session in ranked] == ["assistant-heavy", "user-heavy"]
+    # Do not pad with low-value material, even when there is spare capacity.
+    assert select_weekly_sessions(sessions, limit=21) == selected
+    assert select_weekly_sessions(sessions, limit=0) == []
+    # Identical instants have a deterministic tie-break independent of input order.
+    a = session("a", "useful", "2026-09-17T09:00:00Z")
+    b = session("b", "useful", "2026-09-17T11:00:00+02:00")
+    assert select_weekly_sessions([a, b], limit=1) == [b]
 
 
-def test_rank_cross_project_uses_recency_to_break_ties(tmp_path):
-    common = {
-        "user_message_count": 2,
-        "assistant_message_count": 2,
-        "assistant_char_count": 1_000,
-    }
-    older = {**common, "session_id": "old", "started_at": "2026-07-27T00:00:00Z", "transcript_path": _transcript(tmp_path, "old")}
-    newer = {**common, "session_id": "new", "started_at": "2026-07-28T00:00:00Z", "transcript_path": _transcript(tmp_path, "new")}
-    assert [s["session_id"] for s in rank_cross_project_sessions([older, newer])] == ["new", "old"]
+def test_group_coverage_reserves_best_representative_and_only_overflows_for_coverage():
+    sessions = [dict(session_id=f"busy-{i}", project_path="/busy", substance_band="substantial",
+                     started_at=f"2026-09-17T10:{i:02d}:00Z") for i in range(20)]
+    # Distinct paths sharing the same basename must each be represented.
+    sessions += [dict(session_id=f"quiet-{i}", project_path=f"/workspace-{i}/same-name",
+                      substance_band="low_value", started_at="2026-09-11T00:00:00Z") for i in range(2)]
+    selected = select_weekly_sessions(sessions, limit=14, ensure_project_coverage=True)
+    assert len(selected) == 14
+    assert {s["project_path"] for s in selected} == {"/busy", "/workspace-0/same-name", "/workspace-1/same-name"}
+    assert "busy-0" not in {s["session_id"] for s in selected}
+    assert "busy-19" in {s["session_id"] for s in selected}
+
+    sessions += [dict(session_id=f"extra-{i}", project_path=f"/extra-{i}",
+                      substance_band="useful", started_at="2026-09-11T00:00:00Z") for i in range(13)]
+    selected = select_weekly_sessions(sessions, limit=14, ensure_project_coverage=True)
+    assert len(selected) == 16
+    assert len({s["project_path"] for s in selected}) == 16
+    assert sum(s["project_path"] == "/busy" for s in selected) == 1
 
 
 def test_build_recent_context_limits_filters_and_instructs(tmp_path, monkeypatch):
@@ -295,8 +285,8 @@ def test_build_recent_context_surfaces_matching_project_group_separately(tmp_pat
             transcript_path=_transcript(tmp_path, f"current-history-{i}"),
         )
 
-    for i in range(9):
-        started_at = now - (timedelta(hours=i) if i < 5 else timedelta(days=30 + i))
+    for i in range(85):
+        started_at = now - timedelta(hours=i)
         project_path = api_root if i % 2 == 0 else dashboard_root
         upsert_session(
             conn,
@@ -306,6 +296,7 @@ def test_build_recent_context_surfaces_matching_project_group_separately(tmp_pat
             branch="main",
             started_at=started_at.isoformat(),
             headline=f"Implemented grouped project task number {i}",
+            substance_band="low_value" if i == 0 else "substantial" if i == 84 else "useful",
             transcript_path=_transcript(tmp_path, f"group-{i}"),
         )
 
@@ -352,7 +343,7 @@ def test_build_recent_context_surfaces_matching_project_group_separately(tmp_pat
         project_path=str(duplicate_name_root),
         project="synapto-current",
         branch="main",
-        started_at=(now + timedelta(hours=3)).isoformat(),
+        started_at=(now - timedelta(days=6)).isoformat(),
         headline="Implemented grouped work in a duplicate project basename",
         transcript_path=_transcript(tmp_path, "duplicate-project-name"),
     )
@@ -360,21 +351,47 @@ def test_build_recent_context_surfaces_matching_project_group_separately(tmp_pat
 
     context = recent_context.build_recent_context(str(current_cwd))
     assert context is not None
-    assert context.count(".md`") == 35
+    assert context.count(".md`") == 42
     assert "## synapto-current (latest 7)" in context
-    assert "## synapto-systems group (latest 7)" in context
+    assert "## synapto-systems group (top 14 from the last 7 days)" in context
     assert "## Other projects (top 21 from the last 7 days)" in context
 
     _current_section, remainder = context.split("## synapto-systems group", 1)
     group_section, other_section = remainder.split("## Other projects", 1)
     assert "duplicate project basename" in group_section
-    assert "grouped project task number 0" in group_section
-    assert "grouped project task number 5" in group_section
-    assert "grouped project task number 6" not in context
+    assert "grouped project task number 0" not in group_section
+    assert "grouped project task number 1" in group_section
+    assert "grouped project task number 84" in group_section
+    assert "grouped project task number 60" not in context
     assert "grouped project task" not in other_section
     assert "nested child agent" not in context
     assert "missing transcript" not in context
     assert "(main)" not in group_section
+
+
+def test_startup_on_pre_classification_schema_keeps_all_sections(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "sessions.db"))
+    current_root = tmp_path / "current"
+    group_root = tmp_path / "grouped"
+    monkeypatch.setattr(recent_context, "_project_root_from_cwd", lambda cwd: str(current_root))
+    config = tmp_path / "project-context.json"
+    config.write_text(json.dumps({"version": 1, "groups": [{
+        "name": "team", "projects": [str(current_root), str(group_root)], "files": ["context.md"],
+    }]}))
+    monkeypatch.setattr(recent_context, "PROJECT_CONTEXT_CONFIG_PATH", str(config))
+    conn = db.get_connection()
+    conn.executescript(db.SCHEMA.replace("    substance_band TEXT,\n", "").replace("    substance_reason TEXT,\n", ""))
+    for name, root in (("current", current_root), ("grouped", group_root), ("other", tmp_path / "other")):
+        conn.execute("""INSERT INTO sessions(session_id, source, project, project_path, started_at, headline, transcript_path)
+                        VALUES (?, 'claude', ?, ?, ?, 'A useful session', ?)""",
+                     (name, name, str(root), datetime.now(timezone.utc).isoformat(), _transcript(tmp_path, name)))
+    conn.commit()
+    context = recent_context.build_recent_context(str(current_root))
+    assert all(f"`{name}.md`" in context for name in ("current", "grouped", "other"))
+    assert len([line for line in context.splitlines() if line.startswith("## ")]) == 3
+    assert "substance_band" not in {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    conn.close()
 
 
 def test_claude_hook_injects_shared_context(monkeypatch, capsys):

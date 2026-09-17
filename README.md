@@ -20,7 +20,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 - [Node.js](https://nodejs.org) (for the installer)
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv) (for running scripts)
-- [Pi](https://pi.dev) authenticated with a GPT-capable provider (default summaries use `openai-codex/gpt-5.4-mini`)
+- [Pi](https://pi.dev) authenticated with a GPT-capable provider (default summaries use `openai-codex/gpt-5.6-luna`)
 - Optional fallback: [Ollama](https://ollama.ai) with the configured local model
 
 ## Quick start
@@ -60,18 +60,18 @@ In Codex, invoke `$current-session` to display the canonical Clean Transcript an
 
 ## Summary model configuration
 
-Summaries and their separately generated Session Headlines (target 8-15 words, hard maximum 15) run in the background through isolated headless Pi print-mode processes. Defaults:
+Summaries with Substance Bands (`substantial`, `useful`, `low_value`) and separately generated Session Headlines (target 8-15 words, hard maximum 15) run in the background through isolated headless Pi print-mode processes. Defaults:
 
 ```bash
-SESSION_INDEX_SUMMARY_MODEL=openai-codex/gpt-5.4-mini
-SESSION_INDEX_SUMMARY_THINKING=low
+SESSION_INDEX_SUMMARY_MODEL=openai-codex/gpt-5.6-luna
+SESSION_INDEX_SUMMARY_THINKING=medium
 SESSION_INDEX_SUMMARY_TIMEOUT=180
 SESSION_INDEX_SUMMARY_IDLE_SECONDS=180
 SESSION_INDEX_SUMMARY_CONTENT_CHARS=10000
 SESSION_INDEX_SUMMARY_CONTENT_COOLDOWN_SECONDS=60
 ```
 
-The model/thinking overrides apply to full summaries. Session Headlines use fixed `openai-codex/gpt-5.4-mini` with low thinking. Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy summary fallback path; headlines require Pi.
+The model/thinking overrides apply to summaries, Substance Bands, and Session Headlines. Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy summary fallback path; headlines and classification require Pi. Failed assessments preserve the last successful band; unassessed sessions are not classified as low-value.
 
 For every supported provider, the first session snapshot with at least one user and one assistant message gets deterministic artifacts plus an immediate summary/headline attempt. Later assistant turns refresh deterministic artifacts immediately. Summary/headline refreshes are coalesced per session and run after either the idle interval or the configured amount of newly rendered user/assistant content; content-trigger attempts observe the cooldown. Claude SessionEnd and Pi shutdown force a final refresh. Codex exposes only turn-level Stop, so its latest snapshot is finalized by the normal idle refresh. `SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS` remains a compatibility fallback when the shared idle variable is unset.
 
@@ -93,7 +93,7 @@ uv run cli.py backfill --source pi
 uv run cli.py backfill --source codex
 ```
 
-Progress is per-session and idempotent — safe to interrupt and resume. Pi rows are stored with `pi:<uuid>` DB IDs; Codex rows are stored with `codex:<uuid>` DB IDs.
+Progress is per-session and idempotent — safe to interrupt and resume. Canonical IDs use `cc:`, `pi:`, or `codex:` followed by 16 hexadecimal hash characters; the full provider ID is retained separately as `native_session_id`.
 
 Codex defaults:
 
@@ -124,6 +124,15 @@ Summary regeneration is opt-in. Each successful summary is followed by a separat
 
 ```bash
 uv run cli.py backfill --source all --with-summary
+```
+
+Recent context keeps the latest seven current-project sessions. Configured project groups target 14 sessions from the past seven days, ensuring each active group project has a representative even if that exceeds 14. The remaining “Other projects” section contains up to 21 sessions from the same week. Both weekly sections prefer substantial sessions, then useful sessions, newest first within each band. Unknown assessments compete with useful sessions; low-value sessions appear only when needed for group-project coverage.
+
+To populate missing bands for eligible recent sessions without regenerating their summaries or artifacts:
+
+```bash
+uv run backfill_substance.py          # preview, no model calls or database updates
+uv run backfill_substance.py --apply  # classify existing Clean Transcripts; safe to resume
 ```
 
 ## Evidence retrieval
@@ -171,7 +180,7 @@ In Codex, use `$current-session`. The dedicated skill runs the focused `--cleane
 
 `current --json` uses Session Index terminology:
 
-- `session_id` — Canonical Session ID. Pi sessions use the `pi:<uuid>` namespace, Codex sessions use `codex:<uuid>`, and Claude sessions use the native UUID.
+- `session_id` — Canonical Session ID: `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`, derived deterministically from the provider and full native ID.
 - `native_session_id` — provider-native session ID without Session Index namespacing.
 - `source` — provider source, currently `claude`, `pi`, or `codex`.
 - `source_path` — raw provider Source Transcript path.
@@ -237,12 +246,25 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 - Clean transcripts: `~/.session-index/transcripts/{session_id}.md`
 - Tool logs: `~/.session-index/transcripts/{session_id}.tools.md`
 - Logs: `~/.session-index/logs/session-index.log`
-- Claude source JSONL: `~/.claude/projects/{encoded_path}/{session_id}.jsonl`
+- Claude source JSONL: `~/.claude/projects/{encoded_path}/{native_session_id}.jsonl`
 - Pi source JSONL: `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`
 - Codex source JSONL: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - Codex archived source JSONL: `~/.codex/archived_sessions/rollout-*.jsonl`
 - Codex metadata: `~/.codex/session_index.jsonl`, `~/.codex/state_5.sqlite`
 - Active refresh jobs/state: `~/.session-index/refresh-jobs/{source}/{session-id}/`
+
+## Short-ID migration
+
+Existing UUID-based or 12-hex-ID stores require an offline migration, not a source backfill. Stop agent sessions and detached indexing workers, then run:
+
+```bash
+uv run migrate_session_ids.py          # read-only inventory and collision checks
+uv run migrate_session_ids.py --apply  # back up, stage, verify, and migrate; resumes interruptions
+```
+
+Backups and a complete manifest remain under `~/.session-index/backups/short-ids-*/`. An `identity-migration.json` marker pauses indexing until migration completes; do not remove it during an interrupted migration. Re-run `--apply` to resume. For manual rollback, stop all writers and restore **all four** backup components (`sessions.db`, `transcripts/`, `refresh-jobs/`, `reference-ids.json`) together with the previous code; retain the backup until the cutover is verified.
+
+The migration preserves summaries and facts, renames generated artifacts, and normalizes recognized old artifact paths and Inspection References throughout generated text. Future rendering applies the same normalization. `reference-ids.json` retains the 12-to-16 mapping for generated-text rewriting only; it is not a lookup-alias registry. When upgrading 12-hex IDs, retain the prior migration backups until cutover so native identities for orphan artifacts and quoted references can be recovered. Unrecoverable artifact owners stop the migration; unknown historical references that never resolved remain literal. Native IDs, raw provider files/paths, unrelated UUIDs, logs, and historical backup/report files stay unchanged. No old-path symlinks or legacy canonical-ID lookup aliases are created; provider-native lookup remains available.
 
 ## Reset data
 

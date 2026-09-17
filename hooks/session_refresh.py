@@ -14,6 +14,10 @@ import time
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+
+from session_identity import refresh_session_id
+
 DATA_DIR = os.path.expanduser("~/.session-index")
 REFRESH_JOBS_DIR = os.path.join(DATA_DIR, "refresh-jobs")
 _SUPPORTED_SOURCES = {"claude", "pi", "codex"}
@@ -28,15 +32,12 @@ def _source_name(source: str) -> str:
 
 
 def canonical_session_id(source: str, session_id: str) -> str:
-    """Return the database-form session id without duplicating a provider prefix."""
+    """Normalize an ingestion ID to the short canonical queue identity."""
     source = _source_name(source)
     session_id = (session_id or "").strip()
     if not session_id:
         raise ValueError("session_id is required")
-    if source == "claude":
-        return session_id.removeprefix("claude:")
-    prefix = f"{source}:"
-    return session_id if session_id.startswith(prefix) else f"{prefix}{session_id}"
+    return refresh_session_id(source, session_id)
 
 
 def _safe_component(value: str, fallback: str = "unknown") -> str:
@@ -142,21 +143,26 @@ def enqueue_refresh(
     transcript_path = os.path.realpath(os.path.expanduser(transcript_path))
     observed_at = time.time() if observed_at is None else float(observed_at)
 
-    pending_dir = os.path.join(session_job_dir(source, session_id), "pending")
-    os.makedirs(pending_dir, exist_ok=True)
-    suffix = _safe_component(event_id, "event")
-    filename = f"{time.time_ns()}-{os.getpid()}-{suffix}.json"
-    final_path = os.path.join(pending_dir, filename)
-    _atomic_json(final_path, {
-        "event_id": str(event_id or ""),
-        "force_summary": bool(force_summary),
-        "observed_at": observed_at,
-        "session_id": session_id,
-        "source": source,
-        "transcript_path": transcript_path,
-    })
-    _ensure_worker(source, session_id)
-    return final_path
+    from indexing_lock import indexing_lock
+
+    # Hooks must never wait on an offline migration. Their existing non-throwing
+    # boundary handles the paused/busy store without launching a stale worker.
+    with indexing_lock(os.path.dirname(REFRESH_JOBS_DIR), blocking=False):
+        pending_dir = os.path.join(session_job_dir(source, session_id), "pending")
+        os.makedirs(pending_dir, exist_ok=True)
+        suffix = _safe_component(event_id, "event")
+        filename = f"{time.time_ns()}-{os.getpid()}-{suffix}.json"
+        final_path = os.path.join(pending_dir, filename)
+        _atomic_json(final_path, {
+            "event_id": str(event_id or ""),
+            "force_summary": bool(force_summary),
+            "observed_at": observed_at,
+            "session_id": session_id,
+            "source": source,
+            "transcript_path": transcript_path,
+        })
+        _ensure_worker(source, session_id)
+        return final_path
 
 
 def main() -> None:

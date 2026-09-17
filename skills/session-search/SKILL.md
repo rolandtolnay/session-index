@@ -57,7 +57,7 @@ Key tables:
 - `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and event trails.
 - `subagent_runs` — one row per Subagent Run. Construct `subagent/<parent_session_id>/<child_index>` when `child_index` is present.
 - `question_answers` — one row per asked question. Construct `question/<session_id>/<sequence>/<question_index>`.
-- `sessions` — session metadata useful for joins: `session_id`, `project`, `branch`, `started_at`, searchable `summary`, compact `headline`, interaction counts, and generated artifact paths.
+- `sessions` — session metadata useful for joins: `session_id`, `project`, `branch`, `started_at`, searchable `summary`, compact `headline`, `substance_band` (`substantial`, `useful`, `low_value`; NULL means unknown), evidence-based `substance_reason`, interaction counts, and generated artifact paths.
 
 ### find — compact Evidence Find candidates
 
@@ -146,9 +146,11 @@ uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID
 uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID ...] --confirm
 ```
 
-`prune` is dry-run by default. It deletes only exact Canonical Session IDs supplied on the command line, only when `--confirm` is present, and only when the audit classifies every requested session as low-value. Low-value means the summary has an explicit low-value signal and there are no durable facts for File Mutations, Skill Invocations, Subagent Runs, or question answers. Uncertain cases default to keep. Source JSONL is never deleted.
+`prune` is dry-run by default. It deletes only exact Canonical Session IDs supplied on the command line, only when `--confirm` is present, and only when the audit classifies every requested session as low-value. Low-value means the summary has an explicit low-value signal and there are no durable facts for File Mutations, Skill Invocations, Subagent Runs, or question answers. Uncertain cases default to keep. A `low_value` Substance Band is a ranking assessment, not permission to prune; the pruning audit's independent guards still apply. Source JSONL is never deleted.
 
 ## Transcript storage
+
+Canonical session IDs use `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`; they are not provider-native IDs. Use `current --native` for provider resume/fork commands. Generated text normalizes recognized historical Session Index paths and Inspection References; raw provider logs remain untouched.
 
 Generated artifacts are the normal evidence path:
 
@@ -162,4 +164,4 @@ Raw Source JSONL lives at `~/.claude/projects/`, `~/.pi/agent/sessions/`, and Co
 
 Invoke this skill when the user references past work, asks about prior decisions, wants to audit tool/skill/subagent/question/File Mutation behavior, asks for PR summaries/changelogs from recent work, or needs counts/aggregates across sessions.
 
-Up to seven Top-Level current-project Session Headlines and 21 ranked Top-Level cross-project headlines may already be injected with a shared Clean Transcript root and canonical transcript filenames. Nested Subagent Run sessions do not participate. Use this skill when the desired session is absent, or for specific topic lookups, structured audits, and aggregate questions.
+Up to seven Top-Level current-project Session Headlines, configured-group sections targeting 14 each, and up to 21 Other projects headlines may already be injected with a shared Clean Transcript root and canonical transcript filenames. Group and Other projects sections use the past seven days, prefer substantial then useful sessions newest first within each band, and treat unknown assessments alongside useful ones. Groups guarantee a representative per active project and may exceed 14 for coverage; low-value sessions are otherwise omitted. Nested Subagent Run sessions do not participate. Use this skill when the desired session is absent, or for specific topic lookups, structured audits, and aggregate questions.

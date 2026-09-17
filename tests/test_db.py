@@ -63,12 +63,19 @@ def test_init_db_migrates_description_and_ranking_columns():
         "    assistant_message_count INTEGER,\n",
         "    assistant_char_count INTEGER,\n",
         "    headline TEXT,\n",
+        "    substance_band TEXT,\n",
+        "    substance_reason TEXT,\n",
     ):
         legacy_schema = legacy_schema.replace(column_line, "")
     conn.executescript(legacy_schema)
+    conn.execute("INSERT INTO sessions(session_id, summary) VALUES ('legacy', 'Existing summary')")
 
     init_db(conn)
-
+    init_db(conn)  # Repeat migrations must preserve existing content.
+    upsert_session(conn, session_id="legacy", substance_band="useful", substance_reason="A local change.")
+    row = get_session(conn, "legacy")
+    assert row["summary"] == "Existing summary"
+    assert (row["substance_band"], row["substance_reason"]) == ("useful", "A local change.")
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
     assert {"headline", "assistant_message_count", "assistant_char_count"} <= columns
     conn.close()
@@ -125,13 +132,16 @@ def test_get_session_by_native_pi_prefix():
 
 def test_upsert_preserves_existing():
     conn = _make_conn()
-    upsert_session(conn, session_id="test-2", project="proj", summary="first summary", tool_log_path="/tmp/tools.md")
+    upsert_session(conn, session_id="test-2", project="proj", summary="first summary", tool_log_path="/tmp/tools.md",
+                   substance_band="substantial", substance_reason="Established a reusable contract.")
     # Update without summary/tool_log_path — should preserve existing
     upsert_session(conn, session_id="test-2", branch="feature-x")
     row = conn.execute("SELECT * FROM sessions WHERE session_id='test-2'").fetchone()
     assert row["summary"] == "first summary"
     assert row["tool_log_path"] == "/tmp/tools.md"
     assert row["branch"] == "feature-x"
+    assert row["substance_band"] == "substantial"
+    assert row["substance_reason"] == "Established a reusable contract."
     conn.close()
 
 
@@ -676,3 +686,26 @@ def test_run_select_allows_literal_semicolons_but_blocks_multi_statements():
 
     with pytest.raises(ValueError):
         db._run_select(conn, "SELECT 1; SELECT 2")
+
+
+def test_weekly_headline_queries_use_instant_bounds_and_top_level_eligibility():
+    conn = _make_conn()
+    times = {
+        "at-start": "2026-09-10T02:00:00+02:00",
+        "at-end": "2026-09-17T00:00:00Z",
+        "old": "2026-09-09T23:59:59Z",
+        "future": "2026-09-17T00:00:01Z",
+        "invalid": "not a timestamp",
+        "nested": "2026-09-16T00:00:00Z",
+    }
+    for sid, started_at in times.items():
+        upsert_session(conn, session_id=sid, source="pi", project="other", project_path="/other",
+                       source_path="/parent/run-0/session.jsonl" if sid == "nested" else "/top/session.jsonl",
+                       started_at=started_at, headline="A session", transcript_path="/transcripts/session.md",
+                       substance_band="substantial", user_messages="Large input should not be loaded")
+    group = db.get_headlined_by_project_paths(conn, ["/other"], since="2026-09-10T00:00:00Z", until="2026-09-17T00:00:00Z")
+    cross = db.get_headlined_cross_project(conn, "2026-09-10T00:00:00Z", "current", until="2026-09-17T00:00:00Z")
+    assert group == cross
+    assert [s["session_id"] for s in group] == ["at-end", "at-start"]
+    assert all("user_messages" not in s for s in group)
+    conn.close()

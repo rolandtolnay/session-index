@@ -497,7 +497,9 @@ def write_tool_log(
             "",
         ])
 
+    from artifact_references import normalize_references
+
     with open(path, "w") as f:
-        f.write("\n".join(lines))
+        f.write(normalize_references("\n".join(lines)))
 
     return path

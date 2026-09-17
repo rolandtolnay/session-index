@@ -9,6 +9,7 @@ from typing import Mapping
 
 import tool_log
 import transcript
+from session_identity import canonical_session_id, is_canonical_session_id
 
 ENV_SESSION_ID = "SESSION_INDEX_SESSION_ID"
 ENV_NATIVE_SESSION_ID = "SESSION_INDEX_NATIVE_SESSION_ID"
@@ -142,29 +143,18 @@ def _fail(detail: str) -> CurrentSessionError:
 
 
 def _normalize_identity(source: str, session_id: str, native_session_id: str) -> tuple[str, str]:
-    if source in {"pi", "codex"}:
-        prefix = f"{source}:"
-        native = native_session_id.removeprefix(prefix)
-        canonical = session_id if session_id.startswith(prefix) else f"{prefix}{session_id}"
-        expected = f"{prefix}{native}"
-        if canonical != expected:
-            raise _fail(
-                "inconsistent SESSION_INDEX_SESSION_ID and "
-                f"SESSION_INDEX_NATIVE_SESSION_ID for {source} source"
-            )
-        return canonical, native
-
-    if source == "claude":
-        if any(value.startswith(("pi:", "codex:")) for value in (session_id, native_session_id)):
-            raise _fail("inconsistent provider-prefixed ID for claude source")
-        if session_id != native_session_id:
-            raise _fail(
-                "inconsistent SESSION_INDEX_SESSION_ID and "
-                "SESSION_INDEX_NATIVE_SESSION_ID for claude source"
-            )
-        return session_id, native_session_id
-
-    raise _fail(f"unsupported SESSION_INDEX_SOURCE: {source}")
+    if source not in {"claude", "pi", "codex"}:
+        raise _fail(f"unsupported SESSION_INDEX_SOURCE: {source}")
+    try:
+        expected = canonical_session_id(source, native_session_id)
+    except (KeyError, ValueError) as exc:
+        raise _fail(f"invalid provider-native session ID for {source} source") from exc
+    if not is_canonical_session_id(session_id, source) or session_id != expected:
+        raise _fail(
+            "inconsistent SESSION_INDEX_SESSION_ID and "
+            f"SESSION_INDEX_NATIVE_SESSION_ID for {source} source"
+        )
+    return session_id, native_session_id
 
 
 def _has_public_env(env: Mapping[str, str]) -> bool:
@@ -231,6 +221,10 @@ def _resolve_claude_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, s
             "insufficient claude compatibility env: missing "
             + " or ".join(CLAUDE_ENV_SESSION_IDS)
         )
+    try:
+        canonical = canonical_session_id("claude", session_id)
+    except ValueError as exc:
+        raise _fail("invalid provider-native session ID for claude source") from exc
 
     # Prefer an explicit source-transcript path; otherwise locate the raw JSONL
     # for this exact session id.
@@ -246,14 +240,14 @@ def _resolve_claude_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, s
             f"~/.claude/projects/*/{session_id}.jsonl exists"
         )
 
-    return session_id, session_id, "claude", source_path, None
+    return canonical, session_id, "claude", source_path, None
 
 
 def _locate_codex_source_path(thread_id: str) -> str | None:
     """Locate exactly one Codex rollout for the active thread id."""
     from sources import discover_codex_sessions
 
-    native_id = thread_id.removeprefix("codex:")
+    native_id = thread_id
     expected_suffix = f"-{native_id}.jsonl"
     matches = [
         match
@@ -275,7 +269,11 @@ def _resolve_codex_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, st
     if thread_id is None:
         raise _fail(f"insufficient codex compatibility env: missing {CODEX_ENV_THREAD_ID}")
 
-    native_id = thread_id.removeprefix("codex:")
+    native_id = thread_id
+    try:
+        canonical = canonical_session_id("codex", native_id)
+    except ValueError as exc:
+        raise _fail("invalid provider-native session ID for codex source") from exc
     source_path = _locate_codex_source_path(native_id)
     if source_path is None:
         raise _fail(
@@ -284,7 +282,7 @@ def _resolve_codex_compat_env(env: Mapping[str, str]) -> tuple[str, str, str, st
             "Codex session directories"
         )
 
-    return f"codex:{native_id}", native_id, "codex", source_path, None
+    return canonical, native_id, "codex", source_path, None
 
 
 def _resolve_env_inputs(env: Mapping[str, str]) -> tuple[str, str, str, str, str | None]:

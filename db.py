@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     tools_used TEXT,
     summary TEXT,
     headline TEXT,
+    substance_band TEXT,
+    substance_reason TEXT,
     transcript_path TEXT,
     tool_log_path TEXT,
     subagent_transcripts TEXT,
@@ -229,6 +231,11 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
     close = conn is None
     if conn is None:
         conn = get_connection()
+    from indexing_lock import require_indexing_enabled
+
+    for database in conn.execute("PRAGMA database_list"):
+        if database[1] == "main" and database[2]:
+            require_indexing_enabled(os.path.dirname(database[2]))
     conn.executescript(SCHEMA)
     conn.commit()
 
@@ -246,6 +253,8 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         ("assistant_message_count", "ALTER TABLE sessions ADD COLUMN assistant_message_count INTEGER"),
         ("assistant_char_count", "ALTER TABLE sessions ADD COLUMN assistant_char_count INTEGER"),
         ("headline", "ALTER TABLE sessions ADD COLUMN headline TEXT"),
+        ("substance_band", "ALTER TABLE sessions ADD COLUMN substance_band TEXT"),
+        ("substance_reason", "ALTER TABLE sessions ADD COLUMN substance_reason TEXT"),
     ]
     for _column, ddl in migrations:
         try:
@@ -262,9 +271,31 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         WHERE native_session_id IS NULL OR native_session_id = ''
     """)
     conn.commit()
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS sessions_identity_guard
+        BEFORE UPDATE OF source, native_session_id ON sessions
+        WHEN old.source IS NOT new.source OR old.native_session_id IS NOT new.native_session_id
+        BEGIN
+            SELECT RAISE(ABORT, 'Session identity conflict');
+        END;
+    """)
 
     if close:
         conn.close()
+
+
+def assert_session_identity(
+    conn: sqlite3.Connection, session_id: str, source: str, native_session_id: str,
+) -> None:
+    """Reject hash collisions and unmigrated native identities before writing."""
+    rows = conn.execute(
+        "SELECT session_id, source, native_session_id FROM sessions "
+        "WHERE session_id = ? OR (source = ? AND native_session_id = ?)",
+        (session_id, source, native_session_id),
+    ).fetchall()
+    for row in rows:
+        if tuple(row) != (session_id, source, native_session_id):
+            raise ValueError("Session identity conflict; refusing to overwrite or split a conversation")
 
 
 def upsert_session(
@@ -290,6 +321,8 @@ def upsert_session(
     tools_used: str | None = None,
     summary: str | None = None,
     headline: str | None = None,
+    substance_band: str | None = None,
+    substance_reason: str | None = None,
     transcript_path: str | None = None,
     tool_log_path: str | None = None,
     subagent_transcripts: str | None = None,
@@ -304,8 +337,20 @@ def upsert_session(
     value even when that value is NULL. Existing callers omit it and retain the
     historical preserve-on-NULL behavior.
     """
-    source = source or "claude"
-    native_session_id = native_session_id or session_id
+    existing_identity = conn.execute(
+        "SELECT source, native_session_id FROM sessions WHERE session_id = ?", (session_id,),
+    ).fetchone()
+    source = source or (existing_identity[0] if existing_identity else "claude")
+    if not native_session_id:
+        if existing_identity:
+            native_session_id = existing_identity[1]
+        else:
+            from session_identity import is_canonical_session_id
+
+            if is_canonical_session_id(session_id):
+                raise ValueError("Native session identity is required for a new canonical ID")
+            native_session_id = session_id
+    assert_session_identity(conn, session_id, source, native_session_id)
     params = {
         "session_id": session_id,
         "source": source,
@@ -327,6 +372,8 @@ def upsert_session(
         "tools_used": tools_used,
         "summary": summary,
         "headline": headline,
+        "substance_band": substance_band,
+        "substance_reason": substance_reason,
         "transcript_path": transcript_path,
         "tool_log_path": tool_log_path,
         "subagent_transcripts": subagent_transcripts,
@@ -334,20 +381,25 @@ def upsert_session(
         "parent_native_session_id": parent_native_session_id,
     }
 
+    from artifact_references import normalize_row
+
+    params = normalize_row("sessions", params)
     conn.execute("""
         INSERT INTO sessions (
             session_id, source, native_session_id, source_path,
             slug, project_path, project, branch, model,
             started_at, ended_at, duration_seconds, user_message_count,
             assistant_message_count, assistant_char_count,
-            user_messages, files_touched, tools_used, summary, headline, transcript_path,
+            user_messages, files_touched, tools_used, summary, headline,
+            substance_band, substance_reason, transcript_path,
             tool_log_path, subagent_transcripts, parent_session_path, parent_native_session_id
         ) VALUES (
             :session_id, :source, :native_session_id, :source_path,
             :slug, :project_path, :project, :branch, :model,
             :started_at, :ended_at, :duration_seconds, :user_message_count,
             :assistant_message_count, :assistant_char_count,
-            :user_messages, :files_touched, :tools_used, :summary, :headline, :transcript_path,
+            :user_messages, :files_touched, :tools_used, :summary, :headline,
+            :substance_band, :substance_reason, :transcript_path,
             :tool_log_path, :subagent_transcripts, :parent_session_path, :parent_native_session_id
         )
         ON CONFLICT(session_id) DO UPDATE SET
@@ -370,6 +422,8 @@ def upsert_session(
             tools_used = COALESCE(:tools_used, tools_used),
             summary = COALESCE(:summary, summary),
             headline = COALESCE(:headline, headline),
+            substance_band = COALESCE(:substance_band, substance_band),
+            substance_reason = COALESCE(:substance_reason, substance_reason),
             transcript_path = COALESCE(:transcript_path, transcript_path),
             tool_log_path = COALESCE(:tool_log_path, tool_log_path),
             subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts),
@@ -496,15 +550,15 @@ def get_session(
       2. session_id prefix match (8+ chars, must be unambiguous)
     Returns None if not found or if prefix is ambiguous.
     """
-    row = conn.execute(
+    rows = conn.execute(
         """
         SELECT * FROM sessions
         WHERE session_id = :id OR native_session_id = :id
         """,
         {"id": identifier},
-    ).fetchone()
-    if row:
-        return dict(row)
+    ).fetchall()
+    if rows:
+        return dict(rows[0]) if len(rows) == 1 else None
 
     if len(identifier) >= 8:
         rows = conn.execute(
@@ -586,38 +640,45 @@ def get_headlined_project_paths(conn: sqlite3.Connection) -> list[str]:
     return [row[0] for row in cursor.fetchall()]
 
 
+def _headline_columns(conn: sqlite3.Connection) -> str:
+    """Read compact routing metadata even before the first post-upgrade migration."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    band = "substance_band" if "substance_band" in columns else "NULL AS substance_band"
+    return f"session_id, project, project_path, branch, started_at, headline, transcript_path, {band}"
+
+
 def get_headlined_by_project_paths(
-    conn: sqlite3.Connection, project_paths: list[str], *, limit: int,
+    conn: sqlite3.Connection, project_paths: list[str], *, since: str, until: str,
 ) -> list[dict[str, Any]]:
-    """Get a bounded set of eligible sessions for exact project roots."""
-    if not project_paths or limit <= 0:
+    """Get time-bounded candidates without starving quiet projects or older substance."""
+    if not project_paths:
         return []
     placeholders = ", ".join("?" for _path in project_paths)
     cursor = conn.execute(f"""
-        SELECT * FROM sessions
+        SELECT {_headline_columns(conn)} FROM sessions
         WHERE project_path IN ({placeholders})
+          AND julianday(started_at) BETWEEN julianday(?) AND julianday(?)
           AND {TOP_LEVEL_SESSION_PREDICATE}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
-        ORDER BY started_at DESC, session_id DESC
-        LIMIT ?
-    """, [*project_paths, limit])
+        ORDER BY julianday(started_at) DESC, session_id DESC
+    """, [*project_paths, since, until])
     return [dict(row) for row in cursor.fetchall()]
 
 
 def get_headlined_cross_project(
-    conn: sqlite3.Connection, since: str, exclude_project: str,
+    conn: sqlite3.Connection, since: str, exclude_project: str, *, until: str,
 ) -> list[dict[str, Any]]:
-    """Get eligible cross-project headline candidates for in-memory ranking."""
+    """Get time-bounded cross-project candidates for substance-band selection."""
     cursor = conn.execute(f"""
-        SELECT * FROM sessions
-        WHERE started_at >= :since
+        SELECT {_headline_columns(conn)} FROM sessions
+        WHERE julianday(started_at) BETWEEN julianday(:since) AND julianday(:until)
           AND project != :exclude
           AND {TOP_LEVEL_SESSION_PREDICATE}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
-        ORDER BY started_at DESC, session_id DESC
-    """, {"since": since, "exclude": exclude_project})
+        ORDER BY julianday(started_at) DESC, session_id DESC
+    """, {"since": since, "until": until, "exclude": exclude_project})
     return [dict(row) for row in cursor.fetchall()]
 
 
@@ -677,6 +738,9 @@ def _replace_rows(
     commit: bool = True,
 ) -> None:
     """Delete-then-insert all rows for one session. Idempotent re-index."""
+    from artifact_references import normalize_row
+
+    rows = [normalize_row(table, row) for row in rows]
     conn.execute(f"DELETE FROM {table} WHERE {key_column} = ?", (session_id,))
     if rows:
         columns = list(rows[0].keys())

@@ -32,7 +32,7 @@ def _clear_current_env(monkeypatch):
 
 
 def _set_pi_env(monkeypatch, source_path, leaf_id="leaf-1"):
-    monkeypatch.setenv("SESSION_INDEX_SESSION_ID", "pi:019pi-session")
+    monkeypatch.setenv("SESSION_INDEX_SESSION_ID", "pi:4f4d748a63162aa9")
     monkeypatch.setenv("SESSION_INDEX_NATIVE_SESSION_ID", "019pi-session")
     monkeypatch.setenv("SESSION_INDEX_SOURCE", "pi")
     monkeypatch.setenv("SESSION_INDEX_SOURCE_PATH", str(source_path))
@@ -56,20 +56,20 @@ def current_cli_setup(monkeypatch, tmp_path):
 def test_current_prints_canonical_id(monkeypatch, current_cli_setup, capsys):
     _run_cli(monkeypatch, ["current"])
 
-    assert capsys.readouterr().out == "pi:019pi-session\n"
+    assert capsys.readouterr().out == "pi:4f4d748a63162aa9\n"
 
 
 def test_current_path_prints_clean_transcript_path_and_warns_when_missing(monkeypatch, current_cli_setup, capsys):
     _run_cli(monkeypatch, ["current", "--path"])
 
     captured = capsys.readouterr()
-    expected_path = current_cli_setup / "pi:019pi-session.md"
+    expected_path = current_cli_setup / "pi:4f4d748a63162aa9.md"
     assert captured.out == f"{expected_path}\n"
     assert captured.err == f"Warning: Clean Transcript does not exist yet: {expected_path}\n"
 
 
 def test_current_path_does_not_warn_when_transcript_exists(monkeypatch, current_cli_setup, capsys):
-    transcript_path = current_cli_setup / "pi:019pi-session.md"
+    transcript_path = current_cli_setup / "pi:4f4d748a63162aa9.md"
     transcript_path.write_text("transcript")
 
     _run_cli(monkeypatch, ["current", "--path"])
@@ -90,28 +90,28 @@ def test_current_cleaned_paths_marks_both_missing(monkeypatch, current_cli_setup
 
     captured = capsys.readouterr()
     assert captured.out == (
-        f"Clean Transcript: {current_cli_setup / 'pi:019pi-session.md'} [missing]\n"
-        f"Tool Log: {current_cli_setup / 'pi:019pi-session.tools.md'} [missing]\n"
+        f"Clean Transcript: {current_cli_setup / 'pi:4f4d748a63162aa9.md'} [missing]\n"
+        f"Tool Log: {current_cli_setup / 'pi:4f4d748a63162aa9.tools.md'} [missing]\n"
     )
     assert captured.err == ""
 
 
 def test_current_cleaned_paths_marks_both_existing(monkeypatch, current_cli_setup, capsys):
-    (current_cli_setup / "pi:019pi-session.md").write_text("transcript")
-    (current_cli_setup / "pi:019pi-session.tools.md").write_text("tools")
+    (current_cli_setup / "pi:4f4d748a63162aa9.md").write_text("transcript")
+    (current_cli_setup / "pi:4f4d748a63162aa9.tools.md").write_text("tools")
 
     _run_cli(monkeypatch, ["current", "--cleaned-paths"])
 
     captured = capsys.readouterr()
     assert captured.out.endswith(
-        f"Clean Transcript: {current_cli_setup / 'pi:019pi-session.md'} [exists]\n"
-        f"Tool Log: {current_cli_setup / 'pi:019pi-session.tools.md'} [exists]\n"
+        f"Clean Transcript: {current_cli_setup / 'pi:4f4d748a63162aa9.md'} [exists]\n"
+        f"Tool Log: {current_cli_setup / 'pi:4f4d748a63162aa9.tools.md'} [exists]\n"
     )
     assert captured.err == ""
 
 
 def test_current_cleaned_paths_reports_mixed_status(monkeypatch, current_cli_setup, capsys):
-    (current_cli_setup / "pi:019pi-session.md").write_text("transcript")
+    (current_cli_setup / "pi:4f4d748a63162aa9.md").write_text("transcript")
 
     _run_cli(monkeypatch, ["current", "--cleaned-paths"])
 
@@ -124,7 +124,7 @@ def test_current_cleaned_paths_reports_mixed_status(monkeypatch, current_cli_set
 def test_current_json_prints_structured_metadata(monkeypatch, current_cli_setup, capsys):
     source = current_cli_setup / "source.jsonl"
     source.write_text("{}\n")
-    transcript_path = current_cli_setup / "pi:019pi-session.md"
+    transcript_path = current_cli_setup / "pi:4f4d748a63162aa9.md"
     transcript_path.write_text("transcript")
     _set_pi_env(monkeypatch, source, leaf_id="leaf-json")
 
@@ -135,12 +135,12 @@ def test_current_json_prints_structured_metadata(monkeypatch, current_cli_setup,
     assert "tool_log_written_at" not in data
     datetime.fromisoformat(data.pop("transcript_written_at"))
     assert data == {
-        "session_id": "pi:019pi-session",
+        "session_id": "pi:4f4d748a63162aa9",
         "native_session_id": "019pi-session",
         "source": "pi",
         "source_path": str(source),
         "transcript_path": str(transcript_path),
-        "tool_log_path": str(current_cli_setup / "pi:019pi-session.tools.md"),
+        "tool_log_path": str(current_cli_setup / "pi:4f4d748a63162aa9.tools.md"),
         "source_path_exists": True,
         "transcript_exists": True,
         "tool_log_exists": False,

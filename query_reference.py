@@ -7,7 +7,7 @@ import re
 from db import SCHEMA
 
 _REVIEWED_TABLES = {
-    "sessions": "one row per indexed conversation. Source Transcript paths are ingestion metadata, not the normal evidence path.",
+    "sessions": "one row per indexed conversation. Source Transcript paths are ingestion metadata, not the normal evidence path. substance_band is substantial, useful, or low_value; NULL means unassessed, not low-value. substance_reason records the evidence for the assessment.",
     "tool_calls": "one row per indexed tool call. The pair (session_id, sequence) constructs a Tool Inspection Reference.",
     "skill_invocations": "one row per named reusable prompt/workflow template invocation. The pair (session_id, sequence) constructs a Skill Invocation Reference.",
     "file_mutations": "one row per successful write/edit path. This is the precise File Mutation table; sessions.files_touched is broad metadata.",

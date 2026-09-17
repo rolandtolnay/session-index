@@ -16,7 +16,8 @@ def test_parse_pi_metadata(monkeypatch):
     monkeypatch.setattr("pi_parser._git_branch", lambda cwd: "main")
     session = parse_pi_jsonl(FIXTURE)
 
-    assert session.session_id == "pi:019pi-sample-0001"
+    assert session.session_id == "pi:faefa4dfc81fcb6b"
+    assert session.native_session_id == "019pi-sample-0001"
     assert session.project == "project"
     assert session.branch == "main"
     assert session.model == "gpt-5.5"

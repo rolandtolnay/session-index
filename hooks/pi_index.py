@@ -35,9 +35,10 @@ def main() -> None:
         from indexer import parse_session_file
         from session_refresh import enqueue_refresh
 
-        session_id = os.environ.get("SESSION_INDEX_SESSION_ID", "").strip()
+        # Native identity survives canonical-ID format changes across Pi reloads.
+        session_id = os.environ.get("SESSION_INDEX_NATIVE_SESSION_ID", "").strip()
         if not session_id:
-            session_id = parse_session_file("pi", session_file).session_id
+            session_id = parse_session_file("pi", session_file).native_session_id
         event_id = os.environ.get("SESSION_INDEX_LEAF_ID", "").strip() or args.mode
         job_path = enqueue_refresh(
             "pi",

@@ -4,8 +4,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import db
 import sources
-from sources import discover_claude_sessions, discover_codex_sessions, discover_pi_sessions, is_nested_pi_subagent_session
+from session_identity import canonical_session_id
+from sources import discover_claude_sessions, discover_codex_sessions, discover_pi_sessions, discover_sessions, is_nested_pi_subagent_session
 
 
 def test_discover_claude_sessions_deduplicates_by_conversational_completeness(tmp_path, monkeypatch):
@@ -79,9 +81,10 @@ def test_discover_pi_sessions_excludes_events_even_when_filter_matches_parent_pa
     top_level.write_text("{}\n")
     events.write_text("{}\n")
 
-    paths = [session.path for session in discover_pi_sessions(f"pi:{native_id}", session_dir=str(root))]
+    paths = [session.path for session in discover_pi_sessions(native_id, session_dir=str(root))]
 
     assert paths == [str(top_level)]
+    assert discover_pi_sessions(f"pi:{native_id}", session_dir=str(root)) == []
 
 
 def test_discover_codex_sessions_includes_active_and_archived_rollouts(tmp_path):
@@ -107,7 +110,7 @@ def test_discover_codex_sessions_includes_active_and_archived_rollouts(tmp_path)
     assert [s.path for s in sessions] == [str(active_rollout), str(archived_rollout)]
 
 
-def test_discover_codex_sessions_filters_by_prefixed_session_id(tmp_path):
+def test_discover_codex_sessions_filters_by_native_session_id(tmp_path):
     active = tmp_path / "sessions"
     wanted = "019efb69-5655-72e1-b7c4-95fdde95169e"
     active_rollout = active / "2026" / "06" / "24" / f"rollout-2026-06-24T23-54-05-{wanted}.jsonl"
@@ -119,13 +122,18 @@ def test_discover_codex_sessions_filters_by_prefixed_session_id(tmp_path):
 
     paths = [
         session.path for session in discover_codex_sessions(
-            f"codex:{wanted}",
+            wanted,
             session_dir=str(active),
             archived_dir=str(tmp_path / "missing-archive"),
         )
     ]
 
     assert paths == [str(active_rollout)]
+    assert discover_codex_sessions(
+        f"codex:{wanted}",
+        session_dir=str(active),
+        archived_dir=str(tmp_path / "missing-archive"),
+    ) == []
 
 
 def test_discover_codex_sessions_honors_codex_home_precedence(tmp_path, monkeypatch):
@@ -145,3 +153,53 @@ def test_discover_codex_sessions_honors_codex_home_precedence(tmp_path, monkeypa
     override_rollout.write_text("{}\n")
     monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(override_home))
     assert [item.path for item in discover_codex_sessions(native_id)] == [str(override_rollout)]
+
+
+def test_discover_sessions_resolves_canonical_id_through_stored_source_path(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(db, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(db, "DB_PATH", str(data_dir / "sessions.db"))
+    source_path = tmp_path / "provider" / "session.jsonl"
+    source_path.parent.mkdir()
+    source_path.write_text("{}\n")
+    native_id = "provider-native-id"
+    session_id = canonical_session_id("pi", native_id)
+
+    conn = db.get_connection()
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO sessions (session_id, source, native_session_id, source_path) VALUES (?, ?, ?, ?)",
+        (session_id, "pi", native_id, str(source_path)),
+    )
+    conn.commit()
+    conn.close()
+
+    assert discover_sessions("all", session_id=session_id) == [
+        sources.SourceSessionFile("pi", str(source_path))
+    ]
+    assert discover_sessions("codex", session_id=session_id) == []
+
+
+def test_discover_sessions_uses_stored_native_id_when_source_path_is_missing(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(db, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(db, "DB_PATH", str(data_dir / "sessions.db"))
+    root = tmp_path / "pi-sessions"
+    native_id = "019ea123-0000-7000-8000-000000000000"
+    source_path = root / "project" / f"2026-06-07_{native_id}.jsonl"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text("{}\n")
+    session_id = canonical_session_id("pi", native_id)
+
+    conn = db.get_connection()
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO sessions (session_id, source, native_session_id, source_path) VALUES (?, ?, ?, ?)",
+        (session_id, "pi", native_id, str(tmp_path / "missing.jsonl")),
+    )
+    conn.commit()
+    conn.close()
+
+    assert discover_sessions("pi", session_id=session_id, pi_session_dir=str(root)) == [
+        sources.SourceSessionFile("pi", str(source_path))
+    ]

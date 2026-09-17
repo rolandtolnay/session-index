@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from session_identity import canonical_session_id
 from parser import (
     ParsedQuestionSelection,
     ParsedSession,
@@ -163,10 +164,6 @@ def new_pi_conversation_counts(path: str) -> tuple[int, int] | None:
         else:
             new_assistants += 1
     return new_users, new_assistants
-
-
-def _prefixed_session_id(native_id: str) -> str:
-    return f"{PI_SESSION_PREFIX}{native_id}" if native_id else ""
 
 
 def _parent_native_session_id(parent_session: str) -> str:
@@ -420,8 +417,9 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
     header = parsed.header
     branch = parsed.branch
     native_id = header.get("id", "")
-    if isinstance(native_id, str):
-        session.session_id = _prefixed_session_id(native_id)
+    if isinstance(native_id, str) and native_id:
+        session.native_session_id = native_id
+        session.session_id = canonical_session_id(PI_SOURCE, native_id)
     parent_session = header.get("parentSession", "")
     if isinstance(parent_session, str) and parent_session:
         session.parent_session_path = parent_session

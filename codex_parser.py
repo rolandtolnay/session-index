@@ -19,9 +19,9 @@ from functools import lru_cache
 from typing import Any
 
 from parser import ParsedSession, ParsedToolCall, _clean_text, _git_root
+from session_identity import canonical_session_id
 
 CODEX_SOURCE = "codex"
-CODEX_SESSION_PREFIX = "codex:"
 
 _CODEX_UUID_RE = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
@@ -75,10 +75,6 @@ def _codex_home() -> str:
 def _native_id_from_filename(path: str) -> str:
     match = _CODEX_UUID_RE.search(os.path.basename(path))
     return match.group(1) if match else ""
-
-
-def _prefixed_session_id(native_id: str) -> str:
-    return f"{CODEX_SESSION_PREFIX}{native_id}" if native_id else ""
 
 
 def _slugify(value: str) -> str:
@@ -408,7 +404,9 @@ def parse_codex_jsonl(path: str) -> ParsedSession:
                 }
 
     thread = _thread_metadata(native_id)
-    session.session_id = _prefixed_session_id(native_id)
+    if native_id:
+        session.native_session_id = native_id
+        session.session_id = canonical_session_id(CODEX_SOURCE, native_id)
     if thread.title:
         session.slug = _slugify(thread.title)
     if not session.model and thread.model:

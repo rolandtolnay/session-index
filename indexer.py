@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from codex_parser import internal_codex_session_reason, parse_codex_jsonl
 from parser import ParsedSession, ParsedToolCall, clean_user_messages, parse_jsonl as parse_claude_jsonl
 from pi_parser import discover_pi_subagents, new_pi_conversation_counts, parse_pi_jsonl, parse_pi_subagent_jsonl
+from session_identity import canonical_session_id
 from subagent_parser import discover_subagents, parse_subagent_jsonl, ParsedSubagent, SubagentInfo
 from subagent_runs import ParsedSubagentRun, build_subagent_runs
+
+if TYPE_CHECKING:
+    from summarizer import SummaryResult
 
 
 class IndexStage(str, Enum):
@@ -81,7 +86,7 @@ _METADATA_FIELDS = {
 
 _STAGE_FIELDS = {
     IndexStage.SESSION_METADATA: _METADATA_FIELDS,
-    IndexStage.SUMMARY: {"summary", "headline"},
+    IndexStage.SUMMARY: {"summary", "headline", "substance_band", "substance_reason"},
     IndexStage.CLEAN_TRANSCRIPT: {"transcript_path"},
     IndexStage.SUBAGENT_TRANSCRIPTS: {"subagent_transcripts"},
     IndexStage.TOOL_LOG: {"tool_log_path"},
@@ -138,6 +143,8 @@ def upsert_parsed_session(
     files_touched: list[str] | None = None,
     summary: str | None = None,
     headline: str | None = None,
+    substance_band: str | None = None,
+    substance_reason: str | None = None,
     transcript_path: str | None = None,
     tool_log_path: str | None = None,
     subagent_transcripts: list[str] | None = None,
@@ -148,14 +155,18 @@ def upsert_parsed_session(
     from db import upsert_session
 
     source = normalize_source(source)
-    source_prefix = f"{source}:"
-    native_session_id = (
-        session.session_id.split(":", 1)[1]
-        if session.session_id.startswith(source_prefix)
-        else session.session_id
-    )
-    effective_files = files_touched if files_touched is not None else session.files_touched
+    native_session_id = session.native_session_id
+    if not native_session_id:
+        raise ValueError("ParsedSession.native_session_id is required")
+    expected_session_id = canonical_session_id(source, native_session_id)
+    if session.session_id != expected_session_id:
+        raise ValueError(
+            f"ParsedSession identity mismatch: expected {expected_session_id}, got {session.session_id}"
+        )
+
     from transcript import assistant_metrics
+
+    effective_files = files_touched if files_touched is not None else session.files_touched
 
     assistant_message_count, assistant_char_count = assistant_metrics(
         session.messages,
@@ -166,7 +177,7 @@ def upsert_parsed_session(
         conn,
         session_id=session.session_id,
         source=source,
-        native_session_id=native_session_id or session.session_id,
+        native_session_id=native_session_id,
         source_path=source_path,
         slug=session.slug or None,
         project_path=session.project_path or None,
@@ -184,6 +195,8 @@ def upsert_parsed_session(
         tools_used=session.tools_used or None,
         summary=summary,
         headline=headline,
+        substance_band=substance_band,
+        substance_reason=substance_reason,
         transcript_path=transcript_path,
         tool_log_path=tool_log_path,
         subagent_transcripts=", ".join(subagent_transcripts) if subagent_transcripts else None,
@@ -252,7 +265,7 @@ def _description_inputs(session: ParsedSession, enriched_files: list[str], parse
     }
 
 
-def _summarize_session(session: ParsedSession, inputs: dict) -> str | None:
+def _summarize_session(session: ParsedSession, inputs: dict) -> SummaryResult | None:
     from summarizer import summarize
 
     short_session_threshold = 5
@@ -327,7 +340,11 @@ def index_source_transcript(
     parsed_session: ParsedSession | None = None,
 ) -> IndexResult:
     """Index one provider-owned Source Transcript using explicit stage ownership."""
-    from db import get_connection, init_db
+    import os
+    from db import DB_PATH
+    from indexing_lock import indexing_lock, require_indexing_enabled
+
+    require_indexing_enabled(os.path.dirname(DB_PATH))
 
     source = normalize_source(source)
     stages = frozenset(options.stages)
@@ -360,6 +377,41 @@ def index_source_transcript(
         result.skipped_reason = f"{session.user_message_count} user, {session.assistant_message_count} assistant msgs"
         return result
 
+    if not session.native_session_id:
+        raise ValueError("ParsedSession.native_session_id is required")
+    expected_session_id = canonical_session_id(source, session.native_session_id)
+    if session.session_id != expected_session_id:
+        raise ValueError(
+            f"ParsedSession identity mismatch: expected {expected_session_id}, got {session.session_id}"
+        )
+
+    # Summary-only refreshes do not write artifacts and must not delay the next
+    # deterministic snapshot while an LLM call is in flight. DB upserts still
+    # guard ownership, and the shared store lock excludes migration.
+    artifact_owner = None if stages <= {IndexStage.SUMMARY} else session.session_id
+    with indexing_lock(os.path.dirname(DB_PATH), artifact_owner):
+        return _index_qualified_session(source, path, stages, session, result)
+
+
+def _index_qualified_session(
+    source: str, path: str, stages: frozenset[IndexStage], session: ParsedSession, result: IndexResult,
+) -> IndexResult:
+    from db import assert_session_identity, get_connection, init_db
+
+    # Serialize colliding IDs through the artifact writes and final DB commit.
+    # Migration holds the exclusive store lock; ordinary sessions share it.
+    identity_conn = get_connection()
+    try:
+        init_db(identity_conn)
+        assert_session_identity(
+            identity_conn,
+            session.session_id,
+            source,
+            session.native_session_id,
+        )
+    finally:
+        identity_conn.close()
+
     parsed_subagents = _parse_subagents_for_stages(source, path, stages)
     from transcript import rendered_conversation_signature
 
@@ -377,11 +429,17 @@ def index_source_transcript(
 
     summary = None
     headline = None
+    substance_band = None
+    substance_reason = None
     if IndexStage.SUMMARY in stages:
         from summarizer import generate_headline
 
         description_inputs = _description_inputs(session, enriched_files, parsed_subagents)
-        summary = _summarize_session(session, description_inputs)
+        summary_result = _summarize_session(session, description_inputs)
+        if summary_result is not None:
+            summary = summary_result.summary
+            substance_band = summary_result.substance_band
+            substance_reason = summary_result.substance_reason
         result.summary_generated = bool(summary)
         headline = generate_headline(**description_inputs)
         result.headline_generated = bool(headline)
@@ -410,10 +468,13 @@ def index_source_transcript(
 
     stage_overwrite_fields = _stage_overwrite_fields(stages)
     if IndexStage.SUMMARY in stages:
-        # Summary and headline are generated independently; preserve each
-        # existing value when its own generation fails.
+        # Summary, classification, and headline fail independently. Preserve
+        # each prior value unless its producer returned a complete new value.
         if summary is None:
             stage_overwrite_fields.discard("summary")
+        if substance_band is None or substance_reason is None:
+            stage_overwrite_fields.discard("substance_band")
+            stage_overwrite_fields.discard("substance_reason")
         if headline is None:
             stage_overwrite_fields.discard("headline")
 
@@ -428,6 +489,8 @@ def index_source_transcript(
             files_touched=enriched_files,
             summary=summary,
             headline=headline,
+            substance_band=substance_band,
+            substance_reason=substance_reason,
             transcript_path=transcript_path,
             tool_log_path=tool_log_path,
             subagent_transcripts=subagent_paths,

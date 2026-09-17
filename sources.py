@@ -5,7 +5,10 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
+
+from session_identity import is_canonical_session_id
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,7 @@ def discover_pi_sessions(
         return []
 
     pattern = os.path.join(root, "**", "*.jsonl")
+    wanted = session_id or ""
     matches: list[SourceSessionFile] = []
     for path in sorted(glob.glob(pattern, recursive=True)):
         basename = os.path.basename(path)
@@ -112,11 +116,8 @@ def discover_pi_sessions(
         # events.jsonl files are subagent runner lifecycle logs, not conversations.
         if basename in {"session.jsonl", "events.jsonl"}:
             continue
-        if session_id and session_id not in os.path.basename(path):
-            # Pi's filename includes the native UUID, but callers may pass a DB id pi:<uuid>.
-            wanted = session_id.split(":", 1)[-1]
-            if wanted not in os.path.basename(path):
-                continue
+        if wanted and wanted not in os.path.basename(path):
+            continue
         matches.append(SourceSessionFile("pi", path))
     return matches
 
@@ -142,7 +143,7 @@ def discover_codex_sessions(
     archived_dir: str | None = None,
 ) -> list[SourceSessionFile]:
     active_root, archive_root = get_codex_session_roots(session_dir, archived_dir)
-    wanted = session_id.split(":", 1)[-1] if session_id else ""
+    wanted = session_id or ""
 
     patterns = []
     if os.path.exists(active_root):
@@ -163,6 +164,26 @@ def discover_codex_sessions(
     return matches
 
 
+def _canonical_session_row(session_id: str) -> dict | None:
+    """Resolve a short canonical ID through stored provider identity metadata."""
+    from db import DB_PATH, get_connection
+
+    if not os.path.exists(DB_PATH):
+        return None
+    conn = get_connection()
+    try:
+        try:
+            row = conn.execute(
+                "SELECT source, native_session_id, source_path FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def discover_sessions(
     source: str = "all",
     *,
@@ -175,6 +196,21 @@ def discover_sessions(
     source = source.lower()
     if source not in {"claude", "pi", "codex", "all"}:
         raise ValueError(f"Unsupported source: {source}")
+
+    if session_id and is_canonical_session_id(session_id):
+        row = _canonical_session_row(session_id)
+        if row is None:
+            return []
+        stored_source = row.get("source") or "claude"
+        if source != "all" and source != stored_source:
+            return []
+        source_path = row.get("source_path") or ""
+        if source_path and os.path.isfile(source_path):
+            return [SourceSessionFile(stored_source, source_path)]
+        source = stored_source
+        session_id = row.get("native_session_id") or ""
+        if not session_id:
+            return []
 
     files: list[SourceSessionFile] = []
     if source in {"claude", "all"}:

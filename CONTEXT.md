@@ -21,15 +21,17 @@ An explicit user request from a Current Session Display to run the full indexing
 _Avoid_: Refresh, backfill, transcript generation
 
 **Canonical Session ID**:
-The Session Index identifier for a session, including any provider namespace prefix required for uniqueness.
+The short, provider-namespaced Session Index identifier for a session, distinct from its provider-native identity.
 _Avoid_: Native ID, raw provider ID
 
-Provider namespace examples:
-Claude sessions normally use the native session id directly; Pi uses `pi:<uuid>`;
-Codex uses `codex:<uuid>`.
+Provider namespaces: Claude uses `cc:`, Pi uses `pi:`, and Codex uses `codex:`.
+
+**Native Session ID**:
+The unchanged provider-owned identifier used to locate or resume a conversation.
+_Avoid_: Canonical Session ID, short ID
 
 **Clean Transcript**:
-The generated markdown conversation artifact for a session, excluding detailed tool-call logs.
+The generated markdown conversation artifact for a session, excluding detailed tool-call logs and normalizing recognized Session Index references to current identifiers.
 _Avoid_: Raw transcript, source transcript
 
 **Session Headline**:
@@ -37,8 +39,12 @@ An LLM-generated routing phrase of at most 15 words that distinguishes one sessi
 _Avoid_: Summary, title, slug, transcript excerpt
 
 **Session Summary**:
-The fuller LLM-generated searchable description of what happened in one session and the source from which its Session Headline is generated.
+The fuller LLM-generated searchable description of what happened in one session.
 _Avoid_: Session Headline, project description
+
+**Substance Band**:
+A session's assessed future reference value: substantial for durable decisions, findings, or meaningful outcomes; useful for concrete limited progress; low-value for routine logistics or exchanges without substantive findings.
+_Avoid_: Length score, effort score, recency score
 
 **Source Transcript**:
 The provider-owned raw session log consumed by Session Index.
@@ -117,7 +123,8 @@ _Avoid_: Observed child type, artifact title
 - A **Top-Level Session** may contain zero or more **Subagent Runs**; nested Subagent Run conversations are not separate Top-Level Sessions.
 - A parented Pi clone becomes a separate indexed **Top-Level Session** only after raw entry identity proves that it contains a new user-and-assistant exchange; inherited history alone does not create another indexed conversation.
 - Recent-session injection and cross-project ranking consider only **Top-Level Sessions**.
-- An indexed session may have one **Session Summary** and one derived **Session Headline**.
+- An indexed session may have one **Session Summary**, one independently generated **Session Headline**, and one **Substance Band** with an evidence-based reason.
+- An unknown **Substance Band** is not a low-value assessment; recency and project coverage are separate selection concerns.
 - A **Session Headline** routes an agent to a **Clean Transcript**; it does not replace the searchable **Session Summary**.
 - A **Current Session** has one deterministic **Clean Transcript** path, even before that file exists.
 - A **Current Session** has one deterministic **Tool Log** path, even before that file exists.

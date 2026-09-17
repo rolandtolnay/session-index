@@ -36,7 +36,7 @@ Shared active-session coordinator
 Codex exposes no distinct session-exit event; its latest Stop is finalized by the idle path.
 
 Shared full pass:
-    parser adapter ─► rich transcript render ─► LLM summary via headless Pi ─► Session Headline via separate headless Pi process
+    parser adapter ─► rich transcript render ─► LLM summary + Substance Band via headless Pi ─► Session Headline via separate headless Pi process
                                                                                  ├─► Clean Transcript + Tool Log ─► DB upsert + fact tables
                                                                                  └─► Skill Invocations from slash commands, skill envelopes, Skill tools, and exact SKILL.md reads
 
@@ -77,7 +77,8 @@ Current-session lookup:
 | `transcript.py` | Clean Transcript writer + Evidence Snippet selector |
 | `tool_log.py` | Per-session Markdown Tool Log writer and section extractor |
 | `skill_facts.py` | Canonical Skill Invocation extraction and row building |
-| `summarizer.py` | LLM summary generator plus separate Session Headline generator using headless Pi, with legacy summary fallback |
+| `summarizer.py` | Joint summary/Substance Band generator plus independent Session Headline generator using headless Pi, with legacy summary fallback |
+| `backfill_substance.py` | Resumable past-week classification from existing Clean Transcripts without regenerating descriptions/artifacts |
 | `logger.py` | Structured logging with monthly rotation |
 | `client.py` | Standalone Ollama HTTP client for fallback summaries (pure stdlib) |
 | `skills/session-search/SKILL.md` | Canonical installed LLM operating guide |
@@ -157,8 +158,9 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - `refresh_worker | source transcript missing` / `pi_index | missing session file` — Source Transcript path mismatch
 
 **Summary or Session Headline missing:**
-- Check Pi auth/model availability: default is `openai-codex/gpt-5.4-mini` via `pi -p --no-session --no-tools`.
-- Headlines use a second isolated Pi process after successful summary generation; a failed headline call preserves any previous value.
+- Check Pi auth/model availability: default is `openai-codex/gpt-5.6-luna` with medium thinking via `pi -p --no-session --no-tools`.
+- Headlines use a second isolated Pi process independently of summary success; a failed headline call preserves any previous value.
+- Substance Bands are generated in the summary call. Invalid classifications preserve prior assessments; unknown bands remain eligible alongside useful sessions. Inspect `substance_band` and `substance_reason` through `query`; run `uv run backfill_substance.py --apply` for missing eligible past-week assessments.
 - Set `SESSION_INDEX_SUMMARY_MODEL`, `SESSION_INDEX_SUMMARY_THINKING`, or `SESSION_INDEX_SUMMARY_TIMEOUT` to override the default.
 - Automatic refresh defaults are 180 idle seconds, 10,000 new rendered characters, and a 60-second content-trigger cooldown. Override them with `SESSION_INDEX_SUMMARY_IDLE_SECONDS`, `SESSION_INDEX_SUMMARY_CONTENT_CHARS`, and `SESSION_INDEX_SUMMARY_CONTENT_COOLDOWN_SECONDS`.
 - Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to force the legacy fallback path.
@@ -251,7 +253,7 @@ The script simulates what SessionStart would have injected and checks if those p
 ### `session_start.py` (SessionStart)
 
 1. Selects the latest seven Top-Level current-project sessions with headlines and existing Clean Transcripts; nested Pi subagent `run-N/session.jsonl` rows are excluded before limiting.
-2. Selects Top-Level other-project candidates from the last seven days and ranks them by 60% total-turn percentile plus 40% assistant-character percentile, with recency as the tie-breaker.
+2. Selects headlined Top-Level candidates with existing Clean Transcripts from the past seven days, preferring substantial then useful sessions, newest first within each band. Unknown bands compete with useful sessions. Matching configured groups target 14 entries and reserve the best representative of each active group project, exceeding the cap only for coverage; low-value sessions are otherwise omitted. Group projects are excluded from the remaining 21-entry Other projects pool. Weekly queries load compact metadata without a pre-ranking count cap, so busy projects cannot starve quieter ones.
 3. Injects one shared Clean Transcript root, retaining branch names for current-project entries while cross-project entries contain only dates, projects, canonical transcript filenames, and headlines.
 4. Directs the agent to `session-search` when the needed session is absent.
 
@@ -261,7 +263,7 @@ Pi's `before_agent_start` path calls the same `recent_context.py` builder, so se
 
 1. Claude Stop, Pi `agent_end`, and Codex Stop atomically queue the latest Source Transcript snapshot and ensure one detached coordinator exists for the Canonical Session ID.
 2. The coordinator coalesces pending events and immediately runs the complete deterministic pass: metadata, Clean Transcript, Tool Log, Subagent Run transcripts, and structured fact tables.
-3. The first qualifying snapshot (at least one user and one assistant message) immediately attempts a Session Summary and Session Headline.
+3. The first qualifying snapshot (at least one user and one assistant message) immediately attempts a joint Session Summary/Substance Band and an independent Session Headline.
 4. Later descriptions refresh after 180 seconds without a newer assistant turn or after 10,000 newly rendered user/assistant characters since the last successful summary. Content-trigger attempts have a 60-second cooldown.
 5. Failed summary/headline generation preserves prior descriptions and never advances the successful-summary content watermark.
 6. Claude SessionEnd and Pi non-reload shutdown queue a forced final refresh. Codex has no distinct session-exit event, so its latest Stop uses the idle path.

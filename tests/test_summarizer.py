@@ -1,18 +1,24 @@
 """Tests for the summarizer message selection."""
 
+import json
 import os
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from summarizer import (
     SYSTEM_PROMPT_HEADLINE,
+    SummaryResult,
     _call_pi,
     _build_prompt,
     _build_rich_prompt,
     _normalize_headline,
     _select_messages,
+    classify_substance,
     generate_headline,
+    summarize,
 )
 
 
@@ -198,3 +204,157 @@ def test_generate_headline_returns_none_on_pi_failure(monkeypatch):
         transcript_text=None,
     )
     assert result is None
+
+
+# --- joint summary and substance classification ---
+
+
+def _summary_kwargs():
+    return {
+        "project": "proj",
+        "branch": "main",
+        "user_messages": ["implement classification"],
+        "files_touched": ["summarizer.py"],
+        "transcript_text": "[user] implement classification\n[assistant] implemented and tested",
+    }
+
+
+def test_summarize_returns_joint_summary_and_classification(monkeypatch):
+    calls = []
+
+    def fake_call(prompt, *, system_prompt):
+        calls.append((prompt, system_prompt))
+        return json.dumps({
+            "summary": " Implemented joint summary classification. ",
+            "band": "substantial",
+            "reason": " The transcript shows the implementation and verification. ",
+        })
+
+    monkeypatch.setattr("summarizer._call_pi", fake_call)
+    monkeypatch.setattr(
+        "summarizer._legacy_summarize",
+        lambda **kwargs: pytest.fail("valid joint summary must not use fallback"),
+    )
+
+    result = summarize(**_summary_kwargs())
+
+    assert result == SummaryResult(
+        summary="Implemented joint summary classification.",
+        substance_band="substantial",
+        substance_reason="The transcript shows the implementation and verification.",
+    )
+    assert len(calls) == 1
+    assert _summary_kwargs()["transcript_text"] in calls[0][0]
+
+
+@pytest.mark.parametrize(
+    "classification_fields",
+    [
+        {},
+        {"band": "important", "reason": "Not an allowed band."},
+        {"band": [], "reason": "An unhashable band must not discard a valid summary."},
+        {"band": "substantial", "reason": "   "},
+        {"band": "substantial", "reason": 1},
+        {"band": "substantial", "reason": "x" * 2001},
+        {"band": "useful", "reason": "Valid values but extra field.", "extra": True},
+    ],
+)
+def test_summarize_preserves_valid_summary_when_classification_is_malformed(
+    monkeypatch, classification_fields,
+):
+    raw = {"summary": "Implemented the requested behavior.", **classification_fields}
+    monkeypatch.setattr("summarizer._call_pi", lambda *args, **kwargs: json.dumps(raw))
+    monkeypatch.setattr(
+        "summarizer._legacy_summarize",
+        lambda **kwargs: pytest.fail("valid summary must not use fallback"),
+    )
+
+    result = summarize(**_summary_kwargs())
+
+    assert result == SummaryResult("Implemented the requested behavior.")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        '```json\n{"summary":"Never persist this JSON."}\n```',
+        '["summary", "substantial"]',
+        '{"summary": "unterminated}',
+    ],
+)
+def test_summarize_uses_legacy_fallback_without_persisting_untrusted_raw(monkeypatch, raw):
+    monkeypatch.setattr("summarizer._call_pi", lambda *args, **kwargs: raw)
+    monkeypatch.setattr(
+        "summarizer._legacy_summarize",
+        lambda **kwargs: "Legacy fallback summary.",
+    )
+
+    result = summarize(**_summary_kwargs())
+
+    assert result == SummaryResult("Legacy fallback summary.")
+    assert result.summary != raw
+
+
+def test_summarize_keeps_valid_classification_when_summary_uses_fallback(monkeypatch):
+    monkeypatch.setattr(
+        "summarizer._call_pi",
+        lambda *args, **kwargs: json.dumps({
+            "summary": "   ",
+            "band": "useful",
+            "reason": "The transcript records a small local implementation.",
+        }),
+    )
+    monkeypatch.setattr("summarizer._legacy_summarize", lambda **kwargs: "Fallback summary.")
+
+    result = summarize(**_summary_kwargs())
+
+    assert result == SummaryResult(
+        "Fallback summary.",
+        "useful",
+        "The transcript records a small local implementation.",
+    )
+
+
+def test_summarize_returns_none_when_joint_and_fallback_summaries_fail(monkeypatch):
+    monkeypatch.setattr("summarizer._call_pi", lambda *args, **kwargs: "not json")
+    monkeypatch.setattr("summarizer._legacy_summarize", lambda **kwargs: None)
+
+    assert summarize(**_summary_kwargs()) is None
+
+
+def test_classify_substance_reads_transcript_without_generating_a_summary(monkeypatch):
+    calls = []
+
+    def fake_call(prompt, *, system_prompt):
+        calls.append((prompt, system_prompt))
+        return json.dumps({
+            "band": "low_value",
+            "reason": "The exchange only records commit bookkeeping.",
+        })
+
+    monkeypatch.setattr("summarizer._call_pi", fake_call)
+    monkeypatch.setattr(
+        "summarizer._legacy_summarize",
+        lambda **kwargs: pytest.fail("dedicated classification must not generate a summary"),
+    )
+
+    result = classify_substance(**_summary_kwargs())
+
+    assert result == ("low_value", "The exchange only records commit bookkeeping.")
+    assert len(calls) == 1
+    assert _summary_kwargs()["transcript_text"] in calls[0][0]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "useful: small change",
+        '{"band":"useful","reason":"ok","extra":true}',
+        '{"band":"low_value","reason":""}',
+        '{"band":"LOW_VALUE","reason":"Routine logistics."}',
+    ],
+)
+def test_classify_substance_rejects_malformed_untrusted_output(monkeypatch, raw):
+    monkeypatch.setattr("summarizer._call_pi", lambda *args, **kwargs: raw)
+    assert classify_substance(**_summary_kwargs()) is None

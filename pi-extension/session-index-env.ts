@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const PI_SESSION_PREFIX = "pi:";
 
 export const SESSION_INDEX_ENV_KEYS = [
@@ -38,8 +40,17 @@ function cleanSessionFile(value: unknown): string | undefined {
 }
 
 function cleanNativeSessionId(value: unknown): string | undefined {
-	const sessionId = clean(value)?.replace(/^pi:/, "");
-	return sessionId && sessionId.length > 0 ? sessionId : undefined;
+	const sessionId = clean(value);
+	if (!sessionId || /[:/\\]/.test(sessionId)) return undefined;
+	return sessionId;
+}
+
+function canonicalPiSessionId(nativeSessionId: string): string {
+	const digest = createHash("sha256")
+		.update(`pi:${nativeSessionId}`, "utf8")
+		.digest("hex")
+		.slice(0, 16);
+	return `${PI_SESSION_PREFIX}${digest}`;
 }
 
 export function buildSessionIndexEnv(sessionManager: SessionManagerLike | undefined | null): SessionIndexEnv | undefined {
@@ -49,7 +60,7 @@ export function buildSessionIndexEnv(sessionManager: SessionManagerLike | undefi
 	if (!sourcePath || !nativeSessionId) return undefined;
 
 	const env: SessionIndexEnv = {
-		SESSION_INDEX_SESSION_ID: `${PI_SESSION_PREFIX}${nativeSessionId}`,
+		SESSION_INDEX_SESSION_ID: canonicalPiSessionId(nativeSessionId),
 		SESSION_INDEX_NATIVE_SESSION_ID: nativeSessionId,
 		SESSION_INDEX_SOURCE: "pi",
 		SESSION_INDEX_SOURCE_PATH: sourcePath,

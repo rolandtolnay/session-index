@@ -3,7 +3,7 @@
 ## Runtime
 - Python 3.11+; runtime dependencies are intentionally minimal. `rapidfuzz` is allowed for deterministic Evidence Find fuzzy fallback (see `docs/adr/0001-rapidfuzz-for-evidence-find.md`).
 - Run scripts with `uv run` (not `python3`)
-- Summaries use headless Pi by default (`openai-codex/gpt-5.4-mini`, low thinking); `client.py` is legacy Ollama fallback
+- Summaries and Substance Bands share one headless Pi call by default (`openai-codex/gpt-5.6-luna`, medium thinking); `client.py` is legacy summary-only Ollama fallback
 
 ## Architecture
 - **Hooks never block:** All hooks exit 0, wrap everything in try/except, self-imposed timeouts
@@ -78,7 +78,7 @@ Use `--select-sessions` to list available sessions by bucket.
 | **Framing** | Reads as project description | Acceptable summary | Clear session summary, distinguishes planning vs implementation |
 
 ### Established winners
-- **Production winner:** `openai-codex/gpt-5.4-mini` with low thinking, rich transcript input, and compact prompt: 13.47/15.
+- **Historical production baseline:** `openai-codex/gpt-5.4-mini` with low thinking, rich transcript input, and compact prompt: 13.47/15. Current Luna configuration and separately judged results are in `SUMMARIZATION.md`.
 - **Quality ceiling tested:** `openai-codex/gpt-5.5` with rich input: ~13.9/15 but roughly 2x slower.
 - Legacy local benchmarks remain in `tests/benchmark.py`; Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py`.
 - See `tests/eval_results/LEARNINGS.md`, `pi_gpt_benchmark_report.md`, and `pi_gpt_prompt_benchmark_report.md` for findings.

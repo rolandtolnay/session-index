@@ -14,6 +14,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from session_identity import canonical_session_id
+
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 
 
@@ -42,6 +44,7 @@ class ParsedToolCall:
 @dataclass
 class ParsedSession:
     session_id: str = ""
+    native_session_id: str = ""
     slug: str = ""
     project_path: str = ""
     project: str = ""  # basename of project_path
@@ -286,9 +289,12 @@ def parse_jsonl(path: str) -> ParsedSession:
         if ts:
             timestamps.append(ts)
 
-        # Extract metadata
-        if not session.session_id:
-            session.session_id = entry.get("sessionId", "")
+        # Extract provider-native identity. Canonical identity is derived only
+        # after parsing so the full runtime ID remains available to callers.
+        if not session.native_session_id:
+            native_id = entry.get("sessionId", "")
+            if isinstance(native_id, str):
+                session.native_session_id = native_id
         if not session.slug and entry.get("slug"):
             session.slug = entry["slug"]
         if not session.branch and entry.get("gitBranch"):
@@ -345,13 +351,15 @@ def parse_jsonl(path: str) -> ParsedSession:
                         if fp:
                             files_set.add(fp)
 
-    # Session ID fallback from entries with sessionId field
-    if not session.session_id:
+    # Session ID fallback from entries with sessionId field.
+    if not session.native_session_id:
         for entry in entries:
             sid = entry.get("sessionId", "")
-            if sid:
-                session.session_id = sid
+            if isinstance(sid, str) and sid:
+                session.native_session_id = sid
                 break
+    if session.native_session_id:
+        session.session_id = canonical_session_id("claude", session.native_session_id)
 
     # Timestamps
     if timestamps:

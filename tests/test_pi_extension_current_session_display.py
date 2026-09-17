@@ -495,9 +495,9 @@ def test_current_session_command_manual_indexing_uses_refreshed_pi_env_and_full_
         assert.deepEqual(indexSpawn.args, ["run", indexSpawn.args[1], "--mode", "full", "--session-file", "/tmp/fresh.jsonl"]);
         assert.ok(indexSpawn.args[1].endsWith("/hooks/pi_index.py"));
         assert.equal(indexSpawn.options.env.SESSION_INDEX_PROVIDER, "pi");
-        assert.equal(indexSpawn.options.env.SESSION_INDEX_SESSION_ID, "pi:fresh");
+        assert.equal(indexSpawn.options.env.SESSION_INDEX_SESSION_ID, "pi:477b97a8184ef742");
         assert.equal(indexSpawn.options.env.SESSION_INDEX_SOURCE_PATH, "/tmp/fresh.jsonl");
-        assert.equal(currentSpawnEnvs.at(-1).SESSION_INDEX_SESSION_ID, "pi:fresh");
+        assert.equal(currentSpawnEnvs.at(-1).SESSION_INDEX_SESSION_ID, "pi:477b97a8184ef742");
         assert.ok(finalRender.includes("Indexed snapshot at "), finalRender);
         assert.ok(finalRender.includes("Clean Transcript [exists]"), finalRender);
         assert.ok(finalRender.includes("Tool Log [exists]"), finalRender);
@@ -730,7 +730,7 @@ def test_pi_lifecycle_queues_turn_and_forced_exit_refreshes():
           assert.equal(spawn.args[0], "run");
           assert.ok(spawn.args[1].endsWith("/hooks/pi_index.py"));
           assert.equal(spawn.options.detached, true);
-          assert.equal(spawn.options.env.SESSION_INDEX_SESSION_ID, "pi:pi-session");
+          assert.equal(spawn.options.env.SESSION_INDEX_SESSION_ID, "pi:172fbb9b02d9c45e");
           assert.equal(spawn.options.env.SESSION_INDEX_LEAF_ID, "leaf-1");
         }
         '''

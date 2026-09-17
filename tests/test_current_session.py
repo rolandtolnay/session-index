@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from current_session import CurrentSessionError, resolve_current_session
+from session_identity import canonical_session_id
 
 
 REQUIRED_ENV_KEYS = [
@@ -27,9 +28,9 @@ CLAUDE_COMPAT_ENV_KEYS = [
 CODEX_COMPAT_ENV_KEY = "CODEX_THREAD_ID"
 
 
-def _env(session_id="session-1", native_session_id="session-1", source="claude", source_path="/tmp/source.jsonl", **extra):
+def _env(session_id=None, native_session_id="session-1", source="claude", source_path="/tmp/source.jsonl", **extra):
     data = {
-        "SESSION_INDEX_SESSION_ID": session_id,
+        "SESSION_INDEX_SESSION_ID": session_id or canonical_session_id(source, native_session_id),
         "SESSION_INDEX_NATIVE_SESSION_ID": native_session_id,
         "SESSION_INDEX_SOURCE": source,
         "SESSION_INDEX_SOURCE_PATH": source_path,
@@ -44,26 +45,26 @@ def artifact_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr("current_session.tool_log.TRANSCRIPT_DIR", str(tmp_path))
 
 
-def test_resolve_pi_env_normalizes_ids_and_derives_artifact_paths(tmp_path, monkeypatch):
+def test_resolve_pi_env_validates_ids_and_derives_artifact_paths(tmp_path, monkeypatch):
     source = tmp_path / "source.jsonl"
     source.write_text("{}\n")
-    transcript_path = tmp_path / "pi:019pi-session.md"
+    transcript_path = tmp_path / "pi:4f4d748a63162aa9.md"
     transcript_path.write_text("transcript")
 
     current = resolve_current_session(_env(
-        session_id="pi:019pi-session",
+        session_id="pi:4f4d748a63162aa9",
         native_session_id="019pi-session",
         source="pi",
         source_path=str(source),
         SESSION_INDEX_LEAF_ID="leaf-123",
     ))
 
-    assert current.session_id == "pi:019pi-session"
+    assert current.session_id == "pi:4f4d748a63162aa9"
     assert current.native_session_id == "019pi-session"
     assert current.source == "pi"
     assert current.source_path == str(source)
     assert current.transcript_path == str(transcript_path)
-    assert current.tool_log_path == str(tmp_path / "pi:019pi-session.tools.md")
+    assert current.tool_log_path == str(tmp_path / "pi:4f4d748a63162aa9.tools.md")
     assert current.source_path_exists is True
     assert current.transcript_exists is True
     assert current.tool_log_exists is False
@@ -71,34 +72,22 @@ def test_resolve_pi_env_normalizes_ids_and_derives_artifact_paths(tmp_path, monk
     assert current.leaf_id == "leaf-123"
 
 
-def test_resolve_pi_env_adds_canonical_prefix_and_strips_native_prefix(tmp_path, monkeypatch):
+def test_resolve_public_env_rejects_unhashed_or_prefixed_native_identity(tmp_path):
+    with pytest.raises(CurrentSessionError, match="inconsistent"):
+        resolve_current_session(_env(
+            session_id="pi:019pi-session",
+            native_session_id="019pi-session",
+            source="pi",
+            source_path=str(tmp_path / "missing.jsonl"),
+        ))
 
-    current = resolve_current_session(_env(
-        session_id="019pi-session",
-        native_session_id="pi:019pi-session",
-        source="pi",
-        source_path=str(tmp_path / "missing.jsonl"),
-    ))
-
-    assert current.session_id == "pi:019pi-session"
-    assert current.native_session_id == "019pi-session"
-    assert current.transcript_path == str(tmp_path / "pi:019pi-session.md")
-    assert current.tool_log_path == str(tmp_path / "pi:019pi-session.tools.md")
-
-
-def test_resolve_codex_env_adds_canonical_prefix_and_strips_native_prefix(tmp_path, monkeypatch):
-    current = resolve_current_session(_env(
-        session_id="019codex-session",
-        native_session_id="codex:019codex-session",
-        source="codex",
-        source_path=str(tmp_path / "missing.jsonl"),
-    ))
-
-    assert current.session_id == "codex:019codex-session"
-    assert current.native_session_id == "019codex-session"
-    assert current.source == "codex"
-    assert current.transcript_path == str(tmp_path / "codex:019codex-session.md")
-    assert current.tool_log_path == str(tmp_path / "codex:019codex-session.tools.md")
+    with pytest.raises(CurrentSessionError, match="invalid provider-native"):
+        resolve_current_session(_env(
+            session_id="codex:deadbeef0000",
+            native_session_id="codex:019codex-session",
+            source="codex",
+            source_path=str(tmp_path / "missing.jsonl"),
+        ))
 
 
 def test_resolve_codex_compat_locates_exact_active_rollout(tmp_path, monkeypatch):
@@ -110,29 +99,30 @@ def test_resolve_codex_compat_locates_exact_active_rollout(tmp_path, monkeypatch
     monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(codex_home))
 
     current = resolve_current_session({CODEX_COMPAT_ENV_KEY: native_id})
+    canonical = canonical_session_id("codex", native_id)
 
-    assert current.session_id == f"codex:{native_id}"
+    assert current.session_id == canonical
     assert current.native_session_id == native_id
     assert current.source == "codex"
     assert current.source_path == str(source)
     assert current.source_path_exists is True
-    assert current.transcript_path == str(tmp_path / f"codex:{native_id}.md")
-    assert current.tool_log_path == str(tmp_path / f"codex:{native_id}.tools.md")
+    assert current.transcript_path == str(tmp_path / f"{canonical}.md")
+    assert current.tool_log_path == str(tmp_path / f"{canonical}.tools.md")
 
 
-def test_resolve_codex_compat_accepts_prefixed_id_and_archived_rollout(tmp_path, monkeypatch):
-    native_id = "019codex-archived"
-    codex_home = tmp_path / "codex-home"
-    source = codex_home / "archived_sessions" / f"rollout-2026-07-10T10-00-00-{native_id}.jsonl"
-    source.parent.mkdir(parents=True)
-    source.write_text("{}\n")
-    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(codex_home))
+def test_resolve_codex_compat_rejects_prefixed_native_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(tmp_path / "codex-home"))
 
-    current = resolve_current_session({CODEX_COMPAT_ENV_KEY: f"codex:{native_id}"})
+    with pytest.raises(CurrentSessionError, match="invalid provider-native"):
+        resolve_current_session({CODEX_COMPAT_ENV_KEY: "codex:019codex-archived"})
 
-    assert current.session_id == f"codex:{native_id}"
-    assert current.native_session_id == native_id
-    assert current.source_path == str(source)
+
+def test_resolve_claude_compat_rejects_prefixed_native_id(tmp_path):
+    with pytest.raises(CurrentSessionError, match="invalid provider-native"):
+        resolve_current_session({
+            "CLAUDE_CODE_SESSION_ID": "claude:native-id",
+            "CLAUDE_CODE_TRANSCRIPT_PATH": str(tmp_path / "native-id.jsonl"),
+        })
 
 
 def test_resolve_codex_compat_fails_when_rollout_is_missing(tmp_path, monkeypatch):
@@ -173,30 +163,29 @@ def test_public_env_takes_precedence_over_codex_compat(tmp_path, monkeypatch):
     )
 
     current = resolve_current_session(_env(
-        session_id="pi:public",
         native_session_id="public",
         source="pi",
         source_path=str(tmp_path / "source.jsonl"),
         CODEX_THREAD_ID="019codex-ignored",
     ))
 
-    assert current.session_id == "pi:public"
+    assert current.session_id == canonical_session_id("pi", "public")
 
 
-def test_resolve_claude_env_keeps_canonical_and_native_equal(tmp_path, monkeypatch):
-    tool_log_path = tmp_path / "claude-session.tools.md"
+def test_resolve_claude_env_keeps_canonical_and_native_separate(tmp_path, monkeypatch):
+    canonical = canonical_session_id("claude", "claude-session")
+    tool_log_path = tmp_path / f"{canonical}.tools.md"
     tool_log_path.write_text("tools")
 
     current = resolve_current_session(_env(
-        session_id="claude-session",
         native_session_id="claude-session",
         source="claude",
         source_path=str(tmp_path / "missing.jsonl"),
     ))
 
-    assert current.session_id == "claude-session"
+    assert current.session_id == canonical
     assert current.native_session_id == "claude-session"
-    assert current.transcript_path == str(tmp_path / "claude-session.md")
+    assert current.transcript_path == str(tmp_path / f"{canonical}.md")
     assert current.tool_log_path == str(tool_log_path)
     assert current.transcript_exists is False
     assert current.tool_log_exists is True
@@ -204,11 +193,11 @@ def test_resolve_claude_env_keeps_canonical_and_native_equal(tmp_path, monkeypat
 
 
 def test_resolve_json_dict_includes_tool_log_timestamp_only_when_artifact_exists(tmp_path, monkeypatch):
-    tool_log_path = tmp_path / "claude-session.tools.md"
+    canonical = canonical_session_id("claude", "claude-session")
+    tool_log_path = tmp_path / f"{canonical}.tools.md"
     tool_log_path.write_text("tools")
 
     current = resolve_current_session(_env(
-        session_id="claude-session",
         native_session_id="claude-session",
         source="claude",
         source_path=str(tmp_path / "missing.jsonl"),
@@ -222,9 +211,8 @@ def test_resolve_json_dict_includes_tool_log_timestamp_only_when_artifact_exists
 
 
 def test_resolve_json_dict_includes_public_fields_and_pi_leaf(tmp_path, monkeypatch):
-
+    canonical = canonical_session_id("pi", "abc")
     current = resolve_current_session(_env(
-        session_id="pi:abc",
         native_session_id="abc",
         source="pi",
         source_path=str(tmp_path / "source.jsonl"),
@@ -232,12 +220,12 @@ def test_resolve_json_dict_includes_public_fields_and_pi_leaf(tmp_path, monkeypa
     ))
 
     assert current.to_json_dict() == {
-        "session_id": "pi:abc",
+        "session_id": canonical,
         "native_session_id": "abc",
         "source": "pi",
         "source_path": str(tmp_path / "source.jsonl"),
-        "transcript_path": str(tmp_path / "pi:abc.md"),
-        "tool_log_path": str(tmp_path / "pi:abc.tools.md"),
+        "transcript_path": str(tmp_path / f"{canonical}.md"),
+        "tool_log_path": str(tmp_path / f"{canonical}.tools.md"),
         "source_path_exists": False,
         "transcript_exists": False,
         "tool_log_exists": False,
@@ -249,11 +237,11 @@ def test_resolve_json_dict_includes_public_fields_and_pi_leaf(tmp_path, monkeypa
 def test_resolve_json_dict_includes_clean_transcript_timestamp_only_when_artifact_exists(tmp_path, monkeypatch):
     source = tmp_path / "source.jsonl"
     source.write_text("{}\n")
-    transcript_path = tmp_path / "pi:abc.md"
+    canonical = canonical_session_id("pi", "abc")
+    transcript_path = tmp_path / f"{canonical}.md"
     transcript_path.write_text("transcript")
 
     current = resolve_current_session(_env(
-        session_id="pi:abc",
         native_session_id="abc",
         source="pi",
         source_path=str(source),
@@ -277,14 +265,13 @@ def test_resolve_claude_compat_env_matches_public_contract(tmp_path, monkeypatch
         "CLAUDE_TRANSCRIPT_PATH": str(source),
     })
     public = resolve_current_session(_env(
-        session_id="claude-compat",
         native_session_id="claude-compat",
         source="claude",
         source_path=str(source),
     ))
 
     assert compat.to_json_dict() == public.to_json_dict()
-    assert compat.session_id == "claude-compat"
+    assert compat.session_id == canonical_session_id("claude", "claude-compat")
     assert compat.native_session_id == "claude-compat"
     assert compat.source == "claude"
     assert compat.source_path == str(source)
@@ -299,9 +286,10 @@ def test_resolve_claude_compat_accepts_alternate_transcript_path_env(tmp_path, m
         "CLAUDE_CODE_TRANSCRIPT_PATH": str(source),
     })
 
-    assert current.session_id == "claude-alt"
+    canonical = canonical_session_id("claude", "claude-alt")
+    assert current.session_id == canonical
     assert current.source_path == str(source)
-    assert current.transcript_path == str(tmp_path / "claude-alt.md")
+    assert current.transcript_path == str(tmp_path / f"{canonical}.md")
 
 
 def test_optional_session_index_leaf_does_not_block_claude_compat(tmp_path, monkeypatch):
@@ -313,7 +301,7 @@ def test_optional_session_index_leaf_does_not_block_claude_compat(tmp_path, monk
         "CLAUDE_TRANSCRIPT_PATH": str(source),
     })
 
-    assert current.session_id == "claude-with-stale-leaf"
+    assert current.session_id == canonical_session_id("claude", "claude-with-stale-leaf")
     assert current.native_session_id == "claude-with-stale-leaf"
     assert current.source == "claude"
     assert current.source_path == str(source)
@@ -328,11 +316,12 @@ def test_resolve_claude_compat_recognizes_claude_code_session_id(tmp_path):
         "CLAUDE_CODE_TRANSCRIPT_PATH": str(source),
     })
 
-    assert current.session_id == "cc-1"
+    canonical = canonical_session_id("claude", "cc-1")
+    assert current.session_id == canonical
     assert current.native_session_id == "cc-1"
     assert current.source == "claude"
     assert current.source_path == str(source)
-    assert current.transcript_path == str(tmp_path / "cc-1.md")
+    assert current.transcript_path == str(tmp_path / f"{canonical}.md")
 
 
 def test_resolve_claude_compat_locates_source_by_session_id(tmp_path, monkeypatch):
@@ -348,11 +337,12 @@ def test_resolve_claude_compat_locates_source_by_session_id(tmp_path, monkeypatc
 
     current = resolve_current_session({"CLAUDE_CODE_SESSION_ID": "loc-1"})
 
-    assert current.session_id == "loc-1"
+    canonical = canonical_session_id("claude", "loc-1")
+    assert current.session_id == canonical
     assert current.source == "claude"
     assert current.source_path == str(source)
     assert current.source_path_exists is True
-    assert current.transcript_path == str(tmp_path / "loc-1.md")
+    assert current.transcript_path == str(tmp_path / f"{canonical}.md")
 
 
 def test_session_id_only_without_locatable_jsonl_fails_clearly(monkeypatch):

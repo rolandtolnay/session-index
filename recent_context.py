@@ -10,10 +10,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 SAME_PROJECT_LIMIT = 7
-PROJECT_GROUP_LIMIT = 7
-PROJECT_GROUP_CANDIDATE_LIMIT = 70
+PROJECT_GROUP_LIMIT = 14
 CROSS_PROJECT_LIMIT = 21
-CROSS_PROJECT_DAYS = 7
+RECENT_DAYS = 7
 PROJECT_CONTEXT_CONFIG_PATH = os.path.expanduser("~/.pi/agent/project-context.json")
 
 
@@ -45,45 +44,45 @@ def _session_has_clean_transcript(session: dict[str, Any]) -> bool:
     return bool(path and os.path.isfile(path))
 
 
-def _ranking_facts(session: dict[str, Any]) -> tuple[int, int]:
-    """Return total turns and assistant characters, deriving exact legacy metrics."""
-    user_turns = max(0, int(session.get("user_message_count") or 0))
-    assistant_count = session.get("assistant_message_count")
-    assistant_chars = session.get("assistant_char_count")
-    if assistant_count is None or assistant_chars is None:
-        try:
-            from transcript import read_assistant_metrics
-
-            assistant_count, assistant_chars = read_assistant_metrics(session["transcript_path"])
-        except (OSError, TypeError, KeyError):
-            assistant_count, assistant_chars = 0, 0
-    return user_turns + max(0, int(assistant_count)), max(0, int(assistant_chars))
+def _recency_key(session: dict[str, Any]) -> tuple[datetime, str]:
+    try:
+        started = datetime.fromisoformat(session.get("started_at") or "")
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+    except ValueError:
+        started = datetime.min.replace(tzinfo=timezone.utc)
+    return started, session.get("session_id") or ""
 
 
-def _percentile_rank(value: int, values: list[int]) -> float:
-    """Return an average-tie percentile rank in [0, 1]."""
-    if len(values) <= 1:
-        return 1.0
-    below = sum(candidate < value for candidate in values)
-    equal = sum(candidate == value for candidate in values)
-    average_index = below + (equal - 1) / 2
-    return average_index / (len(values) - 1)
+def select_weekly_sessions(
+    sessions: list[dict[str, Any]], *, limit: int, ensure_project_coverage: bool = False,
+) -> list[dict[str, Any]]:
+    """Select substance bands newest-first; group coverage may exceed the soft limit.
 
-
-def rank_cross_project_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Rank sessions by interaction depth and substantive assistant output."""
-    if not sessions:
+    Candidates are already restricted to the week and have clean transcripts.
+    Unknown classifications compete with useful sessions, never with low-value.
+    Low-value sessions only appear as an otherwise unrepresented group's project.
+    """
+    if limit <= 0:
         return []
-
-    facts = [_ranking_facts(session) for session in sessions]
-    turn_values = [turns for turns, _chars in facts]
-    char_values = [chars for _turns, chars in facts]
-    scored = []
-    for session, (turns, chars) in zip(sessions, facts):
-        score = 0.6 * _percentile_rank(turns, turn_values) + 0.4 * _percentile_rank(chars, char_values)
-        scored.append((score, session.get("started_at") or "", session.get("session_id") or "", session))
-    scored.sort(key=lambda item: item[:3], reverse=True)
-    return [session for _score, _started_at, _session_id, session in scored]
+    ranked = sorted(sessions, key=_recency_key, reverse=True)
+    # Stable sort preserves actual instant ordering and deterministic ID ties.
+    priorities = {"substantial": 0, "useful": 1, "low_value": 2}
+    ranked.sort(key=lambda s: priorities.get(s.get("substance_band"), 1))
+    selected: set[str] = set()
+    if ensure_project_coverage:
+        projects: set[str] = set()
+        for session in ranked:
+            project = session.get("project_path") or session.get("project") or ""
+            if project not in projects:
+                projects.add(project)
+                selected.add(session["session_id"])
+    for session in ranked:
+        if len(selected) >= limit:
+            break
+        if session.get("substance_band") != "low_value":
+            selected.add(session["session_id"])
+    return [session for session in ranked if session["session_id"] in selected]
 
 
 def _project_root_from_cwd(cwd: str) -> str:
@@ -218,8 +217,10 @@ def build_recent_context(cwd: str) -> str | None:
     conn = get_connection()
     try:
         same_candidates = get_headlined_by_project(conn, project, project_root)
-        since = (datetime.now(timezone.utc) - timedelta(days=CROSS_PROJECT_DAYS)).isoformat()
-        cross_candidates = get_headlined_cross_project(conn, since, project)
+        now = datetime.now(timezone.utc)
+        since = (now - timedelta(days=RECENT_DAYS)).isoformat()
+        until = now.isoformat()
+        cross_candidates = get_headlined_cross_project(conn, since, project, until=until)
 
         group_project_paths: dict[str, set[str]] = {}
         group_candidates: dict[str, list[dict[str, Any]]] = {}
@@ -238,7 +239,8 @@ def build_recent_context(cwd: str) -> str | None:
                 group_candidates[group["name"]] = get_headlined_by_project_paths(
                     conn,
                     sorted(paths),
-                    limit=PROJECT_GROUP_CANDIDATE_LIMIT,
+                    since=since,
+                    until=until,
                 )
     finally:
         conn.close()
@@ -246,11 +248,11 @@ def build_recent_context(cwd: str) -> str | None:
     same_project = [s for s in same_candidates if _session_has_clean_transcript(s)][:SAME_PROJECT_LIMIT]
     group_sections: list[tuple[str, list[dict[str, Any]]]] = []
     for group in matching_groups:
-        sessions = [
+        sessions = select_weekly_sessions([
             session for session in group_candidates[group["name"]]
             if os.path.abspath(session["project_path"]) != project_root
             and _session_has_clean_transcript(session)
-        ][:PROJECT_GROUP_LIMIT]
+        ], limit=PROJECT_GROUP_LIMIT, ensure_project_coverage=True)
         if sessions:
             group_sections.append((group["name"], sessions))
 
@@ -262,7 +264,7 @@ def build_recent_context(cwd: str) -> str | None:
         if session.get("project_path") not in excluded_group_paths
         and _session_has_clean_transcript(session)
     ]
-    cross_project = rank_cross_project_sessions(cross_existing)[:CROSS_PROJECT_LIMIT]
+    cross_project = select_weekly_sessions(cross_existing, limit=CROSS_PROJECT_LIMIT)
 
     grouped_sessions = [session for _name, sessions in group_sections for session in sessions]
     if not same_project and not grouped_sessions and not cross_project:
@@ -288,14 +290,14 @@ def build_recent_context(cwd: str) -> str | None:
         lines.extend(f"- {_format_session(session, include_project=False)}" for session in same_project)
 
     for group_name, sessions in group_sections:
-        lines.append(f"\n## {group_name} group (latest {len(sessions)})")
+        lines.append(f"\n## {group_name} group (top {len(sessions)} from the last {RECENT_DAYS} days)")
         lines.extend(
             f"- {_format_session(session, include_branch=False)}"
             for session in sessions
         )
 
     if cross_project:
-        lines.append(f"\n## Other projects (top {len(cross_project)} from the last {CROSS_PROJECT_DAYS} days)")
+        lines.append(f"\n## Other projects (top {len(cross_project)} from the last {RECENT_DAYS} days)")
         lines.extend(
             f"- {_format_session(session, include_branch=False)}"
             for session in cross_project
