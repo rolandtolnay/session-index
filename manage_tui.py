@@ -21,6 +21,38 @@ SORT_LABELS = {
 }
 BAND_LABELS = {None: "Any substance", "substantial": "Substantial", "useful": "Useful",
                "unknown": "Unknown", "low_value": "Low-value"}
+FILTER_CATEGORIES = ("project", "dates", "source", "visibility", "substance")
+FILTER_LABELS = ("Project", "Date", "Provider", "Visibility", "More")
+HELP_LINES = [
+    "/          Search; Enter applies, Esc cancels",
+    "f          Filter; type a project, Enter applies",
+    "Tab        Next filter category (Shift+Tab back)",
+    "Ctrl+R     Clear filters inside the picker",
+    "s          Sort order; * marks the current choice",
+    "c          Reset search, filters, and sort",
+    "↑↓ / j k   Select a session",
+    "←→ / p n   Previous / next page",
+    "PgUp/PgDn  Scroll selected preview",
+    "Tab        In the list: toggle all / hidden",
+    "h          Hide / unhide selected session",
+    "d          Delete (full session ID required)",
+    "r          Refresh, keeping search and filters",
+    "q / Esc    Quit (Esc first dismisses a panel)",
+    "", "SEARCH",
+    "Every word must match; partial words work.",
+    "Typos use near matches only if exact matches fail.",
+    "Search covers titles, summaries, user prompts,",
+    "projects, files, and IDs—not raw or assistant text.",
+    "", "FILTERS & SORTING",
+    "Each filter choice applies immediately on Enter.",
+    "Choose All / Any to clear just that category.",
+    "Custom dates are inclusive local start dates.",
+    "More contains Substance Band: reference value,",
+    "not length. Unknown means not yet assessed.",
+    "Automatic sort: newest browsing, best match searching.",
+    "Substance sort: substantial, useful, unknown,",
+    "then low-value; newest first within each band.",
+]
 
 
 def edit_input(text: str, cursor: int, key) -> tuple[str, int]:
@@ -94,8 +126,7 @@ class SessionManager:
         self.approximate = False
         self.panel = None
         self.panel_selected = 0
-        self.draft = self.filters
-        self.advanced = False
+        self.help_scroll = 0
         self.input = ""
         self.cursor = 0
         self.panel_error = ""
@@ -146,33 +177,45 @@ class SessionManager:
             self.input = self.filters.query
             self.cursor = len(self.input)
         elif panel == "filters":
-            self.draft = self.filters
-            self.advanced = self.filters.substance is not None
-        elif panel == "project":
             self.input, self.cursor = "", 0
             self.projects = [row[0] for row in self.conn.execute(f"""
                 SELECT DISTINCT COALESCE(project, '') FROM sessions
                 WHERE {TOP_LEVEL_SESSION_PREDICATE}
                 ORDER BY COALESCE(project, '') COLLATE NOCASE, COALESCE(project, '')
             """)]
+            self.select_category("project")
         elif panel == "range":
-            self.date_inputs = [self.draft.since, self.draft.until]
+            self.date_inputs = [self.filters.since, self.filters.until]
             self.date_field = 0
             self.cursor = len(self.date_inputs[0])
-        if panel in ("sort", "source", "visibility", "substance", "project"):
-            value = self.sort if panel == "sort" else getattr(self.draft, panel)
-            self.panel_selected = next((i for i, (key, _) in enumerate(self.panel_options()) if key == value), 0)
+        elif panel == "sort":
+            self.select_current_option()
+        elif panel == "help":
+            self.help_scroll = 0
 
-    def filter_rows(self):
-        rows = [("project", "Project", self.draft.project if self.draft.project is not None else "All projects"),
-                ("dates", "Started", self.date_label(self.draft)),
-                ("source", "Provider", {None: "All providers", "claude": "Claude", "pi": "Pi", "codex": "Codex", "": "Unknown"}.get(self.draft.source, self.draft.source)),
-                ("visibility", "Visibility", self.draft.visibility.capitalize()),
-                ("advanced", "Advanced", "Collapse" if self.advanced else "Substance filter…")]
-        if self.advanced:
-            rows.append(("substance", "Substance", BAND_LABELS[self.draft.substance]))
-        rows += [("apply", "Apply filters", "Enter"), ("clear", "Clear filters", "Keep search and sort")]
-        return rows
+    def date_presets(self):
+        today = date.today()
+        return {"any": ("", ""), "today": (today.isoformat(), today.isoformat()),
+                **{str(days): ((today - timedelta(days=days - 1)).isoformat(), today.isoformat())
+                   for days in (7, 30, 90)}}
+
+    def current_option(self):
+        if self.panel == "sort":
+            return self.sort
+        if self.panel == "dates":
+            bounds = (self.filters.since, self.filters.until)
+            return next((key for key, value in self.date_presets().items() if value == bounds), "custom")
+        return getattr(self.filters, self.panel)
+
+    def select_current_option(self):
+        current = self.current_option()
+        self.panel_selected = next((i for i, (key, _) in enumerate(self.panel_options()) if key == current), 0)
+
+    def select_category(self, category):
+        self.panel, self.panel_error = category, ""
+        if category == "project":
+            self.cursor = len(self.input)
+        self.select_current_option()
 
     @staticmethod
     def date_label(filters):
@@ -185,10 +228,10 @@ class SessionManager:
         return "Any date"
 
     def panel_options(self):
-        if self.panel == "filters":
-            return [(key, f"{label}: {value or 'Unknown project'}") for key, label, value in self.filter_rows()]
         if self.panel == "project":
-            return [(None, "All projects")] + [(p, p or "Unknown project") for p in self.projects if self.input.casefold() in p.casefold()]
+            options = [(p, p or "Unknown project") for p in self.projects
+                       if self.input.casefold() in (p or "Unknown project").casefold()]
+            return options if self.input else [(None, "All projects")] + options
         if self.panel == "dates":
             return [("any", "Any date"), ("today", "Today"), ("7", "Past 7 days"),
                     ("30", "Past 30 days"), ("90", "Past 90 days"), ("custom", "Custom range…")]
@@ -199,26 +242,42 @@ class SessionManager:
         if self.panel == "substance":
             return list(BAND_LABELS.items())
         if self.panel == "sort":
-            return [(key, label + (" · best match for searches" if key == "auto" else "")) for key, label in SORT_LABELS.items() if key != "relevance" or self.filters.query]
+            return [(key, label) for key, label in SORT_LABELS.items() if key != "relevance" or self.filters.query]
         return []
 
-    def close_picker(self):
-        previous = "dates" if self.panel == "range" else self.panel
-        self.panel, self.panel_error = "filters", ""
-        self.panel_selected = next((i for i, row in enumerate(self.filter_rows()) if row[0] == previous), 0)
+    def apply_filter(self, **changes):
+        self.filters = replace(self.filters, **changes)
+        self.panel = None
+        self.reset_position()
+        self.message("Filter applied. f adds or changes a filter · c resets the view.")
 
     def handle_panel_key(self, key):
         if key in ("\x1b", "\x03"):
-            if self.panel in ("search", "filters", "sort", "help"):
-                self.panel = None
+            if self.panel == "range":
+                self.select_category("dates")
             else:
-                self.close_picker()
+                self.panel = None
             return
         enter = key in ("\n", "\r", curses.KEY_ENTER)
         if self.panel == "help":
             if key in ("?", "q") or enter:
                 self.panel = None
+            elif key in (curses.KEY_DOWN, "j", curses.KEY_NPAGE):
+                self.help_scroll = min(len(HELP_LINES) - 1, self.help_scroll + (8 if key == curses.KEY_NPAGE else 1))
+            elif key in (curses.KEY_UP, "k", curses.KEY_PPAGE):
+                self.help_scroll = max(0, self.help_scroll - (8 if key == curses.KEY_PPAGE else 1))
             return
+        if self.panel in FILTER_CATEGORIES:
+            if key in ("\t", curses.KEY_BTAB):
+                delta = 1 if key == "\t" else -1
+                self.select_category(FILTER_CATEGORIES[(FILTER_CATEGORIES.index(self.panel) + delta) % len(FILTER_CATEGORIES)])
+                return
+            if key == "\x12":
+                self.filters = ManageFilters(query=self.filters.query)
+                self.panel = None
+                self.reset_position()
+                self.message("Filters cleared. Search and sort kept.")
+                return
         if self.panel == "search":
             if enter:
                 self.filters = replace(self.filters, query=self.input.strip())
@@ -240,8 +299,7 @@ class SessionManager:
                 except ValueError:
                     self.panel_error = "Use YYYY-MM-DD; From must not be after Through."
                 else:
-                    self.draft = replace(self.draft, since=since, until=until)
-                    self.close_picker()
+                    self.apply_filter(since=since, until=until)
             elif enter or key in ("\t", curses.KEY_UP, curses.KEY_DOWN, curses.KEY_BTAB):
                 self.date_field = 1 - self.date_field
                 self.cursor = len(self.date_inputs[self.date_field])
@@ -252,23 +310,11 @@ class SessionManager:
         options = self.panel_options()
         if key in (curses.KEY_UP, curses.KEY_DOWN, "\t", curses.KEY_BTAB) or (self.panel != "project" and key in ("j", "k")):
             delta = -1 if key in (curses.KEY_UP, curses.KEY_BTAB, "k") else 1
-            self.panel_selected = (self.panel_selected + delta) % len(options)
-        elif enter:
+            if options:
+                self.panel_selected = (self.panel_selected + delta) % len(options)
+        elif enter and options:
             value = options[self.panel_selected][0]
-            if self.panel == "filters":
-                if value == "apply":
-                    self.filters, self.panel = self.draft, None
-                    self.reset_position()
-                    self.message("Filters applied. c resets search, filters, and sort.")
-                elif value == "clear":
-                    self.draft = ManageFilters(query=self.draft.query)
-                    self.advanced = False
-                    self.panel_selected = 0
-                elif value == "advanced":
-                    self.advanced = not self.advanced
-                else:
-                    self.open_panel(value)
-            elif self.panel == "sort":
+            if self.panel == "sort":
                 self.sort, self.panel = value, None
                 self.reset_position()
                 self.message("Sort updated.")
@@ -276,18 +322,15 @@ class SessionManager:
                 if value == "custom":
                     self.open_panel("range")
                 else:
-                    today = date.today()
-                    since = "" if value == "any" else (today - timedelta(days=0 if value == "today" else int(value) - 1)).isoformat()
-                    self.draft = replace(self.draft, since=since, until="" if value == "any" else today.isoformat())
-                    self.close_picker()
+                    since, until = self.date_presets()[value]
+                    self.apply_filter(since=since, until=until)
             else:
-                self.draft = replace(self.draft, **{self.panel: value})
-                self.close_picker()
+                self.apply_filter(**{self.panel: value})
         elif self.panel == "project":
             previous_input = self.input
             self.input, self.cursor = edit_input(self.input, self.cursor, key)
             if self.input != previous_input:
-                self.panel_selected = 1 if len(self.panel_options()) > 1 and self.input else 0
+                self.panel_selected = 0
 
     def message(self, text, *, error=False):
         self.status, self.status_error = text, error
@@ -519,70 +562,109 @@ class SessionManager:
     def draw_panel(self, screen):
         screen.erase()
         height, columns = screen.getmaxyx()
-        width = min(78, columns - 6)
+        width = min(84, columns - 6)
         x = (columns - width) // 2
-        titles = {"search": "Search conversations", "filters": "Filter conversations",
-                  "sort": "Sort conversations", "project": "Choose project", "dates": "Session start date",
-                  "range": "Custom start-date range", "source": "Choose provider",
-                  "visibility": "Choose visibility", "substance": "Substance Band", "help": "Keyboard guide"}
+        top = max(3, (height - 24) // 2)
+        bottom = min(height - 4, top + 20)
+        left, content_width = x + 2, width - 4
+        filtering = self.panel in FILTER_CATEGORIES
+        title = "Filter conversations" if filtering else {
+            "search": "Search conversations", "sort": "Sort conversations",
+            "range": "Filter · Custom dates", "help": "Keyboard & search guide",
+        }[self.panel]
         self.put(screen, 1, 2, "SESSION INDEX", self.styles["accent"])
-        self.rule(screen, 3, x, width, self.styles["muted"], corners="╭╮")
-        self.put(screen, 4, x + 2, titles[self.panel], curses.A_BOLD, width - 4)
-        bottom = height - 3
+        self.rule(screen, top, x, width, self.styles["muted"], corners="╭╮")
+        self.put(screen, top + 1, left, title, curses.A_BOLD, content_width)
         self.rule(screen, bottom, x, width, self.styles["muted"], corners="╰╯")
-        hint = "↑↓ select · Enter choose · Esc back"
+        hint, secondary_hint = "Enter apply · Esc cancel", ""
+
+        if filtering:
+            tab_x = left
+            for category, label in zip(FILTER_CATEGORIES, FILTER_LABELS):
+                active = self.panel == category
+                # Brackets and the More separator retain hierarchy without color.
+                tab = f"[{label}]" if active else label
+                if category == "substance":
+                    self.put(screen, top + 3, tab_x, "| ", self.styles["muted"])
+                    tab_x += 2
+                self.put(screen, top + 3, tab_x, tab,
+                         self.styles["accent"] if active else self.styles["muted"])
+                tab_x += len(tab) + 2
+            hint = "Tab category · ↑↓ choose · Enter set · Esc cancel"
+            secondary_hint = "Shift+Tab back · Ctrl+R clear filters"
+
         if self.panel == "search":
-            self.draw_input(screen, 7, x + 2, self.input, self.cursor, width - 4)
-            lines = ["Search words across the whole filtered history.", "Partial words work; typos use near-match fallback.",
-                     "Titles, summaries, prompts, projects, files, IDs.", "Not raw transcripts or assistant messages.", "", "All words must match. No special query syntax."]
-            for i, line in enumerate(lines):
-                self.put(screen, 10 + i, x + 2, line, self.styles["muted"], width - 4)
+            self.put(screen, top + 3, left, "WORDS / FILE / SESSION ID", self.styles["muted"], content_width)
+            self.draw_input(screen, top + 4, left, self.input, self.cursor, content_width)
+            self.rule(screen, top + 5, left, content_width, self.styles["muted"])
+            self.put(screen, top + 7, left, "All words · Partial matches · Typo fallback", self.styles["muted"], content_width)
+            self.put(screen, top + 9, left, "WITHIN", self.styles["muted"], content_width)
+            for i, line in enumerate(wrapped(self.scope_label(), content_width)[:3]):
+                self.put(screen, top + 10 + i, left, line, width=content_width)
             hint = "Enter search · Esc cancel · Ctrl+U clear"
         elif self.panel == "range":
-            self.put(screen, 6, x + 2, "Local dates · YYYY-MM-DD · blank = unbounded", self.styles["muted"], width - 4)
-            for i, label in enumerate(("From", "Through (inclusive)")):
-                y = 9 + i * 4
-                self.put(screen, y, x + 2, label, curses.A_BOLD, width - 4)
+            self.put(screen, top + 3, left, "LOCAL START DATES · YYYY-MM-DD", self.styles["muted"], content_width)
+            for i, label in enumerate(("FROM", "THROUGH · inclusive")):
+                y = top + 5 + i * 4
+                self.put(screen, y, left, label, self.styles["muted"], content_width)
                 if i == self.date_field:
-                    self.draw_input(screen, y + 1, x + 2, self.date_inputs[i], self.cursor, width - 4)
+                    self.draw_input(screen, y + 1, left, self.date_inputs[i], self.cursor, content_width)
                 else:
-                    self.put(screen, y + 1, x + 2, self.date_inputs[i] or "Any date", self.styles["muted"], width - 4)
-            hint = "Tab field · Enter next/done · Esc back"
+                    self.put(screen, y + 1, left, self.date_inputs[i] or "Any date", width=content_width)
+                self.rule(screen, y + 2, left, content_width, self.styles["muted"])
+            hint = "Tab field · Enter next/set · Esc back"
+            secondary_hint = "Blank = unbounded · Ctrl+U clears this field"
         elif self.panel == "help":
-            lines = ["/          Search (Enter applies; Esc cancels)", "f          Filters (choose Apply filters to save)",
-                     "s          Sort order", "c          Reset search, filters, and sort", "↑↓ / j k   Select a session",
-                     "←→ / p n   Previous / next page", "PgUp/PgDn  Scroll selected preview", "Tab        Toggle all / hidden; keep other filters",
-                     "h          Hide / unhide selected session", "d          Delete (full session ID required)",
-                     "r          Refresh, keeping search and filters", "q / Esc    Quit (or dismiss the current panel)"]
-            for i, line in enumerate(lines):
-                self.put(screen, 6 + i, x + 2, line, width=width - 4)
-            hint = "Enter / Esc close"
+            start_y = top + 3
+            capacity = bottom - start_y - 1
+            self.help_scroll = min(self.help_scroll, max(0, len(HELP_LINES) - capacity))
+            for i, line in enumerate(HELP_LINES[self.help_scroll:self.help_scroll + capacity]):
+                style = self.styles["accent"] if line.isupper() else 0
+                self.put(screen, start_y + i, left, line, style, content_width)
+            self.put(screen, bottom - 1, left, f"{self.help_scroll + 1}–{min(len(HELP_LINES), self.help_scroll + capacity)} / {len(HELP_LINES)}", self.styles["muted"], content_width)
+            hint = "↑↓ / PgUp/PgDn scroll · Enter / Esc close"
         else:
-            start_y = 7
-            if self.panel == "project":
-                self.draw_input(screen, 6, x + 2, self.input, self.cursor, width - 4)
-                start_y = 8
-                hint = "Type to narrow · ↑↓ select · Enter choose · Esc back"
-            elif self.panel == "filters":
-                self.put(screen, 6, x + 2, "Changes stay pending until Apply filters.", self.styles["muted"], width - 4)
-                start_y = 8
-                hint = "↑↓ select · Enter edit/apply · Esc discard"
-            elif self.panel == "sort":
-                self.put(screen, 6, x + 2, "Substance: substantial → useful → unknown → low-value", self.styles["muted"], width - 4)
-            elif self.panel == "substance":
-                self.put(screen, 6, x + 2, "Reference value, not length. Unknown is unassessed.", self.styles["muted"], width - 4)
             options = self.panel_options()
-            capacity = max(1, bottom - start_y - 2)
+            if self.panel == "project":
+                self.put(screen, top + 5, left, "NARROW PROJECTS", self.styles["muted"], content_width)
+                self.draw_input(screen, top + 6, left, self.input, self.cursor, content_width)
+                if not self.input:
+                    self.put(screen, top + 6, left + 2, "Type a project name…", self.styles["muted"], content_width - 2)
+                self.rule(screen, top + 7, left, content_width, self.styles["muted"])
+                caption = "PROJECTS"
+            else:
+                value = self.date_label(self.filters) if self.panel == "dates" else next(
+                    (label for key, label in options if key == self.current_option()), "")
+                self.put(screen, top + 5, left, "CURRENT", self.styles["muted"], content_width)
+                self.put(screen, top + 6, left, value, self.styles["accent"], content_width)
+                caption = {"dates": "STARTED", "source": "PROVIDER", "visibility": "VISIBILITY",
+                           "substance": "SUBSTANCE · REFERENCE VALUE", "sort": "ORDER"}[self.panel]
+            self.put(screen, top + 8, left, caption, self.styles["muted"], content_width - 12)
+            self.put(screen, top + 8, left + content_width - 9, "* current", self.styles["muted"], 9)
+            start_y = top + 9
+            capacity = max(1, bottom - start_y - 1)
             start = max(0, min(self.panel_selected - capacity + 1, len(options) - capacity))
-            for i, (_, label) in enumerate(options[start:start + capacity], start):
+            current = self.current_option()
+            for i, (value, label) in enumerate(options[start:start + capacity], start):
                 active = i == self.panel_selected
-                self.put(screen, start_y + i - start, x + 2, ("› " if active else "  ") + plain(label),
-                         self.styles["selected"] if active else 0, width - 4)
-            if len(options) > capacity:
-                self.put(screen, bottom - 1, x + 2, f"{self.panel_selected + 1}/{len(options)} · ↑↓ scroll", self.styles["muted"], width - 4)
+                style = self.styles["selected"] if active else 0
+                y = start_y + i - start
+                if active:
+                    try:
+                        screen.hline(y, left, " ", content_width, style)
+                    except curses.error:
+                        pass
+                prefix = ("› " if active else "  ") + ("* " if value == current else "  ")
+                self.put(screen, y, left, prefix + plain(label), style, content_width)
+            if not options:
+                self.put(screen, start_y, left, "No matching projects.", width=content_width)
+                self.put(screen, start_y + 2, left, "Ctrl+U clears the name; Esc cancels.", self.styles["muted"], content_width)
+            elif len(options) > capacity:
+                self.put(screen, bottom - 1, left, f"{self.panel_selected + 1}/{len(options)} · ↑↓ scroll", self.styles["muted"], content_width)
         if self.panel_error:
-            self.put(screen, bottom - 2, x + 2, self.panel_error, self.styles["error"], width - 4)
-        self.put(screen, height - 2, 2, hint, self.styles["accent"], columns - 4)
+            self.put(screen, bottom - 2, left, self.panel_error, self.styles["error"], content_width)
+        self.put(screen, bottom + 1, x, hint, self.styles["accent"], width)
+        self.put(screen, bottom + 2, x, secondary_hint, self.styles["muted"], width)
 
     def scope_label(self):
         filters = self.filters

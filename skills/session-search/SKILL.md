@@ -158,7 +158,23 @@ Each page shows up to 20 sessions. Search and filters cover the full inventory, 
 
 Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It does not search raw transcripts or assistant messages. The preview shows matching excerpts.
 
-Press `f` to open the filters. You can search for a project or filter by local session-start date, provider, and visibility. Date options include presets and an inclusive custom range. Advanced filters include Substance Band, where Unknown is separate from Low-value. Select Apply filters to use your changes, or press Esc to discard them.
+Press `f` to open the filter picker. It opens with Project selected. Type part of a project name, then press Enter to apply the filter and return to the session list.
+
+Use Tab or Shift+Tab to switch between these categories:
+
+- project
+- local session-start date
+- provider
+- visibility
+- More, which contains Substance Band
+
+The date category includes presets and an inclusive custom range. Unknown substance is separate from Low-value.
+
+Each choice applies immediately, so there is no separate Apply step. Press Esc to cancel the current choice. When you are entering custom dates, press Esc to return to the date choices without applying changes.
+
+An asterisk marks the applied value, while the highlight marks the current candidate. Choose All/Any to clear one category. To clear all filters while keeping the search and sort settings, press Ctrl+R inside the picker.
+
+From the session list, press `?` to open detailed help.
 
 Press `s` to change the sort order. Automatic sorts by newest first while browsing and by best match while searching. You can also choose newest, oldest, best match during search, or substance first. Substance sorting orders sessions by substantial, useful, unknown, and low-value. Within each band, it shows the newest sessions first.
 
@@ -168,7 +184,7 @@ Use these controls:
 - ←/→ or p/n to change pages.
 - / to search; f for filters; s for sorting.
 - c to reset search, filters, and sorting; ? for keyboard help.
-- Tab to switch between all and hidden sessions, keeping other filters.
+- Tab in the session list to switch between all and hidden sessions, keeping other filters.
 - h to hide or unhide a session.
 - d to open the deletion confirmation.
 - q to quit.

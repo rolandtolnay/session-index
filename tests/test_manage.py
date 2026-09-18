@@ -335,25 +335,21 @@ def test_search_is_inventory_wide_and_input_never_dispatches_actions(store):
     assert ui.offset == 0 and ui.total == 1
 
 
-def test_filters_are_composable_drafts_and_survive_refresh_and_hide(store):
+def test_filters_apply_directly_and_survive_refresh_and_hide(store):
     conn, _ = store
     seed(store, "one", project="alpha", source="pi")
     seed(store, "two", project="beta", source="claude")
     ui = SessionManager(conn, cli._delete_managed_session)
-    keys(ui, "f")
-    choose(ui, "project")
-    keys(ui, "alp\n")
-    assert ui.draft.project == "alpha" and ui.total == 2
+    keys(ui, "falp")
+    assert ui.filters.project is None and ui.total == 2
     keys(ui, "\x1b")
-    assert ui.filters.project is None
-    keys(ui, "f")
-    choose(ui, "project")
-    keys(ui, "alp\n")
-    choose(ui, "source")
+    assert ui.panel is None and ui.filters.project is None
+    keys(ui, "falp\n")
+    assert ui.panel is None and ui.total == 1
+    keys(ui, "f\t\t")
     choose(ui, "pi")
-    choose(ui, "visibility")
+    keys(ui, "f\t\t\t")
     choose(ui, "visible")
-    choose(ui, "apply")
     assert ui.total == 1 and ui.sessions[0]["session_id"] == "one"
     keys(ui, "rh")
     assert ui.total == 0 and ui.filters.project == "alpha"
@@ -370,34 +366,30 @@ def test_project_selection_survives_resize_and_cursor_only_events(store):
     seed(store, "one", project="alpha")
     seed(store, "two", project="beta")
     ui = SessionManager(conn, cli._delete_managed_session)
-    keys(ui, "f\n")
+    keys(ui, "f")
     ui.handle_key(curses.KEY_DOWN)
     ui.handle_key(curses.KEY_DOWN)
     ui.handle_key(curses.KEY_RESIZE)
     ui.handle_key(curses.KEY_LEFT)
     ui.handle_key("\n")
-    choose(ui, "apply")
-    assert ui.filters.project == "beta"
+    assert ui.panel is None and ui.filters.project == "beta"
     assert [s["session_id"] for s in ui.sessions] == ["two"]
 
 
-def test_custom_dates_validate_without_losing_draft(store):
+def test_custom_dates_validate_before_direct_apply_and_cancel_safely(store):
     conn, _ = store
     seed(store, "one", started_at="2026-09-18T12:00:00+00:00")
     seed(store, "two", started_at="2026-08-01T12:00:00+00:00")
     ui = SessionManager(conn, cli._delete_managed_session)
-    keys(ui, "f")
-    choose(ui, "dates")
+    keys(ui, "f\t")
     choose(ui, "custom")
     keys(ui, "2026-09-01\t2026-08-31\n")
     assert ui.panel == "range" and ui.panel_error
     assert ui.total == 2
     keys(ui, "\x152026-09-30\n")
-    assert ui.panel == "filters"
-    choose(ui, "apply")
+    assert ui.panel is None
     assert ui.total == 1 and ui.sessions[0]["session_id"] == "one"
-    keys(ui, "f")
-    choose(ui, "dates")
+    keys(ui, "f\t")
     choose(ui, "custom")
     keys(ui, "\x152026-02-30\n\n")
     assert ui.panel == "range" and ui.panel_error
@@ -420,14 +412,57 @@ def test_sort_reset_and_empty_search_remain_navigable(store):
     keys(ui, "c")
     assert ui.sort == "auto" and ui.sessions[0]["session_id"] == "new"
     keys(ui, "f")
-    choose(ui, "advanced")
-    choose(ui, "substance")
+    ui.handle_key(curses.KEY_BTAB)  # Secondary category without an expansion step.
     choose(ui, "substantial")
-    choose(ui, "apply")
     assert [s["session_id"] for s in ui.sessions] == ["old"]
     keys(ui, "?dhrq")
     assert ui.panel is None and ui.delete_target is None
     assert db.get_session(conn, "old")["hidden_from_recents"] == 0
+
+
+def test_switching_categories_cancels_candidates_and_current_is_not_focus(store):
+    conn, _ = store
+    seed(store, "one", project="alpha")
+    seed(store, "two", project="beta")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "falp\t")
+    assert ui.panel == "dates" and ui.filters.project is None
+    ui.handle_key(curses.KEY_BTAB)
+    assert ui.panel == "project" and ui.input == "alp"
+    ui.handle_key("\n")
+    assert ui.filters.project == "alpha"
+    keys(ui, "f")
+    ui.handle_key(curses.KEY_DOWN)  # Focus beta, but alpha is still applied.
+    assert ui.panel_options()[ui.panel_selected][0] == "beta"
+    assert ui.current_option() == "alpha"
+    keys(ui, "\x1b")
+    assert ui.filters.project == "alpha"
+    keys(ui, "fhdqrzzzz\n")
+    assert ui.panel == "project" and not ui.panel_options()
+    assert ui.filters.project == "alpha" and ui.delete_target is None
+    assert db.get_session(conn, "one")["hidden_from_recents"] == 0
+    ui.handle_key(curses.KEY_DOWN)  # No choices is a safe, cancellable state.
+    keys(ui, "\x15\x1b")
+    assert ui.panel is None and ui.filters.project == "alpha"
+
+
+def test_clear_category_or_all_filters_preserves_other_view_settings(store):
+    conn, _ = store
+    seed(store, "one", project="alpha", source="pi")
+    seed(store, "two", project="beta", source="claude")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "/experiment\ns")
+    choose(ui, "oldest")
+    keys(ui, "falp\nf\t\t")
+    choose(ui, "pi")
+    keys(ui, "f")
+    choose(ui, None)  # All projects clears only this facet.
+    assert ui.filters.project is None and ui.filters.source == "pi"
+    assert ui.total == 1
+    keys(ui, "f\x12")  # Clear filters, not search or sorting.
+    assert ui.panel is None and ui.total == 2
+    assert ui.filters.query == "experiment" and ui.sort == "oldest"
+    assert ui.filters.source is None
 
 
 def test_terminal_text_cannot_emit_controls_or_drop_wide_characters():

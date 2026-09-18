@@ -81,7 +81,8 @@ def test_confirmation_borders_with_repeat_capable_terminal(tmp_path, columns, ro
 
 
 @pytest.mark.parametrize("columns,rows", [(60, 24), (150, 42)])
-def test_search_filter_sort_and_resize_in_terminal(tmp_path, columns, rows):
+@pytest.mark.parametrize("no_color", [False, True])
+def test_search_filter_sort_and_resize_in_terminal(tmp_path, columns, rows, no_color):
     if not shutil.which("tmux"):
         pytest.skip("terminal interaction requires tmux")
     socket = f"session-index-discovery-{uuid.uuid4().hex}"
@@ -98,8 +99,11 @@ def test_search_filter_sort_and_resize_in_terminal(tmp_path, columns, rows):
         for char in value:
             key(char, literal=True)
 
-    def capture():
-        return tmux("capture-pane", "-p", "-t", "fixture")
+    def capture(name=None):
+        rendered = tmux("capture-pane", "-p", "-t", "fixture")
+        if name:
+            (tmp_path / f"{name}.txt").write_text(rendered)
+        return rendered
 
     repo = str(Path(__file__).resolve().parents[1])
     script = tmp_path / "browse.py"
@@ -140,34 +144,50 @@ def test_search_filter_sort_and_resize_in_terminal(tmp_path, columns, rows):
     """))
     try:
         subprocess.run([*base, "new-session", "-d", "-s", "fixture", "-x", str(columns), "-y", str(rows),
-                        "env", "TERM=xterm-256color", sys.executable, str(script)], check=True)
+                        "env", "-u", "NO_COLOR", "TERM=xterm-256color",
+                        *(["NO_COLOR=1"] if no_color else []), sys.executable, str(script)], check=True)
         tmux("wait-for", "painted")
         assert "Unrelated deployment" in capture()
         text("/cobalt")
+        capture("search")
         key("Enter")
         rendered = capture()
         assert "Cobalt payments" in rendered and "Unrelated deployment" not in rendered
         text("s")
         key("Down")  # Explicit newest.
         key("Down")  # Oldest.
+        capture("sort")
         key("Enter")
         assert "Cobalt authentication" in capture() and "one" in capture()
         text("f")
-        key("Enter")  # Project.
+        capture("project")
         text("alpha")
-        key("Enter")
-        for _ in range(5):  # Apply filters (advanced collapsed).
-            key("Down")
-        key("Enter")
+        key("Enter")  # No category activation or separate Apply step.
         rendered = capture()
         assert "Cobalt authentication" in rendered and "Cobalt payments" not in rendered
+        text("f")
+        key("Down")  # Focus beta without applying it.
+        rendered = capture("project-candidate")
+        assert "* alpha" in rendered and "›   beta" in rendered
+        assert "* beta" not in rendered
+        tmux("resize-window", "-t", "fixture", "-x", "80" if columns == 150 else "150", "-y", "28")
+        key("C-l")
+        assert "›   beta" in capture()
+        key("Escape")
+        assert "Cobalt authentication" in capture()
+        text("f")
+        key("Tab")
+        capture("date")
+        key("Down")
+        key("Escape")  # Choosing another category/candidate changes nothing.
+        assert "Cobalt authentication" in capture()
         text("/zzzzzzzz")
         key("Enter")
         assert "Cobalt authentication" not in capture()
         text("c")
         assert "Unrelated deployment" in capture()
         text("/pending")
-        tmux("resize-window", "-t", "fixture", "-x", "80" if columns == 150 else "150", "-y", "28")
+        tmux("resize-window", "-t", "fixture", "-x", str(columns), "-y", str(rows))
         key("C-l")
         assert "pending" in capture()
         key("Escape")
