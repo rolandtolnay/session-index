@@ -172,7 +172,23 @@ Each page shows up to 20 sessions. Search and filters cover the full inventory, 
 
 Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It does not search raw transcripts or assistant messages. The preview shows matching excerpts.
 
-Press `f` to open the filters. You can search for a project or filter by local session-start date, provider, and visibility. Date options include presets and an inclusive custom range. Advanced filters include Substance Band, where Unknown is separate from Low-value. Select Apply filters to use your changes, or press Esc to discard them.
+Press `f` to open the filter picker. It opens with Project selected. Type part of a project name, then press Enter to apply the filter and return to the session list.
+
+Use Tab or Shift+Tab to switch between these categories:
+
+- project
+- local session-start date
+- provider
+- visibility
+- More, which contains Substance Band
+
+The date category includes presets and an inclusive custom range. Unknown substance is separate from Low-value.
+
+Each choice applies immediately, so there is no separate Apply step. Press Esc to cancel the current choice. When you are entering custom dates, press Esc to return to the date choices without applying changes.
+
+An asterisk marks the applied value, while the highlight marks the current candidate. Choose All/Any to clear one category. To clear all filters while keeping the search and sort settings, press Ctrl+R inside the picker.
+
+From the session list, press `?` to open detailed help.
 
 Press `s` to change the sort order. Automatic sorts by newest first while browsing and by best match while searching. You can also choose newest, oldest, best match during search, or substance first. Substance sorting orders sessions by substantial, useful, unknown, and low-value. Within each band, it shows the newest sessions first.
 
@@ -182,7 +198,7 @@ Use these controls:
 - ←/→ or p/n to change pages.
 - / to search; f for filters; s for sorting.
 - c to reset search, filters, and sorting; ? for keyboard help.
-- Tab to switch between all and hidden sessions, keeping other filters.
+- Tab in the session list to switch between all and hidden sessions, keeping other filters.
 - h to hide or unhide a session.
 - d to open the deletion confirmation.
 - q to quit.
@@ -286,18 +302,9 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 - Codex metadata: `~/.codex/session_index.jsonl`, `~/.codex/state_5.sqlite`
 - Active refresh jobs/state: `~/.session-index/refresh-jobs/{source}/{session-id}/`
 
-## Short-ID migration
+## Historical references
 
-Existing UUID-based or 12-hex-ID stores require an offline migration, not a source backfill. Stop agent sessions and detached indexing workers, then run:
-
-```bash
-uv run migrate_session_ids.py          # read-only inventory and collision checks
-uv run migrate_session_ids.py --apply  # back up, stage, verify, and migrate; resumes interruptions
-```
-
-Backups and a complete manifest remain under `~/.session-index/backups/short-ids-*/`. An `identity-migration.json` marker pauses indexing until migration completes; do not remove it during an interrupted migration. Re-run `--apply` to resume. For manual rollback, stop all writers and restore **all four** backup components (`sessions.db`, `transcripts/`, `refresh-jobs/`, `reference-ids.json`) together with the previous code; retain the backup until the cutover is verified.
-
-The migration preserves summaries and facts, renames generated artifacts, and normalizes recognized old artifact paths and Inspection References throughout generated text. Future rendering applies the same normalization. `reference-ids.json` retains the 12-to-16 mapping for generated-text rewriting only; it is not a lookup-alias registry. When upgrading 12-hex IDs, retain the prior migration backups until cutover so native identities for orphan artifacts and quoted references can be recovered. Unrecoverable artifact owners stop the migration; unknown historical references that never resolved remain literal. Native IDs, raw provider files/paths, unrelated UUIDs, logs, and historical backup/report files stay unchanged. No old-path symlinks or legacy canonical-ID lookup aliases are created; provider-native lookup remains available.
+Generated text rewrites recognized historical artifact paths and Inspection References while preserving native IDs and provider-owned paths. The `~/.session-index/reference-ids.json` file stores the 12-to-16-character mapping used for this rewriting, so keep it with the indexed store. This file is not a lookup-alias registry, and the process does not create old-path symlinks or legacy canonical-ID lookup aliases. Unknown historical references remain unchanged, and provider-native lookup remains available.
 
 ## Reset data
 
