@@ -58,11 +58,9 @@ Current-session lookup:
 | `hooks/session_end.py` | Claude SessionEnd: queues a forced final refresh |
 | `hooks/session_refresh.py` | Provider-neutral atomic refresh queue and detached-worker launcher |
 | `hooks/_session_refresh_worker.py` | Per-session deterministic/summary refresh coordinator |
-| `hooks/_session_end_worker.py` | Compatibility entry point for older Claude installs |
 | `hooks/pi_index.py` | Pi extension entry point for automatic turn/exit and manual full indexing |
 | `hooks/pi_context.py` | Pi extension entry point for recent-context system prompt injection |
 | `hooks/codex_stop.py` | Codex Stop: queue the latest rollout snapshot and exit immediately |
-| `hooks/_codex_index_worker.py` | Compatibility entry point delegating to the shared coordinator |
 | `pi-extension/index.ts` | Pi extension wiring for lifecycle events |
 | `pi-extension/session-index-env.ts` | Pi runtime environment helper for current-session lookup |
 | `current_session.py` | Exact current-session resolver using Session Index runtime env |

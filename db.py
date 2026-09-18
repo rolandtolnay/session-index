@@ -232,11 +232,6 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
     close = conn is None
     if conn is None:
         conn = get_connection()
-    from indexing_lock import require_indexing_enabled
-
-    for database in conn.execute("PRAGMA database_list"):
-        if database[1] == "main" and database[2]:
-            require_indexing_enabled(os.path.dirname(database[2]))
     conn.executescript(SCHEMA)
     conn.commit()
 

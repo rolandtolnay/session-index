@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -342,9 +343,7 @@ def index_source_transcript(
     """Index one provider-owned Source Transcript using explicit stage ownership."""
     import os
     from db import DB_PATH
-    from indexing_lock import indexing_lock, require_indexing_enabled
-
-    require_indexing_enabled(os.path.dirname(DB_PATH))
+    from indexing_lock import indexing_lock
 
     source = normalize_source(source)
     stages = frozenset(options.stages)
@@ -387,9 +386,10 @@ def index_source_transcript(
 
     # Summary-only refreshes do not write artifacts and must not delay the next
     # deterministic snapshot while an LLM call is in flight. DB upserts still
-    # guard ownership, and the shared store lock excludes migration.
-    artifact_owner = None if stages <= {IndexStage.SUMMARY} else session.session_id
-    with indexing_lock(os.path.dirname(DB_PATH), artifact_owner):
+    # guard ownership. Artifact-writing passes serialize per session.
+    lock = (nullcontext() if stages <= {IndexStage.SUMMARY}
+            else indexing_lock(os.path.dirname(DB_PATH), session.session_id))
+    with lock:
         return _index_qualified_session(source, path, stages, session, result)
 
 
@@ -398,8 +398,8 @@ def _index_qualified_session(
 ) -> IndexResult:
     from db import assert_session_identity, get_connection, init_db
 
-    # Serialize colliding IDs through the artifact writes and final DB commit.
-    # Migration holds the exclusive store lock; ordinary sessions share it.
+    # Check ownership before touching artifacts; artifact-writing callers hold
+    # the per-session lock through these writes and the final DB commit.
     identity_conn = get_connection()
     try:
         init_db(identity_conn)

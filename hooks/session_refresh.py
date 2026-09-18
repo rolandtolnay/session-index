@@ -143,26 +143,21 @@ def enqueue_refresh(
     transcript_path = os.path.realpath(os.path.expanduser(transcript_path))
     observed_at = time.time() if observed_at is None else float(observed_at)
 
-    from indexing_lock import indexing_lock
-
-    # Hooks must never wait on an offline migration. Their existing non-throwing
-    # boundary handles the paused/busy store without launching a stale worker.
-    with indexing_lock(os.path.dirname(REFRESH_JOBS_DIR), blocking=False):
-        pending_dir = os.path.join(session_job_dir(source, session_id), "pending")
-        os.makedirs(pending_dir, exist_ok=True)
-        suffix = _safe_component(event_id, "event")
-        filename = f"{time.time_ns()}-{os.getpid()}-{suffix}.json"
-        final_path = os.path.join(pending_dir, filename)
-        _atomic_json(final_path, {
-            "event_id": str(event_id or ""),
-            "force_summary": bool(force_summary),
-            "observed_at": observed_at,
-            "session_id": session_id,
-            "source": source,
-            "transcript_path": transcript_path,
-        })
-        _ensure_worker(source, session_id)
-        return final_path
+    pending_dir = os.path.join(session_job_dir(source, session_id), "pending")
+    os.makedirs(pending_dir, exist_ok=True)
+    suffix = _safe_component(event_id, "event")
+    filename = f"{time.time_ns()}-{os.getpid()}-{suffix}.json"
+    final_path = os.path.join(pending_dir, filename)
+    _atomic_json(final_path, {
+        "event_id": str(event_id or ""),
+        "force_summary": bool(force_summary),
+        "observed_at": observed_at,
+        "session_id": session_id,
+        "source": source,
+        "transcript_path": transcript_path,
+    })
+    _ensure_worker(source, session_id)
+    return final_path
 
 
 def main() -> None:

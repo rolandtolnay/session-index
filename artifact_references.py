@@ -93,7 +93,7 @@ def normalize_references(text: str, reference_ids: dict[str, str] | None = None)
 
 
 # Text owned by Session Index: native metadata and source paths are deliberately
-# absent. Used both for migration and future persistence to avoid drift.
+# absent. Used when persisting normalized rows during indexing.
 TEXT_COLUMNS = {
     "sessions": ("user_messages", "files_touched", "summary", "headline", "substance_reason",
                  "transcript_path", "tool_log_path", "subagent_transcripts"),
