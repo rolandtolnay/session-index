@@ -298,6 +298,138 @@ def test_preview_paging_makes_every_word_reachable_on_short_terminals(store, col
     assert words <= seen
 
 
+def keys(ui, text):
+    for key in text:
+        ui.handle_key(key)
+
+
+def choose(ui, value):
+    """Navigate a visible picker by its value, then activate it."""
+    target = next(i for i, option in enumerate(ui.panel_options()) if option[0] == value)
+    while ui.panel_selected != target:
+        ui.handle_key(curses.KEY_DOWN)
+    ui.handle_key("\n")
+
+
+def test_search_is_inventory_wide_and_input_never_dispatches_actions(store):
+    conn, _ = store
+    for i in range(24):
+        seed(store, f"s-{i:02}", headline="ordinary", summary="routine",
+             started_at=f"2026-09-{i + 1:02}T10:00:00Z")
+    seed(store, "target", headline="hqdr unusual authentication", summary="uncommon",
+         started_at="2025-01-01T00:00:00Z")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "/hqdr")
+    assert ui.panel == "search" and ui.delete_target is None
+    assert db.get_session(conn, "target")["hidden_from_recents"] == 0
+    assert ui.total == 25  # Draft input has not changed the result set.
+    keys(ui, "\n")
+    assert ui.total == 1 and ui.sessions[0]["session_id"] == "target"
+    keys(ui, "/\x15discard\x1b")
+    assert ui.filters.query == "hqdr" and ui.total == 1
+    keys(ui, "c")
+    assert ui.total == 25 and not ui.filters.query
+    ui.handle_key(curses.KEY_RIGHT)
+    assert ui.offset == 20
+    keys(ui, "/hqdr\n")
+    assert ui.offset == 0 and ui.total == 1
+
+
+def test_filters_are_composable_drafts_and_survive_refresh_and_hide(store):
+    conn, _ = store
+    seed(store, "one", project="alpha", source="pi")
+    seed(store, "two", project="beta", source="claude")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "f")
+    choose(ui, "project")
+    keys(ui, "alp\n")
+    assert ui.draft.project == "alpha" and ui.total == 2
+    keys(ui, "\x1b")
+    assert ui.filters.project is None
+    keys(ui, "f")
+    choose(ui, "project")
+    keys(ui, "alp\n")
+    choose(ui, "source")
+    choose(ui, "pi")
+    choose(ui, "visibility")
+    choose(ui, "visible")
+    choose(ui, "apply")
+    assert ui.total == 1 and ui.sessions[0]["session_id"] == "one"
+    keys(ui, "rh")
+    assert ui.total == 0 and ui.filters.project == "alpha"
+    keys(ui, "\t")
+    assert ui.total == 1 and ui.hidden_only
+    keys(ui, "h")
+    assert ui.total == 0
+    keys(ui, "\t")
+    assert ui.total == 1 and ui.filters.source == "pi"
+
+
+def test_project_selection_survives_resize_and_cursor_only_events(store):
+    conn, _ = store
+    seed(store, "one", project="alpha")
+    seed(store, "two", project="beta")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "f\n")
+    ui.handle_key(curses.KEY_DOWN)
+    ui.handle_key(curses.KEY_DOWN)
+    ui.handle_key(curses.KEY_RESIZE)
+    ui.handle_key(curses.KEY_LEFT)
+    ui.handle_key("\n")
+    choose(ui, "apply")
+    assert ui.filters.project == "beta"
+    assert [s["session_id"] for s in ui.sessions] == ["two"]
+
+
+def test_custom_dates_validate_without_losing_draft(store):
+    conn, _ = store
+    seed(store, "one", started_at="2026-09-18T12:00:00+00:00")
+    seed(store, "two", started_at="2026-08-01T12:00:00+00:00")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "f")
+    choose(ui, "dates")
+    choose(ui, "custom")
+    keys(ui, "2026-09-01\t2026-08-31\n")
+    assert ui.panel == "range" and ui.panel_error
+    assert ui.total == 2
+    keys(ui, "\x152026-09-30\n")
+    assert ui.panel == "filters"
+    choose(ui, "apply")
+    assert ui.total == 1 and ui.sessions[0]["session_id"] == "one"
+    keys(ui, "f")
+    choose(ui, "dates")
+    choose(ui, "custom")
+    keys(ui, "\x152026-02-30\n\n")
+    assert ui.panel == "range" and ui.panel_error
+    keys(ui, "\x1b\x1b")
+    assert ui.filters.since == "2026-09-01"
+
+
+def test_sort_reset_and_empty_search_remain_navigable(store):
+    conn, _ = store
+    seed(store, "old", started_at="2025-01-01T00:00:00Z", substance_band="substantial")
+    seed(store, "new", started_at="2026-01-01T00:00:00Z", substance_band="low_value")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "s")
+    choose(ui, "oldest")
+    assert ui.sessions[0]["session_id"] == "old"
+    keys(ui, "/nonexistentxyz\n")
+    assert ui.total == 0
+    keys(ui, "dhr")
+    assert ui.delete_target is None and ui.sessions == []
+    keys(ui, "c")
+    assert ui.sort == "auto" and ui.sessions[0]["session_id"] == "new"
+    keys(ui, "f")
+    choose(ui, "advanced")
+    choose(ui, "substance")
+    choose(ui, "substantial")
+    choose(ui, "apply")
+    assert [s["session_id"] for s in ui.sessions] == ["old"]
+    keys(ui, "?dhrq")
+    assert ui.panel is None and ui.delete_target is None
+    assert db.get_session(conn, "old")["hidden_from_recents"] == 0
+
+
 def test_terminal_text_cannot_emit_controls_or_drop_wide_characters():
     assert "\x1b" not in plain("hello\x1b[2Jworld\nnext")
     assert clipped("你好world", 5) == "你好w"

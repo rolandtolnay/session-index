@@ -154,13 +154,21 @@ Run `uv run cli.py manage` from the repository, or `uv run ~/.pi/agent/skills/se
 
 The full-screen terminal browser shows a compact session list beside the selected session’s preview. In narrower terminals, it stacks the list and preview. It uses readable local dates, a visible selection, and color accents. `NO_COLOR` disables colors.
 
-Each page contains up to 20 sessions. The list scrolls to keep the selection visible.
+Each page shows up to 20 sessions. Search and filters cover the full inventory, including sessions on other pages. The list scrolls to keep the selected session visible. The header shows the number of results, the active scope, and the sort order.
+
+Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It does not search raw transcripts or assistant messages. The preview shows matching excerpts.
+
+Press `f` to open the filters. You can search for a project or filter by local session-start date, provider, and visibility. Date options include presets and an inclusive custom range. Advanced filters include Substance Band, where Unknown is separate from Low-value. Select Apply filters to use your changes, or press Esc to discard them.
+
+Press `s` to change the sort order. Automatic sorts by newest first while browsing and by best match while searching. You can also choose newest, oldest, best match during search, or substance first. Substance sorting orders sessions by substantial, useful, unknown, and low-value. Within each band, it shows the newest sessions first.
 
 Use these controls:
 
 - ↑/↓ or j/k to select a session.
 - ←/→ or p/n to change pages.
-- Tab to switch between all and hidden sessions.
+- / to search; f for filters; s for sorting.
+- c to reset search, filters, and sorting; ? for keyboard help.
+- Tab to switch between all and hidden sessions, keeping other filters.
 - h to hide or unhide a session.
 - d to open the deletion confirmation.
 - q to quit.
