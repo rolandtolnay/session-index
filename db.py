@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     tool_log_path TEXT,
     subagent_transcripts TEXT,
     parent_session_path TEXT,
-    parent_native_session_id TEXT
+    parent_native_session_id TEXT,
+    hidden_from_recents INTEGER NOT NULL DEFAULT 0 CHECK (hidden_from_recents IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project_path_started_at
 ON sessions(project_path, started_at DESC);
@@ -255,6 +256,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         ("headline", "ALTER TABLE sessions ADD COLUMN headline TEXT"),
         ("substance_band", "ALTER TABLE sessions ADD COLUMN substance_band TEXT"),
         ("substance_reason", "ALTER TABLE sessions ADD COLUMN substance_reason TEXT"),
+        ("hidden_from_recents", "ALTER TABLE sessions ADD COLUMN hidden_from_recents INTEGER NOT NULL DEFAULT 0 CHECK (hidden_from_recents IN (0, 1))"),
     ]
     for _column, ddl in migrations:
         try:
@@ -576,6 +578,37 @@ def get_session(
     return None
 
 
+def list_manage_sessions(
+    conn: sqlite3.Connection, *, hidden_only: bool = False, offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Human management inventory, including hidden sessions, in pages of 20."""
+    rows = conn.execute(f"""
+        SELECT * FROM sessions
+        WHERE {TOP_LEVEL_SESSION_PREDICATE}
+          AND (? = 0 OR hidden_from_recents = 1)
+        ORDER BY julianday(started_at) DESC, session_id DESC
+        LIMIT 20 OFFSET ?
+    """, (int(hidden_only), offset))
+    return [dict(row) for row in rows]
+
+
+def set_hidden_from_recents(conn: sqlite3.Connection, session_id: str, hidden: bool) -> None:
+    """Set user-owned visibility; indexing upserts deliberately never write it."""
+    with conn:
+        cursor = conn.execute(
+            "UPDATE sessions SET hidden_from_recents = ? WHERE session_id = ?",
+            (int(hidden), session_id),
+        )
+        if not cursor.rowcount:
+            raise ValueError(f"Session no longer exists: {session_id}")
+
+
+def _visible_recent_predicate(conn: sqlite3.Connection) -> str:
+    # Context hooks can read an existing store before any writer migrates it.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    return "hidden_from_recents = 0" if "hidden_from_recents" in columns else "1"
+
+
 def get_recent_by_project(
     conn: sqlite3.Connection, project: str, limit: int = 5,
 ) -> list[dict[str, Any]]:
@@ -584,6 +617,7 @@ def get_recent_by_project(
         SELECT * FROM sessions
         WHERE project = :project
           AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND {_visible_recent_predicate(conn)}
         ORDER BY started_at DESC
         LIMIT :limit
     """, {"project": project, "limit": limit})
@@ -599,6 +633,7 @@ def get_recent_cross_project(
         WHERE started_at >= :since
         AND (:exclude = '' OR project != :exclude)
         AND {TOP_LEVEL_SESSION_PREDICATE}
+        AND {_visible_recent_predicate(conn)}
         ORDER BY started_at DESC
         LIMIT :limit
     """, {"since": since, "exclude": exclude_project, "limit": limit})
@@ -621,6 +656,7 @@ def get_headlined_by_project(
         SELECT * FROM sessions
         WHERE {identity_clause}
           AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND {_visible_recent_predicate(conn)}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY started_at DESC, session_id DESC
@@ -634,6 +670,7 @@ def get_headlined_project_paths(conn: sqlite3.Connection) -> list[str]:
         SELECT DISTINCT project_path FROM sessions
         WHERE project_path IS NOT NULL AND trim(project_path) != ''
           AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND {_visible_recent_predicate(conn)}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
     """)
@@ -659,6 +696,7 @@ def get_headlined_by_project_paths(
         WHERE project_path IN ({placeholders})
           AND julianday(started_at) BETWEEN julianday(?) AND julianday(?)
           AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND {_visible_recent_predicate(conn)}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY julianday(started_at) DESC, session_id DESC
@@ -675,6 +713,7 @@ def get_headlined_cross_project(
         WHERE julianday(started_at) BETWEEN julianday(:since) AND julianday(:until)
           AND project != :exclude
           AND {TOP_LEVEL_SESSION_PREDICATE}
+          AND {_visible_recent_predicate(conn)}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY julianday(started_at) DESC, session_id DESC

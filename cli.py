@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for session-index: find, inspect, query, backfill, status.
+"""CLI for session-index: find, inspect, query, manage, backfill, status.
 
 Use `query` for aggregates/custom SQL, `find` for compact evidence candidates,
 and `inspect` for scoped transcript/tool/subagent evidence text.
@@ -493,7 +493,7 @@ def _is_generated_artifact_path(path: str) -> bool:
     try:
         root = os.path.realpath(TRANSCRIPT_DIR)
         candidate = os.path.realpath(os.path.expanduser(path))
-        return os.path.commonpath([root, candidate]) == root
+        return candidate != root and os.path.commonpath([root, candidate]) == root
     except (OSError, ValueError):
         return False
 
@@ -531,17 +531,22 @@ def _other_session_references_path(conn, path: str, session_id: str) -> bool:
         """,
         (session_id,),
     ).fetchall()
+    target = os.path.realpath(os.path.expanduser(path))
+    candidates: list[str] = []
     for row in rows:
-        if path in {row["transcript_path"], row["tool_log_path"]}:
-            return True
-        if path in _split_artifact_paths(row["subagent_transcripts"]):
-            return True
-
-    row = conn.execute(
-        "SELECT 1 FROM subagent_runs WHERE parent_session_id != ? AND transcript_path = ? LIMIT 1",
-        (session_id, path),
-    ).fetchone()
-    return row is not None
+        candidates.extend([row["transcript_path"], row["tool_log_path"]])
+        candidates.extend(_split_artifact_paths(row["subagent_transcripts"]))
+    candidates.extend(
+        row["transcript_path"]
+        for row in conn.execute(
+            "SELECT transcript_path FROM subagent_runs WHERE parent_session_id != ?",
+            (session_id,),
+        )
+    )
+    return any(
+        candidate and os.path.realpath(os.path.expanduser(candidate)) == target
+        for candidate in candidates
+    )
 
 
 def _other_session_references_inside_dir(conn, path: str, session_id: str) -> bool:
@@ -882,6 +887,54 @@ def cmd_prune(args: argparse.Namespace) -> None:
         conn.close()
 
 
+# ── Interactive session management ──────────────────────────────────────────
+
+
+def _delete_managed_session(conn, session_id: str) -> dict:
+    """Delete a user-selected session, independent of low-value prune eligibility.
+
+    Serialize with artifact writers and retain the row if owned-file removal
+    fails, so cleanup can be retried. Files already removed are not rolled back.
+    Shared/out-of-store artifacts are retained and reported, never claimed deleted.
+    """
+    from indexing_lock import indexing_lock
+
+    with indexing_lock(os.path.dirname(DB_PATH), session_id), conn:
+        conn.execute("BEGIN IMMEDIATE")
+        session = _session_rows_by_id(conn, [session_id]).get(session_id)
+        if session is None:
+            raise ValueError(f"Session no longer exists: {session_id}")
+        artifacts = _session_artifacts(conn, session)
+        result = _delete_owned_generated_artifacts({"sessions": [{"artifacts": artifacts}]})
+        failed = [a["path"] for a in artifacts
+                  if a["deletable"] and a["path"] in result["skipped_artifacts"]]
+        if failed:
+            raise OSError("Could not remove owned artifacts; database entry retained for retry: "
+                          + ", ".join(failed))
+        delete_sessions(conn, [session_id], commit=False)
+        return result
+
+
+def cmd_manage(args: argparse.Namespace) -> None:
+    """Open the full-screen session browser on an interactive terminal."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("manage requires an interactive terminal; run `uv run cli.py manage` directly.", file=sys.stderr)
+        raise SystemExit(2)
+    if not os.path.exists(DB_PATH):
+        print("No database found. Run `backfill` to create one.")
+        return
+    conn = get_connection()
+    try:
+        init_db(conn)
+        from manage_tui import run_manager
+
+        run_manager(conn, _delete_managed_session)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        conn.close()
+
+
 # ── Status / Doctor ──────────────────────────────────────────────────────────
 
 def _check_integrity(conn) -> dict:
@@ -1207,6 +1260,20 @@ def main() -> None:
     )
     add_query_arguments(sp_query)
     sp_query.set_defaults(func=cmd_query)
+
+    # manage
+    sp_manage = subparsers.add_parser(
+        "manage",
+        help="Interactively browse, delete, hide, or unhide sessions",
+        description=(
+            "Full-screen browser for the latest 20 top-level sessions, with a selected-session preview. "
+            "Arrow keys select; Tab switches all/hidden; h hides/unhides; d deletes; q exits. "
+            "Left/right change pages; PgUp/PgDn scroll the preview. Requires an interactive terminal. "
+            "Hide/unhide controls future recent-context inclusion, not search access. "
+            "Deletion requires typing the full session ID; raw transcripts remain and may be re-indexed."
+        ),
+    )
+    sp_manage.set_defaults(func=cmd_manage)
 
     # footprint
     sp_footprint = subparsers.add_parser(

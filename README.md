@@ -12,7 +12,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
 - **Skill Invocation audits** — normalizes slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads into the canonical `skill_invocations` table
-- **CLI** — `find`, `inspect`, `query`, backfill, status, and current-session lookup from the terminal
+- **CLI** — `find`, `inspect`, `query`, interactive session management, backfill, status, and current-session lookup from the terminal
 - **Skills** — `session-search` for indexed history and Codex `$current-session` for the active conversation's cleaned paths
 
 ## Prerequisites
@@ -162,6 +162,30 @@ uv run cli.py status
 
 Copy a `ref` or `inspect_refs.primary` value unchanged into `inspect` to retrieve bounded Evidence Packets with artifact metadata, locators, and Evidence Snippets.
 
+## Manage sessions
+
+Run `uv run cli.py manage` from the repository, or `uv run ~/.pi/agent/skills/session-search/scripts/manage.py` from any directory.
+
+The full-screen terminal browser shows a compact session list beside the selected session’s preview. In narrower terminals, it stacks the list and preview. It uses readable local dates, a visible selection, and color accents. `NO_COLOR` disables colors.
+
+Each page contains up to 20 sessions. The list scrolls to keep the selection visible.
+
+Use these controls:
+
+- ↑/↓ or j/k to select a session.
+- ←/→ or p/n to change pages.
+- Tab to switch between all and hidden sessions.
+- h to hide or unhide a session.
+- d to open the deletion confirmation.
+- q to quit.
+- PgUp/PgDn to scroll the preview.
+- r to refresh the list.
+
+Deletion still requires the full session ID. Esc cancels. Run the browser in an interactive terminal at least 60 columns by 24 rows.
+
+- **Hide from recents** preserves all data and search access. It excludes the session from future recent context for the current project, project group, and other projects. The flag survives indexing refreshes. It does not remove context already injected into an open conversation or prevent deliberate retrieval.
+- **Delete** requires typing the full session ID. It removes the database entry, indexed facts, and owned generated artifacts, regardless of the low-value pruning rules. Raw transcripts, shared artifacts, and files outside generated storage remain. There is no undo or deletion exclusion record. Hooks or backfills can re-index preserved raw transcripts. If owned-artifact removal fails, the database entry remains for retry. Files already removed are not restored.
+
 ## Current session lookup
 
 Inside an active Claude Code, Pi, or Codex runtime that exposes exact session identity, the `current` command identifies the conversation running that command:
@@ -229,6 +253,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 
 | Command | Description |
 |---------|-------------|
+| `manage` | Interactive 20-session pages with previews; confirmed deletion and hide/unhide from recent context |
 | `current [--path\|--cleaned-paths\|--native\|--json]` | Show the exact active runtime session or its canonical generated paths |
 | `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
 | `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |

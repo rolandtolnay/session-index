@@ -148,6 +148,30 @@ uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID
 
 `prune` is dry-run by default. It deletes only exact Canonical Session IDs supplied on the command line, only when `--confirm` is present, and only when the audit classifies every requested session as low-value. Low-value means the summary has an explicit low-value signal and there are no durable facts for File Mutations, Skill Invocations, Subagent Runs, or question answers. Uncertain cases default to keep. A `low_value` Substance Band is a ranking assessment, not permission to prune; the pruning audit's independent guards still apply. Source JSONL is never deleted.
 
+## Manage sessions
+
+Run `uv run cli.py manage` from the repository, or `uv run ~/.pi/agent/skills/session-search/scripts/manage.py` from any directory.
+
+The full-screen terminal browser shows a compact session list beside the selected session’s preview. In narrower terminals, it stacks the list and preview. It uses readable local dates, a visible selection, and color accents. `NO_COLOR` disables colors.
+
+Each page contains up to 20 sessions. The list scrolls to keep the selection visible.
+
+Use these controls:
+
+- ↑/↓ or j/k to select a session.
+- ←/→ or p/n to change pages.
+- Tab to switch between all and hidden sessions.
+- h to hide or unhide a session.
+- d to open the deletion confirmation.
+- q to quit.
+- PgUp/PgDn to scroll the preview.
+- r to refresh the list.
+
+Deletion still requires the full session ID. Esc cancels. Run the browser in an interactive terminal at least 60 columns by 24 rows.
+
+- **Hide from recents** preserves all data and search access. It excludes the session from future recent context for the current project, project group, and other projects. The flag survives indexing refreshes. It does not remove context already injected into an open conversation or prevent deliberate retrieval.
+- **Delete** requires typing the full session ID. It removes the database entry, indexed facts, and owned generated artifacts, regardless of the low-value pruning rules. Raw transcripts, shared artifacts, and files outside generated storage remain. There is no undo or deletion exclusion record. Hooks or backfills can re-index preserved raw transcripts. If owned-artifact removal fails, the database entry remains for retry. Files already removed are not restored.
+
 ## Transcript storage
 
 Canonical session IDs use `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`; they are not provider-native IDs. Use `current --native` for provider resume/fork commands. Generated text normalizes recognized historical Session Index paths and Inspection References; raw provider logs remain untouched.
@@ -164,4 +188,4 @@ Raw Source JSONL lives at `~/.claude/projects/`, `~/.pi/agent/sessions/`, and Co
 
 Invoke this skill when the user references past work, asks about prior decisions, wants to audit tool/skill/subagent/question/File Mutation behavior, asks for PR summaries/changelogs from recent work, or needs counts/aggregates across sessions.
 
-Up to seven Top-Level current-project Session Headlines, configured-group sections targeting 14 each, and up to 21 Other projects headlines may already be injected with a shared Clean Transcript root and canonical transcript filenames. Group and Other projects sections use the past seven days, prefer substantial then useful sessions newest first within each band, and treat unknown assessments alongside useful ones. Groups guarantee a representative per active project and may exceed 14 for coverage; low-value sessions are otherwise omitted. Nested Subagent Run sessions do not participate. Use this skill when the desired session is absent, or for specific topic lookups, structured audits, and aggregate questions.
+Up to seven Top-Level current-project Session Headlines, configured-group sections targeting 14 each, and up to 21 Other projects headlines may already be injected with a shared Clean Transcript root and canonical transcript filenames. Group and Other projects sections use the past seven days, prefer substantial then useful sessions newest first within each band, and treat unknown assessments alongside useful ones. Groups guarantee a representative per active project and may exceed 14 for coverage; low-value sessions are otherwise omitted. Nested Subagent Run sessions and sessions flagged `hidden_from_recents` do not participate. Use this skill when the desired session is absent, or for specific topic lookups, structured audits, and aggregate questions.
