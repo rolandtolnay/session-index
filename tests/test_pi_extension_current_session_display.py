@@ -76,7 +76,7 @@ def test_current_session_display_formatter_renders_v1_fields_in_stable_order():
           "Clean Transcript: /absolute/pi:019session.md [exists]",
           "Tool Log: /absolute/pi:019session.tools.md [missing]",
           "Source Transcript: /absolute/source.jsonl [exists]",
-          "Ctrl+R index current snapshot · Enter/Esc/q close",
+          "Ctrl+R index current snapshot · c copy transcript path · Enter/Esc/q close",
         ]);
         assert.equal(lines.join("\n").includes("leaf-out-of-scope"), false);
         assert.equal(lines.join("\n").includes("/do/not/show"), false);

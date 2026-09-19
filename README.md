@@ -222,7 +222,7 @@ uv run cli.py current --native # provider-native session ID
 uv run cli.py current --json   # full current-session metadata
 ```
 
-In Pi TUI, use `/current-session` to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `Ctrl+R` explicitly runs a full indexing pass for the current snapshot, then refreshes artifact statuses if the display remains open. Automatic Pi shutdown queues equivalent final stages through the detached coordinator. The CLI remains the terminal/API-oriented interface.
+In Pi TUI, use `/current-session` to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `c` copies the exact Clean Transcript path to the clipboard without closing the display, even if the artifact is still missing. `Ctrl+R` explicitly runs a full indexing pass for the current snapshot, then refreshes artifact statuses if the display remains open. Automatic Pi shutdown queues equivalent final stages through the detached coordinator. The CLI remains the terminal/API-oriented interface.
 
 In Codex, use `$current-session`. The dedicated skill runs the focused `--cleaned-paths` output and returns only the absolute Clean Transcript and Tool Log paths with `[exists]` or `[missing]` status.
 

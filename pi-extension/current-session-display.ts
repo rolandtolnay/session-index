@@ -60,7 +60,8 @@ type FocusedFooterSuppressionState = {
 };
 
 const DISMISSAL_HINT = "Enter/Esc/q close";
-const INDEX_ACTION_HINT = "Ctrl+R index current snapshot · Enter/Esc/q close";
+const COPY_ACTION_HINT = "c copy transcript path";
+const INDEX_ACTION_HINT = `Ctrl+R index current snapshot · ${COPY_ACTION_HINT} · ${DISMISSAL_HINT}`;
 const CONTENT_INDENT = "  ";
 const VALUE_INDENT = "    ";
 const FOOTER_SUPPRESSION_STATE_KEY = Symbol.for("pi.focused-ui-footer.state");
@@ -318,6 +319,9 @@ function pushRow(
 	}
 }
 
+type CopyStatus = { message: string; color: "success" | "warning" };
+type ClipboardWriter = (text: string) => Promise<void>;
+
 type RenderState = {
 	phase: "idle" | "running" | "completed" | "timeout" | "failed";
 	message?: string;
@@ -329,6 +333,7 @@ function renderCurrentSessionDisplay(
 	width: number,
 	state: RenderState = { phase: "idle" },
 	piCommandSessionId?: string,
+	copyStatus?: CopyStatus,
 ): string[] {
 	const lines: string[] = [];
 	const contentWidth = Math.max(0, width - CONTENT_INDENT.length);
@@ -371,8 +376,14 @@ function renderCurrentSessionDisplay(
 				: "accent";
 		if (message) add(color(theme, statusColor, message));
 	}
+	if (copyStatus) add(color(theme, copyStatus.color, copyStatus.message));
 	lines.push("");
-	add(color(theme, "dim", state.phase === "running" || state.phase === "timeout" ? DISMISSAL_HINT : INDEX_ACTION_HINT));
+	const hint = state.phase === "running" || state.phase === "timeout"
+		? `${COPY_ACTION_HINT} · ${DISMISSAL_HINT}`
+		: INDEX_ACTION_HINT;
+	for (const line of wrapPlain(hint, contentWidth)) {
+		lines.push(`${CONTENT_INDENT}${color(theme, "dim", line)}`);
+	}
 	lines.push("");
 	return lines;
 }
@@ -385,6 +396,9 @@ class CurrentSessionDisplayComponent implements ComponentLike {
 	private readonly onIndexSnapshot: (() => Promise<CurrentSessionIndexResult>) | undefined;
 	private readonly piCommandSessionId: string | undefined;
 	private readonly done: () => void;
+	private readonly copyToClipboard: ClipboardWriter;
+	private copying = false;
+	private copyStatus: CopyStatus | undefined;
 	private state: RenderState = { phase: "idle" };
 	private closed = false;
 	private cachedWidth: number | undefined;
@@ -396,6 +410,7 @@ class CurrentSessionDisplayComponent implements ComponentLike {
 		content: CurrentSessionDisplayContent,
 		onIndexSnapshot: (() => Promise<CurrentSessionIndexResult>) | undefined,
 		piCommandSessionId: string | undefined,
+		copyToClipboard: ClipboardWriter,
 		done: () => void,
 	) {
 		this.tui = tui;
@@ -403,13 +418,14 @@ class CurrentSessionDisplayComponent implements ComponentLike {
 		this.content = content;
 		this.onIndexSnapshot = onIndexSnapshot;
 		this.piCommandSessionId = piCommandSessionId;
+		this.copyToClipboard = copyToClipboard;
 		this.done = done;
 	}
 
 	render(width: number): string[] {
 		if (this.cachedWidth === width && this.cachedLines) return this.cachedLines;
 		this.cachedWidth = width;
-		this.cachedLines = renderCurrentSessionDisplay(this.content, this.theme, width, this.state, this.piCommandSessionId);
+		this.cachedLines = renderCurrentSessionDisplay(this.content, this.theme, width, this.state, this.piCommandSessionId, this.copyStatus);
 		return this.cachedLines;
 	}
 
@@ -419,15 +435,38 @@ class CurrentSessionDisplayComponent implements ComponentLike {
 	}
 
 	handleInput(data: string): void {
+		if (this.closed) return;
 		if (isDismissKey(data)) {
 			this.closed = true;
 			this.done();
 			this.tui.requestRender();
 			return;
 		}
+		if (data === "c" || isUnmodifiedKittyKey(data, 99)) {
+			void this.copyTranscriptPath();
+			return;
+		}
 		if (!isIndexSnapshotKey(data) || !this.onIndexSnapshot || !("metadata" in this.content)) return;
 		if (this.state.phase === "running" || this.state.phase === "timeout") return;
 		void this.runIndexSnapshot();
+	}
+
+	private async copyTranscriptPath(): Promise<void> {
+		if (this.copying || !("metadata" in this.content)) return;
+		this.copying = true;
+		let status: CopyStatus;
+		try {
+			await this.copyToClipboard(this.content.metadata.transcript_path);
+			status = { message: "Transcript path copied.", color: "success" };
+		} catch {
+			status = { message: "Could not copy transcript path. Press c to retry.", color: "warning" };
+		} finally {
+			this.copying = false;
+		}
+		if (this.closed) return;
+		this.copyStatus = status;
+		this.invalidate();
+		this.tui.requestRender();
 	}
 
 	private async runIndexSnapshot(): Promise<void> {
@@ -488,8 +527,13 @@ export async function showCurrentSessionDisplay(options: {
 	content: CurrentSessionDisplayContent;
 	piCommandSessionId?: string;
 	onIndexSnapshot?: () => Promise<CurrentSessionIndexResult>;
+	copyToClipboard?: ClipboardWriter;
 }): Promise<void> {
+	const copyToClipboard = options.copyToClipboard ?? (async (text: string) => {
+		const pi = await import("@earendil-works/pi-coding-agent");
+		await pi.copyToClipboard(text);
+	});
 	await withFooterSuppressed(() => options.ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-		return new CurrentSessionDisplayComponent(tui, theme, options.content, options.onIndexSnapshot, options.piCommandSessionId, () => done(undefined));
+		return new CurrentSessionDisplayComponent(tui, theme, options.content, options.onIndexSnapshot, options.piCommandSessionId, copyToClipboard, () => done(undefined));
 	}));
 }
