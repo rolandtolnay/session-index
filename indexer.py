@@ -444,11 +444,6 @@ def _index_qualified_session(
         headline = generate_headline(**description_inputs)
         result.headline_generated = bool(headline)
 
-    transcript_path = None
-    if IndexStage.CLEAN_TRANSCRIPT in stages:
-        transcript_path = _write_clean_transcript(session, parsed_subagents)
-        result.transcript_path = transcript_path
-
     subagent_paths: list[str] = []
     if IndexStage.SUBAGENT_TRANSCRIPTS in stages:
         subagent_paths = _write_subagent_transcripts(session, parsed_subagents)
@@ -462,6 +457,13 @@ def _index_qualified_session(
         combined_tool_calls = combine_tool_calls(session.tool_calls, parsed_subagents)
         tool_log_path = _write_tool_log(session, combined_tool_calls, source)
         result.tool_log_path = tool_log_path
+
+    # Write navigation after sibling artifacts so its availability snapshot is
+    # accurate on the first pass as well as on regeneration.
+    transcript_path = None
+    if IndexStage.CLEAN_TRANSCRIPT in stages:
+        transcript_path = _write_clean_transcript(session, parsed_subagents)
+        result.transcript_path = transcript_path
 
     subagent_runs = normalize_subagent_runs(session, source=source, parsed_subagents=parsed_subagents)
     result.subagent_runs = len(subagent_runs)

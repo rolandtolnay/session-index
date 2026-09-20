@@ -206,6 +206,8 @@ Generated artifacts are the normal evidence path:
 - `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, compact large write/edit argument text with hashes, and larger bounded audit excerpts for mutations/errors.
 - `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
 
+Newly generated or regenerated Clean Transcripts include a compact **Related artifacts** header with absolute paths to the Tool Log and child-transcript directory. Availability reflects files present at generation time. Starting from a copied Clean Transcript path, follow the Tool Log for arguments/results, or list the linked directory's `agent-*.md` files and read selected children for their tasks and final output, including background runs. A missing completion in the parent Tool Log does not mean the child transcript is missing. Older transcripts without this header can be explored with `inspect --ref session/<session-id>` to discover child refs.
+
 Raw Source JSONL lives at `~/.claude/projects/`, `~/.pi/agent/sessions/`, and Codex rollout files under `~/.codex/sessions/` and `~/.codex/archived_sessions/`.
 
 ## When to use this skill

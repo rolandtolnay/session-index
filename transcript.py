@@ -4,6 +4,7 @@ Writes conversation transcripts to ~/.session-index/transcripts/{session_id}.md
 Uses inline role tags with bracket tool calls.
 """
 
+import glob
 import hashlib
 import logging
 import os
@@ -135,6 +136,7 @@ def render_transcript(
     branch: str | None = None,
     timestamp: str | None = None,
     subagents: list[SubagentRef] | None = None,
+    artifact_navigation: str = "",
 ) -> str:
     """Render a cleaned transcript as markdown."""
     lines: list[str] = []
@@ -148,6 +150,8 @@ def render_transcript(
     lines.append(" | ".join(header_parts))
     lines.append("---")
     lines.append("")
+    if artifact_navigation:
+        lines.extend([artifact_navigation, "", "---", ""])
 
     for msg in messages:
         role = msg["role"]
@@ -175,6 +179,24 @@ def render_transcript(
     return normalize_references("\n".join(lines))
 
 
+def _artifact_navigation(session_id: str) -> str:
+    """Expose generated siblings without loading their contents into the conversation."""
+    tool_path = os.path.abspath(os.path.join(TRANSCRIPT_DIR, f"{session_id}.tools.md"))
+    child_dir = os.path.abspath(os.path.join(TRANSCRIPT_DIR, session_id))
+    child_count = sum(
+        os.path.isfile(path)
+        for path in glob.glob(os.path.join(child_dir, "agent-*.md"))
+    )
+    tool_status = "available" if os.path.isfile(tool_path) else "not generated or unavailable"
+    child_status = f"{child_count} available" if child_count else "none generated or available"
+    return "\n".join([
+        "## Related artifacts",
+        "Availability reflects files present when this transcript was generated.",
+        f"- Tool Log: `{tool_path}` ({tool_status}). Contains tool arguments and results, including child tool calls.",
+        f"- Subagent Run transcripts: `{child_dir}/` ({child_status}). List `agent-*.md`, then read selected files for their tasks and final output, including background runs.",
+    ])
+
+
 def write_transcript(
     session_id: str,
     messages: list[dict[str, str]],
@@ -194,6 +216,7 @@ def write_transcript(
         branch=branch,
         timestamp=timestamp,
         subagents=subagents,
+        artifact_navigation=_artifact_navigation(session_id),
     )
     with open(path, "w") as f:
         f.write(rendered)
