@@ -83,7 +83,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
 
 
 def add_find_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--topic", help="Session/topic candidate discovery; terms are AND-joined FTS (OR/NOT supported), with deterministic fuzzy fallback when exact matching is empty")
+    parser.add_argument("--topic", help="Parent session/topic discovery, including Side Chat headlines, focused content, questions and answers; terms are AND-joined FTS (OR/NOT supported), with deterministic fuzzy fallback over session metadata when exact matching is empty")
     parser.add_argument("--tool", help="Tool Call candidate discovery; returns tool/<session_id>/<sequence> refs")
     parser.add_argument("--skill", help="Skill Invocation candidates; returns skill/<session_id>/<sequence> refs")
     parser.add_argument("--mutated", help="File Mutation path fragment; returns session-collapsed candidates by default")
@@ -106,9 +106,9 @@ def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ref",
         required=True,
-        help="Inspection Reference, e.g. session/<id>, skill/<id>/<seq>, tool/<id>/<seq>, question/<id>/<seq>/<idx>, subagent/<id>/<child>",
+        help="Inspection Reference, e.g. session/<id>, skill/<id>/<seq>, tool/<id>/<seq>, question/<id>/<seq>/<idx>, subagent/<id>/<child>, sidechat/<parent-id>/<uuid>",
     )
-    parser.add_argument("--q", help="Query text for session/subagent Evidence Snippets; omit for session artifact metadata or subagent task area")
+    parser.add_argument("--q", help="Query text for session/subagent/sidechat Evidence Snippets; omit for parent artifact refs or child opening evidence")
     parser.add_argument("--max-snippets", type=int, default=5, help="Maximum transcript Evidence Snippet blocks")
 
 
@@ -451,7 +451,7 @@ _LOW_VALUE_SUMMARY_MARKERS = (
     "no substantive",
     "did not make changes",
 )
-_HIGH_VALUE_FACT_TABLES = ("file_mutations", "skill_invocations", "subagent_runs", "question_answers")
+_HIGH_VALUE_FACT_TABLES = ("file_mutations", "skill_invocations", "subagent_runs", "question_answers", "side_chats")
 
 
 def _split_artifact_paths(value: str | None) -> list[str]:
@@ -516,6 +516,7 @@ def _fact_counts(conn, session_id: str) -> dict[str, int]:
         "skill_invocations": conn.execute("SELECT COUNT(*) FROM skill_invocations WHERE session_id=?", (session_id,)).fetchone()[0],
         "question_answers": conn.execute("SELECT COUNT(*) FROM question_answers WHERE session_id=?", (session_id,)).fetchone()[0],
         "subagent_runs": conn.execute("SELECT COUNT(*) FROM subagent_runs WHERE parent_session_id=?", (session_id,)).fetchone()[0],
+        "side_chats": conn.execute("SELECT COUNT(*) FROM side_chats WHERE parent_session_id=?", (session_id,)).fetchone()[0],
     }
     return counts
 
@@ -539,8 +540,9 @@ def _other_session_references_path(conn, path: str, session_id: str) -> bool:
     candidates.extend(
         row["transcript_path"]
         for row in conn.execute(
-            "SELECT transcript_path FROM subagent_runs WHERE parent_session_id != ?",
-            (session_id,),
+            "SELECT transcript_path FROM subagent_runs WHERE parent_session_id != ? "
+            "UNION ALL SELECT transcript_path FROM side_chats WHERE parent_session_id != ?",
+            (session_id, session_id),
         )
     )
     return any(
@@ -571,7 +573,10 @@ def _other_session_references_inside_dir(conn, path: str, session_id: str) -> bo
         candidates.extend(_split_artifact_paths(row["subagent_transcripts"]))
     candidates.extend(
         row["transcript_path"]
-        for row in conn.execute("SELECT transcript_path FROM subagent_runs WHERE parent_session_id != ?", (session_id,))
+        for row in conn.execute(
+            "SELECT transcript_path FROM subagent_runs WHERE parent_session_id != ? "
+            "UNION ALL SELECT transcript_path FROM side_chats WHERE parent_session_id != ?", (session_id, session_id),
+        )
         if row["transcript_path"]
     )
 
@@ -617,6 +622,10 @@ def _session_artifacts(conn, session: dict) -> list[dict]:
             (session_id,),
         )
     )
+    candidates.extend(
+        ("side_chat_transcript", row["transcript_path"])
+        for row in conn.execute("SELECT transcript_path FROM side_chats WHERE parent_session_id=?", (session_id,))
+    )
     candidates.extend([
         ("deterministic_clean_transcript", os.path.join(TRANSCRIPT_DIR, f"{session_id}.md")),
         ("deterministic_tool_log", os.path.join(TRANSCRIPT_DIR, f"{session_id}.tools.md")),
@@ -658,6 +667,13 @@ def _prune_decision(session: dict, facts: dict[str, int]) -> dict:
     }
 
 
+def _unique_artifact_bytes(artifacts: list[dict]) -> int:
+    """Count child files once even when their owning directory is also listed."""
+    paths = {os.path.realpath(item['path']): item['bytes'] for item in artifacts if item['owned_generated_artifact']}
+    return sum(size for path, size in paths.items()
+               if not any(path != parent and path.startswith(parent + os.sep) for parent in paths))
+
+
 def _session_footprint(conn, session: dict) -> dict:
     facts = _fact_counts(conn, session["session_id"])
     artifacts = _session_artifacts(conn, session)
@@ -668,7 +684,7 @@ def _session_footprint(conn, session: dict) -> dict:
         "project": session.get("project"),
         "started_at": session.get("started_at"),
         "summary_preview": (session.get("summary") or "")[:160],
-        "artifact_bytes": sum(item["bytes"] for item in artifacts if item["owned_generated_artifact"]),
+        "artifact_bytes": _unique_artifact_bytes(artifacts),
         "artifacts": artifacts,
         "facts": facts,
         "source_jsonl": {"path": source_path or None, "exists": bool(source_path and os.path.exists(source_path)), "retained": True},
@@ -1046,13 +1062,14 @@ def _check_integrity(conn) -> dict:
         if any(not os.path.exists(p) for p in paths):
             issues["dangling_subagent"].append(sid)
 
-    # Orphaned subagent directories (dirs in transcripts/ with no DB reference)
+    # Child directories may contain Subagent Runs, Side Chats, or both.
     if os.path.isdir(TRANSCRIPT_DIR):
-        # Collect all session_ids that have subagent_transcripts
+        # Retain any directory with an indexed child owner.
         db_subagent_sids = set()
         cursor = conn.execute(
             "SELECT session_id FROM sessions "
-            "WHERE subagent_transcripts IS NOT NULL"
+            "WHERE subagent_transcripts IS NOT NULL "
+            "UNION SELECT parent_session_id FROM side_chats"
         )
         for row in cursor:
             db_subagent_sids.add(row[0])
@@ -1138,7 +1155,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         if issues["dangling_subagent"]:
             print(f"  Dangling subagent paths: {len(issues['dangling_subagent'])}")
         if issues["orphaned_subagent_dirs"]:
-            print(f"  Orphaned subagent dirs: {len(issues['orphaned_subagent_dirs'])}")
+            print(f"  Orphaned child transcript dirs: {len(issues['orphaned_subagent_dirs'])}")
 
         if total_issues > 0:
             if args.fix:

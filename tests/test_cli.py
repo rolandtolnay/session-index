@@ -87,7 +87,7 @@ def test_cmd_query_schema_prints_curated_reference_without_creating_db(tmp_path,
     assert "skill/<session_id>/<sequence>" in out
     assert "SELECT DISTINCT path FROM file_mutations" in out
     assert "CREATE TABLE" not in out
-    assert "--" not in out
+    assert not any(line.lstrip().startswith("--") for line in out.splitlines())
     assert not os.path.exists(db_path)
 
 

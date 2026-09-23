@@ -161,6 +161,40 @@ CREATE TABLE IF NOT EXISTS subagent_runs (
 CREATE INDEX IF NOT EXISTS idx_subagent_runs_parent ON subagent_runs(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_subagent_runs_type ON subagent_runs(requested_agent_type);
 
+-- Side Chats are child artifacts, never independent sessions.
+CREATE TABLE IF NOT EXISTS side_chats (
+    parent_session_id TEXT NOT NULL,
+    side_chat_id TEXT NOT NULL,
+    opening_leaf_id TEXT,
+    opener TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    closed_at TEXT,
+    focused_content TEXT NOT NULL,
+    turns_json TEXT NOT NULL,
+    turn_count INTEGER NOT NULL,
+    first_question TEXT NOT NULL,
+    headline TEXT,
+    content_hash TEXT NOT NULL,
+    search_text TEXT NOT NULL,
+    transcript_path TEXT NOT NULL,
+    UNIQUE(parent_session_id, side_chat_id)
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS side_chats_fts USING fts5(
+    headline, search_text, content=side_chats, content_rowid=rowid
+);
+CREATE TRIGGER IF NOT EXISTS side_chats_ai AFTER INSERT ON side_chats BEGIN
+    INSERT INTO side_chats_fts(rowid, headline, search_text) VALUES(new.rowid, new.headline, new.search_text);
+END;
+CREATE TRIGGER IF NOT EXISTS side_chats_ad AFTER DELETE ON side_chats BEGIN
+    INSERT INTO side_chats_fts(side_chats_fts, rowid, headline, search_text)
+    VALUES('delete', old.rowid, old.headline, old.search_text);
+END;
+CREATE TRIGGER IF NOT EXISTS side_chats_au AFTER UPDATE ON side_chats BEGIN
+    INSERT INTO side_chats_fts(side_chats_fts, rowid, headline, search_text)
+    VALUES('delete', old.rowid, old.headline, old.search_text);
+    INSERT INTO side_chats_fts(rowid, headline, search_text) VALUES(new.rowid, new.headline, new.search_text);
+END;
+
 -- One row per asked question. selected_label/was_recommended are NULL when the
 -- question was not answered (cancelled). multi_select=1 rows store joined labels
 -- with was_recommended=NULL (ambiguous by design).
@@ -473,6 +507,21 @@ def _build_fts_query(query: str, use_or: bool = False) -> str:
     return build_fts_query(query, use_or=use_or)
 
 
+def topic_hits_sql(parameter: str = "query") -> str:
+    """Parent-collapsed FTS hits across main metadata and child conversations."""
+    return f"""
+        SELECT session_id, MIN(topic_rank) AS topic_rank FROM (
+            SELECT s.session_id, f.rank AS topic_rank
+            FROM sessions_fts f JOIN sessions s ON s.rowid=f.rowid
+            WHERE sessions_fts MATCH :{parameter}
+            UNION ALL
+            SELECT c.parent_session_id AS session_id, f.rank AS topic_rank
+            FROM side_chats_fts f JOIN side_chats c ON c.rowid=f.rowid
+            WHERE side_chats_fts MATCH :{parameter}
+        ) GROUP BY session_id
+    """
+
+
 def find_session_candidates(
     conn: sqlite3.Connection,
     query: str | None = None,
@@ -512,16 +561,13 @@ def find_session_candidates(
     if query and query.strip():
         params["query"] = build_fts_query(query, use_or=use_or)
 
-        where = "WHERE sessions_fts MATCH :query"
-        if clauses:
-            where += " AND " + " AND ".join(clauses)
-
+        where = "WHERE " + " AND ".join(clauses)
         cursor = conn.execute(f"""
-            SELECT s.*, rank
-            FROM sessions_fts fts
-            JOIN sessions s ON s.rowid = fts.rowid
+            WITH topic_hits AS ({topic_hits_sql()})
+            SELECT s.*, h.topic_rank AS rank
+            FROM topic_hits h JOIN sessions s ON s.session_id=h.session_id
             {where}
-            ORDER BY rank
+            ORDER BY rank, s.started_at DESC, s.session_id
             LIMIT :limit
         """, params)
     else:
@@ -757,6 +803,7 @@ def get_stats(conn: sqlite3.Connection) -> dict[str, Any]:
 def rebuild_fts(conn: sqlite3.Connection) -> None:
     """Rebuild the FTS index from scratch."""
     conn.execute("INSERT INTO sessions_fts(sessions_fts) VALUES('rebuild')")
+    conn.execute("INSERT INTO side_chats_fts(side_chats_fts) VALUES('rebuild')")
     conn.commit()
 
 
@@ -829,6 +876,7 @@ def delete_sessions(conn: sqlite3.Connection, session_ids: list[str], *, commit:
         ("question_answers", "session_id"),
         ("file_mutations", "session_id"),
         ("subagent_runs", "parent_session_id"),
+        ("side_chats", "parent_session_id"),
     )
     for table, key_column in fact_owners:
         conn.execute(f"DELETE FROM {table} WHERE {key_column} IN ({placeholders})", ids)

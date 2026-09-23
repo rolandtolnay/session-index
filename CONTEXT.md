@@ -111,6 +111,18 @@ _Avoid_: Session ID, transcript ID
 A child agent execution requested from a parent session.
 _Avoid_: Agent transcript, subagent artifact
 
+**Side Chat**:
+A user-led conversation around focused content that belongs to its originating session rather than becoming an independent session.
+_Avoid_: Subagent Run, Top-Level Session, fork
+
+**Side Chat Transcript**:
+The separately readable record of a Side Chat's focused content and completed exchanges.
+_Avoid_: Parent Clean Transcript, Tool Log, manual export
+
+**Side Chat Headline**:
+A short routing phrase describing what a Side Chat explored, without implying its proposals were accepted.
+_Avoid_: Session Headline, summary, imported conclusion
+
 **Requested Agent Type**:
 The agent name requested by the parent session for a Subagent Run, used as the canonical query label.
 _Avoid_: Observed child type, artifact title
@@ -123,6 +135,12 @@ _Avoid_: Observed child type, artifact title
 - A **Top-Level Session** may contain zero or more **Subagent Runs**; nested Subagent Run conversations are not separate Top-Level Sessions.
 - A parented Pi clone becomes a separate indexed **Top-Level Session** only after raw entry identity proves that it contains a new user-and-assistant exchange; inherited history alone does not create another indexed conversation.
 - Recent-session injection and cross-project ranking consider only **Top-Level Sessions**.
+- A session may own zero or more **Side Chats**; they are not independent sessions and do not receive **Session Summaries** or **Substance Bands**.
+- A **Side Chat** has one **Side Chat Transcript** and may have one **Side Chat Headline**; its first question supplies a routing preview until a headline is available.
+- A parent **Clean Transcript** references its **Side Chat Transcripts** without containing their exchanges; reading a child is explicit.
+- Archival preserves a **Side Chat** without importing it into its parent's model context or treating its proposals as accepted decisions.
+- **Evidence Find** can match **Side Chat** content while returning its owning session and child **Inspection References**.
+- A saved **Side Chat** protects its parent from automatic low-value pruning.
 - An indexed session may have one **Session Summary**, one independently generated **Session Headline**, and one **Substance Band** with an evidence-based reason.
 - An unknown **Substance Band** is not a low-value assessment; recency and project coverage are separate selection concerns.
 - A **Session Headline** routes an agent to a **Clean Transcript**; it does not replace the searchable **Session Summary**.
@@ -141,7 +159,7 @@ _Avoid_: Observed child type, artifact title
 - A session may have zero or more **File Mutations**.
 - A **File Mutation** is attributed to a tool-call sequence and may be inspected through the corresponding **Tool Log** section.
 - A session may produce zero or more **Evidence Packets** when facts or topic matches point to inspectable artifact text.
-- An **Evidence Packet** references one **Canonical Session ID** and may reference a **Clean Transcript**, **Tool Log**, or **Subagent Run** transcript.
+- An **Evidence Packet** references one **Canonical Session ID** and may reference a **Clean Transcript**, **Tool Log**, **Subagent Run** transcript, or **Side Chat Transcript**.
 - A session may request zero or more **Subagent Runs**.
 - A **File Mutation** belongs to exactly one **Canonical Session ID**.
 - A session may have zero or more **File Mutations**.

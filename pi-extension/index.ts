@@ -33,6 +33,7 @@ type CurrentSessionCommandResult = {
 type IndexerRunResult = { status: "completed"; code: number | null; stderr: string };
 
 type SpawnProcess = typeof spawn;
+type IndexMode = "fast" | "full" | "turn" | "exit" | "side-chat" | "side-chat-close";
 
 type ExtensionDependencies = {
 	spawnProcess?: SpawnProcess;
@@ -46,7 +47,7 @@ function refreshSessionIndexEnv(sessionManager: Parameters<typeof buildSessionIn
 	return sessionEnv;
 }
 
-function buildIndexerSpawn(mode: "fast" | "full" | "turn" | "exit", sessionFile: string, sessionEnv: SessionIndexEnv | undefined) {
+function buildIndexerSpawn(mode: IndexMode, sessionFile: string, sessionEnv: SessionIndexEnv | undefined) {
 	const env = overlaySessionIndexEnv(process.env, sessionEnv);
 	env.SESSION_INDEX_PROVIDER = "pi";
 	return {
@@ -56,7 +57,7 @@ function buildIndexerSpawn(mode: "fast" | "full" | "turn" | "exit", sessionFile:
 }
 
 function spawnIndexer(
-	mode: "fast" | "full" | "turn" | "exit",
+	mode: IndexMode,
 	sessionFile: string,
 	sessionEnv: SessionIndexEnv | undefined,
 	spawnProcess: SpawnProcess,
@@ -72,6 +73,7 @@ function spawnIndexer(
 			env: indexer.env,
 		},
 	);
+	child.on("error", () => { /* Detached indexing must never crash the host UI. */ });
 	child.unref();
 }
 
@@ -415,6 +417,23 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 				}
 				await showRecentSessionsDisplay({ ctx, content: context });
 			},
+		});
+
+		// Shared Side Chat persists non-context records even while the main agent
+		// is idle. Use the captured owner, never whatever session is now active.
+		pi.events?.on("side-chat:archived", (data: unknown) => {
+			if (!data || typeof data !== "object") return;
+			const event = data as Record<string, unknown>;
+			if (typeof event.parentSessionId !== "string" || typeof event.parentSessionFile !== "string"
+				|| !path.isAbsolute(event.parentSessionFile) || typeof event.closed !== "boolean") return;
+			const ownerEnv = buildSessionIndexEnv({
+				getSessionId: () => event.parentSessionId as string,
+				getSessionFile: () => event.parentSessionFile as string,
+			});
+			if (!ownerEnv) return;
+			try {
+				spawnIndexer(event.closed ? "side-chat-close" : "side-chat", event.parentSessionFile, ownerEnv, spawnProcess);
+			} catch { /* Persisted source records remain recoverable on the next indexing pass. */ }
 		});
 
 		pi.on("session_start", async (_event, ctx) => {

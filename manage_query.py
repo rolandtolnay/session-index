@@ -40,6 +40,7 @@ _SEARCH_FIELDS = (
     ("native_session_id", "Native ID", 55.0),
     ("files_touched", "Files", 45.0),
     ("user_messages", "User messages", 20.0),
+    ("side_chat_content", "Side Chats", 35.0),
 )
 _FIELD_LABELS = {name: label for name, label, _weight in _SEARCH_FIELDS}
 _FIELD_WEIGHTS = {name: weight for name, _label, weight in _SEARCH_FIELDS}
@@ -143,7 +144,10 @@ def _load_scope(conn: sqlite3.Connection, filters: ManageFilters) -> list[dict[s
             params["substance"] = filters.substance
 
     cursor = conn.execute(
-        f"SELECT s.* FROM sessions s WHERE {' AND '.join(clauses)}",
+        f"""SELECT s.*, (
+            SELECT group_concat(COALESCE(c.headline, c.first_question) || char(10) || c.search_text, char(10))
+            FROM side_chats c WHERE c.parent_session_id=s.session_id
+        ) AS side_chat_content FROM sessions s WHERE {' AND '.join(clauses)}""",
         params,
     )
     columns = [description[0] for description in cursor.description or ()]
@@ -399,4 +403,14 @@ def query_manage_sessions(
         )
 
     total = len(scoped)
-    return ManagePage(sessions=scoped[offset:offset + limit], total=total, approximate=approximate)
+    page = scoped[offset:offset + limit]
+    from side_chats import label, list_side_chats
+    for row in page:
+        row["side_chats"] = [
+            {"headline": label(child), "transcript_path": child["transcript_path"],
+             "ref": f"sidechat/{row['session_id']}/{child['side_chat_id']}",
+             "matched": any(term in (label(child) + '\n' + child['search_text']).casefold() for term in terms)}
+            for child in list_side_chats(conn, row["session_id"])
+        ]
+        row.pop("side_chat_content", None)
+    return ManagePage(sessions=page, total=total, approximate=approximate)

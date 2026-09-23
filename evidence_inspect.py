@@ -17,7 +17,7 @@ from evidence_model import (
     tool_call_match,
     tool_log_payload,
 )
-from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SkillRef, SubagentRef, ToolRef, format_ref, parse_ref
+from inspect_refs import InspectionRefError, QuestionRef, SessionRef, SideChatRef, SkillRef, SubagentRef, ToolRef, format_ref, parse_ref
 from tool_log import extract_tool_log_section
 from transcript import extract_evidence_snippets
 
@@ -95,12 +95,14 @@ def _session_subagent_refs(conn: sqlite3.Connection, session_id: str) -> list[di
 
 
 def _session_metadata_packet(conn: sqlite3.Connection, raw_ref: str, session: dict[str, Any], match: dict[str, Any]) -> dict[str, Any]:
+    from side_chats import list_side_chats, refs
+    children = list_side_chats(conn, session["session_id"])
     return {
         "ref": raw_ref,
         "session": session_packet(session),
         "match": match,
-        "artifacts": _session_artifacts(session),
-        "inspect_refs": {"subagents": _session_subagent_refs(conn, session["session_id"])},
+        "artifacts": {**_session_artifacts(session), "side_chat_transcripts": {"count": len(children)}},
+        "inspect_refs": {"subagents": _session_subagent_refs(conn, session["session_id"]), "side_chats": refs(children)},
     }
 
 
@@ -268,6 +270,32 @@ def _inspect_subagent(conn: sqlite3.Connection, raw_ref: str, ref: SubagentRef, 
     }
 
 
+def _inspect_side_chat(conn, raw_ref: str, ref: SideChatRef, q: str | None, max_snippets: int) -> dict:
+    from side_chats import refs
+    session = _require_session(conn, ref.session_id, raw_ref)
+    row = conn.execute(
+        "SELECT * FROM side_chats WHERE parent_session_id=? AND side_chat_id=?",
+        (ref.session_id, ref.side_chat_id),
+    ).fetchone()
+    if not row:
+        raise EvidenceInspectError("Side Chat not found", code="stale_ref", ref=raw_ref)
+    child = dict(row)
+    path = child["transcript_path"]
+    if not os.path.isfile(path):
+        raise EvidenceInspectError(f"Side Chat transcript artifact is missing: {path}", code="missing_artifact", ref=raw_ref)
+    if q:
+        evidence = [snippet_payload(s) for s in extract_evidence_snippets(
+            path, q.split(), artifact="side_chat_transcript", max_blocks=max_snippets, max_lines=200,
+        )]
+    else:
+        text, line_end = _read_first_lines(path, 80)
+        evidence = [{"artifact": "side_chat_transcript", "path": path,
+                     "locator": {"type": "opening", "line_start": 1, "line_end": line_end}, "text": text}]
+    return {"ref": raw_ref, "session": session_packet(session),
+            "match": {"kind": "side_chat", **refs([child])[0], "opening_leaf_id": child["opening_leaf_id"], "turn_count": child["turn_count"]},
+            "artifacts": {"side_chat_transcript": _path_metadata(path)}, "evidence": evidence}
+
+
 def inspect_ref(
     conn: sqlite3.Connection,
     raw_ref: str,
@@ -292,4 +320,6 @@ def inspect_ref(
         return _inspect_skill(conn, canonical, ref)
     if isinstance(ref, SubagentRef):
         return _inspect_subagent(conn, canonical, ref, q, max_snippets)
+    if isinstance(ref, SideChatRef):
+        return _inspect_side_chat(conn, canonical, ref, q, max_snippets)
     raise EvidenceInspectError(f"Unsupported inspection ref type: {type(ref).__name__}", code="invalid_ref", ref=raw_ref)

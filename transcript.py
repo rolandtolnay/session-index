@@ -179,7 +179,7 @@ def render_transcript(
     return normalize_references("\n".join(lines))
 
 
-def _artifact_navigation(session_id: str) -> str:
+def _artifact_navigation(session_id: str, side_chats: list[dict] | None = None) -> str:
     """Expose generated siblings without loading their contents into the conversation."""
     tool_path = os.path.abspath(os.path.join(TRANSCRIPT_DIR, f"{session_id}.tools.md"))
     child_dir = os.path.abspath(os.path.join(TRANSCRIPT_DIR, session_id))
@@ -189,11 +189,14 @@ def _artifact_navigation(session_id: str) -> str:
     )
     tool_status = "available" if os.path.isfile(tool_path) else "not generated or unavailable"
     child_status = f"{child_count} available" if child_count else "none generated or available"
+    from side_chats import label
+    children = [f"- Side Chat: {label(row)} → `{row['transcript_path']}`" for row in side_chats or []]
     return "\n".join([
         "## Related artifacts",
         "Availability reflects files present when this transcript was generated.",
         f"- Tool Log: `{tool_path}` ({tool_status}). Contains tool arguments and results, including child tool calls.",
         f"- Subagent Run transcripts: `{child_dir}/` ({child_status}). List `agent-*.md`, then read selected files for their tasks and final output, including background runs.",
+        *children,
     ])
 
 
@@ -205,6 +208,7 @@ def write_transcript(
     branch: str | None = None,
     timestamp: str | None = None,
     subagents: list[SubagentRef] | None = None,
+    side_chats: list[dict] | None = None,
 ) -> str:
     """Write a cleaned transcript to disk. Returns the file path."""
     os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
@@ -216,7 +220,7 @@ def write_transcript(
         branch=branch,
         timestamp=timestamp,
         subagents=subagents,
-        artifact_navigation=_artifact_navigation(session_id),
+        artifact_navigation=_artifact_navigation(session_id, side_chats),
     )
     with open(path, "w") as f:
         f.write(rendered)

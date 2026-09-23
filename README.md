@@ -11,6 +11,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 - **Unified DB** — stores all supported sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
 - **Tool logs** — writes separate per-session tool-call logs to `~/.session-index/transcripts/*.tools.md` when full indexing runs
+- **Pi Side Chats** — indexes automatically archived conversations as searchable child transcripts with routing headlines, never independent sessions
 - **Skill Invocation audits** — normalizes slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads into the canonical `skill_invocations` table
 - **CLI** — `find`, `inspect`, `query`, interactive session management, backfill, status, and current-session lookup from the terminal
 - **Skills** — `session-search` for indexed history and Codex `$current-session` for the active conversation's cleaned paths
@@ -71,15 +72,25 @@ SESSION_INDEX_SUMMARY_CONTENT_CHARS=10000
 SESSION_INDEX_SUMMARY_CONTENT_COOLDOWN_SECONDS=60
 ```
 
-The model/thinking overrides apply to summaries, Substance Bands, and Session Headlines. Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy summary fallback path; headlines and classification require Pi. Failed assessments preserve the last successful band; unassessed sessions are not classified as low-value.
+The model/thinking overrides apply to summaries, Substance Bands, Session Headlines, and Side Chat Headlines. Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy summary fallback path; headlines and classification require Pi. Failed assessments preserve the last successful band; unassessed sessions are not classified as low-value.
 
 For every supported provider, the first session snapshot with at least one user and one assistant message gets deterministic artifacts plus an immediate summary/headline attempt. Later assistant turns refresh deterministic artifacts immediately. Summary/headline refreshes are coalesced per session and run after either the idle interval or the configured amount of newly rendered user/assistant content; content-trigger attempts observe the cooldown. Claude SessionEnd and Pi shutdown force a final refresh. Codex exposes only turn-level Stop, so its latest snapshot is finalized by the normal idle refresh. `SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS` remains a compatibility fallback when the shared idle variable is unset.
+
+## Pi Side Chat archives
+
+The shared Side Chat extension in the local Pi harness saves completed exchanges and Focused Content as non-context custom entries in the originating parent's raw JSONL. Session Index derives `transcripts/<parent-id>/side-chat-<uuid>.md`; the parent Clean Transcript includes only a routing label and link in **Related artifacts**. Reading the child conversation is explicit, and archival does not import it into the parent model's context or description inputs.
+
+Pi defers writes before the parent's first assistant message. Side Chat warns while archival is pending; those records become recoverable once Pi flushes the parent. An exit before that flush can lose the pending exchanges.
+
+Side Chats receive child-only routing headlines asynchronously after closure, with a first-question fallback. Full/summary indexing recovers missing headlines, including after an interrupted close. Deterministic-only indexing and backfills do not call a model. Side Chats have no independent session rows, summaries, Substance Bands, or recents entries. Search includes their questions and answers, returns their parent once, and supplies child inspection refs.
+
+Saved children block automatic low-value pruning. Explicit parent deletion removes owned generated child artifacts but retains source JSONL. Manual exports and imports remain separate actions; previously discarded Side Chats cannot be recovered. This requires the matching shared Side Chat producer in the local Pi harness, not just the Session Index extension; reload Pi after updating both.
 
 ## Backfill existing conversations
 
 Hooks/extensions index new Claude, Pi, and Codex conversations automatically. Backfill remains the historical import and repair path.
 
-By default, backfill regenerates only deterministic artifacts and facts: Clean Transcripts, Tool Logs, Subagent Run transcripts, and structured fact tables. It does not run the LLM summarizer.
+By default, backfill regenerates only deterministic artifacts and facts: Clean Transcripts, Tool Logs, Subagent Run and Side Chat transcripts, and structured fact tables. It does not run the LLM summarizer.
 
 ```bash
 uv run cli.py backfill --source all
@@ -170,7 +181,7 @@ The full-screen terminal browser shows a compact session list beside the selecte
 
 Each page shows up to 20 sessions. Search and filters cover the full inventory, including sessions on other pages. The list scrolls to keep the selected session visible. The header shows the number of results, the active scope, and the sort order.
 
-Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It does not search raw transcripts or assistant messages. The preview shows matching excerpts.
+Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines/paths, marking matching Side Chats.
 
 Press `f` to open the filter picker. It opens with Project selected. Type part of a project name, then press Enter to apply the filter and return to the session list.
 

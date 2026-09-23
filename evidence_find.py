@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from typing import Any
 
-from db import build_fts_query, find_session_candidates, get_session, top_level_session_predicate
+from db import build_fts_query, find_session_candidates, get_session, top_level_session_predicate, topic_hits_sql
 from evidence_model import (
     candidate,
     file_mutation_match,
@@ -48,7 +48,8 @@ def _empty_result_hint(args: dict[str, Any]) -> str | None:
     if args.get("topic"):
         return (
             "No exact or fuzzy topic matches. Topic FTS covers user messages, summaries, file paths, "
-            "and project names (not assistant text); terms are AND-joined and the fuzzy fallback scans "
+            "and project names, plus Side Chat headlines, focused content, questions and answers "
+            "(not main assistant text); terms are AND-joined and the fuzzy fallback scans "
             "the most recent 1000 in-scope sessions. Try fewer or different terms, OR between "
             "alternatives, --mutated with a path fragment, or query with summary LIKE."
         )
@@ -93,15 +94,10 @@ def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = 
 def _exact_topic_has_sessions(conn: sqlite3.Connection, args: dict[str, Any]) -> bool:
     params: dict[str, Any] = {"topic_query": build_fts_query(args["topic"])}
     clauses = _session_filters(args, params)
-    where = "WHERE sessions_fts MATCH :topic_query"
-    if clauses:
-        where += " AND " + " AND ".join(clauses)
     row = conn.execute(f"""
-        SELECT 1
-        FROM sessions_fts fts
-        JOIN sessions s ON s.rowid = fts.rowid
-        {where}
-        LIMIT 1
+        WITH topic_hits AS ({topic_hits_sql('topic_query')})
+        SELECT 1 FROM topic_hits h JOIN sessions s ON s.session_id=h.session_id
+        WHERE {' AND '.join(clauses)} LIMIT 1
     """, params).fetchone()
     return row is not None
 
@@ -157,15 +153,11 @@ def _scoped_sessions_cte(conn: sqlite3.Connection, args: dict[str, Any], params:
             return _fuzzy_scoped_sessions_cte(conn, args, params), "fuzzy_fallback"
 
         params["topic_query"] = build_fts_query(args["topic"])
-        where = "WHERE sessions_fts MATCH :topic_query"
-        if clauses:
-            where += " AND " + " AND ".join(clauses)
         return f"""
-            WITH scoped_sessions AS (
-                SELECT s.*, rank AS topic_rank, 'exact' AS topic_match_mode, NULL AS fuzzy_score
-                FROM sessions_fts fts
-                JOIN sessions s ON s.rowid = fts.rowid
-                {where}
+            WITH topic_hits AS ({topic_hits_sql('topic_query')}), scoped_sessions AS (
+                SELECT s.*, h.topic_rank, 'exact' AS topic_match_mode, NULL AS fuzzy_score
+                FROM topic_hits h JOIN sessions s ON s.session_id=h.session_id
+                WHERE {' AND '.join(clauses)}
             )
         """, "exact"
 
@@ -432,7 +424,10 @@ def _topic_candidates(conn: sqlite3.Connection, args: dict[str, Any]) -> list[di
     for row in rows[:args["limit"]]:
         row_dict = dict(row)
         ref = format_ref(SessionRef(session_id=row_dict["session_id"]))
-        out.append(candidate(ref, session_summary(row_dict), match))
+        from side_chats import matching_refs
+        child_refs = matching_refs(conn, row_dict['session_id'], args['topic']) if args.get('topic') else []
+        out.append(candidate(ref, session_summary(row_dict), dict(match),
+                             inspect_refs={"side_chats": child_refs} if child_refs else None))
     return out
 
 

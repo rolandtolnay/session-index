@@ -13,6 +13,7 @@ _REVIEWED_TABLES = {
     "file_mutations": "one row per successful write/edit path. This is the precise File Mutation table; sessions.files_touched is broad metadata.",
     "subagent_runs": "one row per Subagent Run requested by a parent session. Use requested_agent_type as the canonical agent label.",
     "question_answers": "one row per asked question. was_recommended is NULL for unanswered or multi-select rows.",
+    "side_chats": "one child artifact per (parent_session_id, side_chat_id), not an independent session. headline is nullable until generated; first_question is the routing fallback. Source records belong to the parent; transcript_path is the normal evidence path. No child summary or Substance Band.",
 }
 
 
@@ -29,7 +30,7 @@ def _schema_columns(table_name: str) -> list[str]:
     columns: list[str] = []
     for raw_line in match.group(1).splitlines():
         line = raw_line.strip().rstrip(",")
-        if not line or line.startswith("--"):
+        if not line or line.startswith(("--", "UNIQUE(", "PRIMARY KEY(", "FOREIGN KEY(")):
             continue
         column = line.split(None, 1)[0]
         columns.append(column)
@@ -64,6 +65,8 @@ Tables and semantics
 
 sessions_fts: FTS5 index over user_messages, summary, files_touched, project. Terms are AND-joined; OR and NOT work. Example: SELECT s.session_id, s.started_at FROM sessions_fts f JOIN sessions s ON s.rowid=f.rowid WHERE sessions_fts MATCH 'refresh OR cooldown' ORDER BY rank LIMIT 10;
 
+side_chats_fts: FTS5 index over child headlines and focused content/questions/answers. `find --topic` searches both indexes and returns each parent once, identifying matching child refs.
+
 Column listing: PRAGMA statements are blocked, but the table-valued form works: SELECT name, type FROM pragma_table_info('tool_calls');
 
 Construct Inspection References
@@ -72,6 +75,7 @@ tool/<session_id>/<sequence> for rows from tool_calls or file_mutations.
 skill/<session_id>/<sequence> for rows from skill_invocations.
 question/<session_id>/<sequence>/<question_index> for rows from question_answers.
 subagent/<parent_session_id>/<child_index> for rows from subagent_runs with child_index.
+sidechat/<parent_session_id>/<side_chat_id> for rows from side_chats.
 session/<session_id> for session-level inspection and generated artifact metadata.
 
 Copyable examples
@@ -90,6 +94,9 @@ SELECT skill_name, COUNT(*) AS n FROM skill_invocations GROUP BY skill_name ORDE
 
 Subagent runs with inspect refs:
 SELECT 'subagent/' || parent_session_id || '/' || child_index AS ref, requested_agent_type, task_preview FROM subagent_runs WHERE child_index IS NOT NULL ORDER BY parent_session_id, child_index LIMIT 20;
+
+Side Chats under one parent:
+SELECT 'sidechat/' || parent_session_id || '/' || side_chat_id AS ref, COALESCE(headline, first_question) AS headline, opener, turn_count FROM side_chats WHERE parent_session_id='SESSION_ID' ORDER BY started_at;
 
 Exact File Mutations in one session:
 SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;

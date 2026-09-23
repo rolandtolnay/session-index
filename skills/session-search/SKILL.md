@@ -56,6 +56,7 @@ Key tables:
 - `skill_invocations` — canonical Skill Invocation audit table for reusable prompt/workflow template use, including slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads. Construct `skill/<session_id>/<sequence>`.
 - `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and event trails.
 - `subagent_runs` — one row per Subagent Run. Construct `subagent/<parent_session_id>/<child_index>` when `child_index` is present.
+- `side_chats` — parent-owned Side Chat artifacts, not independent sessions. Construct `sidechat/<parent_session_id>/<side_chat_id>`. `headline` is nullable; `first_question` is its routing fallback.
 - `question_answers` — one row per asked question. Construct `question/<session_id>/<sequence>/<question_index>`.
 - `sessions` — session metadata useful for joins: `session_id`, `project`, `branch`, `started_at`, searchable `summary`, compact `headline`, `substance_band` (`substantial`, `useful`, `low_value`; NULL means unknown), evidence-based `substance_reason`, interaction counts, and generated artifact paths.
 
@@ -67,7 +68,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/find.py [criteria] [filters]
 
 Criteria:
 
-- `--topic TEXT` — session/topic candidates with `session/<session_id>` refs. Exact topic FTS is primary; if exact topic scope is empty, deterministic fuzzy fallback ranks already-indexed session metadata and still honors `--project`, `--since`, `--until`, and `--session`. Terms are AND-joined; `OR` and `NOT` operators work (`--topic "codex OR rollout"`); quoted phrases are not supported. FTS covers user messages, summaries, file paths, and project names — not assistant text. Exact results order by FTS relevance, not recency; fuzzy results order by score. For "most recent session about X", scope with `--since` or check `started_at` rather than trusting the first result.
+- `--topic TEXT` — session/topic candidates with `session/<session_id>` refs. Exact topic FTS is primary; if exact topic scope is empty, deterministic fuzzy fallback ranks already-indexed session metadata and still honors `--project`, `--since`, `--until`, and `--session`. Terms are AND-joined; `OR` and `NOT` operators work (`--topic "codex OR rollout"`); quoted phrases are not supported. FTS covers user messages, summaries, file paths, and project names, plus Side Chat headlines, Focused Content, questions and answers — not main-session assistant text. Side Chat matches return their parent once with matching child routing labels and refs in `inspect_refs.side_chats`; explicitly inspect a child to read its content. Exact results order by FTS relevance, not recency; fuzzy results order by score. For "most recent session about X", scope with `--since` or check `started_at` rather than trusting the first result.
 - `--tool NAME` — Tool Call candidates with `tool/<session_id>/<sequence>` refs.
 - `--skill NAME` — Skill Invocation candidates with `skill/<session_id>/<sequence>` refs from `skill_invocations`.
 - `--mutated PATH_FRAGMENT` — session-collapsed File Mutation candidates by default, one `session/<session_id>` ref per Canonical Session ID that mutated matching paths.
@@ -105,19 +106,21 @@ uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref REF [--q TEXT]
 
 Use refs copied unchanged from `find` or constructed from `query --schema` guidance:
 
-- `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata (including the Clean Transcript artifact path/existence), structured subagent refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets. If the Clean Transcript is not generated yet (typical for still-active or just-ended sessions), the packet returns the session summary plus a `note` instead of an error.
+- `session/<session_id>` — without `--q`, returns session metadata, generated artifact metadata (including the Clean Transcript artifact path/existence), structured subagent and Side Chat refs, and `evidence: []`; with `--q`, adds query-focused Clean Transcript Evidence Snippets. If the Clean Transcript is not generated yet (typical for still-active or just-ended sessions), the packet returns the session summary plus a `note` instead of an error.
 - `skill/<session_id>/<sequence>` — returns Skill Invocation metadata, locator/preview fields, and primary transcript artifact metadata without inlining the full transcript. Parent invocations use the Clean Transcript as primary; subagent-scope invocations use the subagent transcript as primary and include the parent Clean Transcript as context when available.
 - `tool/<session_id>/<sequence>` — returns the matching Tool Log section plus associated File Mutation paths.
 - `question/<session_id>/<sequence>/<question_index>` — returns question-answer metadata plus the Tool Log section.
 - `subagent/<session_id>/<child_index>` — returns task/prompt-area evidence by default; with `--q`, returns query-focused Subagent Run Evidence Snippets.
+- `sidechat/<parent_session_id>/<side_chat_id>` — returns bounded opening evidence from the separate Side Chat Transcript; with `--q`, returns query-focused child Evidence Snippets. Parent inspection never inlines the child conversation.
 
 Session inspect artifact metadata has deterministic paths and existence booleans for generated artifacts:
 
 - `artifacts.clean_transcript: {path, exists}`
 - `artifacts.tool_log: {path, exists}`
 - `artifacts.subagent_transcripts: {count}`
+- `artifacts.side_chat_transcripts: {count}`
 
-Session inspect does not expose raw Source Transcript paths and does not list every subagent transcript path. It exposes `inspect_refs.subagents[]` objects with `ref`, `requested_agent_type`, and `task_preview` so you can choose a child run before loading it.
+Session inspect does not expose raw Source Transcript paths and does not list every subagent transcript path. It exposes `inspect_refs.subagents[]` objects with `ref`, `requested_agent_type`, and `task_preview` so you can choose a child run before loading it. `inspect_refs.side_chats[]` includes each child's `ref`, `headline` (or first-question fallback), `opener`, and `started_at`.
 
 `inspect` emits JSON Evidence Packets with artifact path, locator metadata, and bounded Evidence Snippets. Invalid refs, missing sessions, stale refs, and missing artifacts return JSON errors and a non-zero exit status, except session refs with a pending Clean Transcript, which return the summary-plus-`note` packet described above.
 
@@ -137,7 +140,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref subagent/pi:ab
 uv run ~/.pi/agent/skills/session-search/scripts/footprint.py [--session ID] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--limit N] [--json]
 ```
 
-Use `footprint` when users ask where Session Index disk usage is going or which sessions are safe prune candidates. It reports generated Clean Transcript, Tool Log, and Subagent Run transcript sizes; missing/dangling generated paths; source JSONL retention; fact counts; and prune blockers. It never deletes anything.
+Use `footprint` when users ask where Session Index disk usage is going or which sessions are safe prune candidates. It reports generated Clean Transcript, Tool Log, Subagent Run, and Side Chat transcript sizes; missing/dangling generated paths; source JSONL retention; fact counts; and prune blockers. It never deletes anything.
 
 ### prune — confirmed low-value deletion
 
@@ -146,7 +149,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID
 uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID ...] --confirm
 ```
 
-`prune` is dry-run by default. It deletes only exact Canonical Session IDs supplied on the command line, only when `--confirm` is present, and only when the audit classifies every requested session as low-value. Low-value means the summary has an explicit low-value signal and there are no durable facts for File Mutations, Skill Invocations, Subagent Runs, or question answers. Uncertain cases default to keep. A `low_value` Substance Band is a ranking assessment, not permission to prune; the pruning audit's independent guards still apply. Source JSONL is never deleted.
+`prune` is dry-run by default. It deletes only exact Canonical Session IDs supplied on the command line, only when `--confirm` is present, and only when the audit classifies every requested session as low-value. Low-value means the summary has an explicit low-value signal and there are no durable facts for File Mutations, Skill Invocations, Subagent Runs, Side Chats, or question answers. Uncertain cases default to keep. A `low_value` Substance Band is a ranking assessment, not permission to prune; the pruning audit's independent guards still apply. Source JSONL is never deleted.
 
 ## Manage sessions
 
@@ -156,7 +159,7 @@ The full-screen terminal browser shows a compact session list beside the selecte
 
 Each page shows up to 20 sessions. Search and filters cover the full inventory, including sessions on other pages. The list scrolls to keep the selected session visible. The header shows the number of results, the active scope, and the sort order.
 
-Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It does not search raw transcripts or assistant messages. The preview shows matching excerpts.
+Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines/paths, marking matching Side Chats.
 
 Press `f` to open the filter picker. It opens with Project selected. Type part of a project name, then press Enter to apply the filter and return to the session list.
 
@@ -205,8 +208,11 @@ Generated artifacts are the normal evidence path:
 - `~/.session-index/transcripts/<session-id>.md` — Clean Transcript.
 - `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, compact large write/edit argument text with hashes, and larger bounded audit excerpts for mutations/errors.
 - `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
+- `~/.session-index/transcripts/<session-id>/side-chat-<uuid>.md` — Side Chat Transcripts with Focused Content and completed exchanges.
 
 Newly generated or regenerated Clean Transcripts include a compact **Related artifacts** header with absolute paths to the Tool Log and child-transcript directory. Availability reflects files present at generation time. Starting from a copied Clean Transcript path, follow the Tool Log for arguments/results, or list the linked directory's `agent-*.md` files and read selected children for their tasks and final output, including background runs. A missing completion in the parent Tool Log does not mean the child transcript is missing. Older transcripts without this header can be explored with `inspect --ref session/<session-id>` to discover child refs.
+
+Parents with saved Side Chats also list child routing headlines and transcript paths in **Related artifacts**, without embedding child exchanges. Headline generation runs after Side Chat closure; a first-question preview is used until available. Side Chats have no independent session rows, summaries, Substance Bands, or recents entries. They are archived in the parent's raw Pi JSONL as non-context custom entries; archival does not import them into the main agent's context. Previously discarded chats cannot be recovered.
 
 Raw Source JSONL lives at `~/.claude/projects/`, `~/.pi/agent/sessions/`, and Codex rollout files under `~/.codex/sessions/` and `~/.codex/archived_sessions/`.
 

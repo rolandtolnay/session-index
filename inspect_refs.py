@@ -75,7 +75,20 @@ class SubagentRef:
         _validate_non_negative(self.child_index, "child_index")
 
 
-InspectionRef: TypeAlias = SessionRef | ToolRef | QuestionRef | SkillRef | SubagentRef
+@dataclass(frozen=True)
+class SideChatRef:
+    session_id: str
+    side_chat_id: str
+    kind: Literal["sidechat"] = field(init=False, default="sidechat")
+
+    def __post_init__(self) -> None:
+        import re
+        _validate_session_id(self.session_id)
+        if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", self.side_chat_id):
+            raise InspectionRefError("Invalid Side Chat ID: expected UUID")
+
+
+InspectionRef: TypeAlias = SessionRef | ToolRef | QuestionRef | SkillRef | SubagentRef | SideChatRef
 
 
 def _parse_int(value: str, label: str) -> int:
@@ -141,6 +154,10 @@ def parse_ref(value: str) -> InspectionRef:
             session_id=_join_session_id(parts, 1, -1),
             sequence=_parse_int(parts[-1], "sequence"),
         )
+    if kind == "sidechat":
+        if len(parts) < 3:
+            raise InspectionRefError("Expected sidechat/<session_id>/<side_chat_id>")
+        return SideChatRef(session_id=_join_session_id(parts, 1, -1), side_chat_id=parts[-1])
     if kind == "subagent":
         if len(parts) < 3:
             raise InspectionRefError("Expected subagent/<session_id>/<child_index>")
@@ -164,4 +181,6 @@ def format_ref(ref: InspectionRef) -> str:
         return f"skill/{ref.session_id}/{ref.sequence}"
     if isinstance(ref, SubagentRef):
         return f"subagent/{ref.session_id}/{ref.child_index}"
+    if isinstance(ref, SideChatRef):
+        return f"sidechat/{ref.session_id}/{ref.side_chat_id}"
     raise InspectionRefError(f"Unknown inspection ref type: {type(ref).__name__}")

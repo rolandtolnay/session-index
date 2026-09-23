@@ -42,7 +42,8 @@ HELP_LINES = [
     "Every word must match; partial words work.",
     "Typos use near matches only if exact matches fail.",
     "Search covers titles, summaries, user prompts,",
-    "projects, files, and IDs—not raw or assistant text.",
+    "projects, files, IDs, and Side Chat conversations.",
+    "Main assistant text and raw logs are not searched.",
     "", "FILTERS & SORTING",
     "Each filter choice applies immediately on Enter.",
     "Choose All / Any to clear just that category.",
@@ -103,6 +104,15 @@ def wrapped(text: str, width: int) -> list[str]:
                 break
             lines.append(part)
             line = line[len(part):].lstrip()
+    return lines
+
+
+def side_chat_preview(session: dict, width: int) -> list[str]:
+    lines = []
+    for child in session.get("side_chats", []):
+        marker = " [matched]" if child.get("matched") else ""
+        lines += [""] + wrapped(plain(f"Side Chat{marker}: {child['headline']}"), width)
+        lines += wrapped(plain(child["transcript_path"]), width)
     return lines
 
 
@@ -516,6 +526,7 @@ class SessionManager:
         if session.get("match_excerpt"):
             lines += [(line, self.styles["accent"]) for line in wrapped(plain(session["match_excerpt"]), width)] + [("", 0)]
         lines += [(line, 0) for line in wrapped(summary, width)]
+        lines += [(line, 0) for line in side_chat_preview(session, width)]
         count = max(1, height - 8)
         self.preview_height = count
         self.preview_max = max(0, len(lines) - count)
@@ -715,6 +726,7 @@ class SessionManager:
                 summary = plain(session.get("summary") or session.get("user_messages") or "No preview available yet.")
                 excerpt = plain(session.get("match_excerpt"))
                 lines = (wrapped(excerpt, width - 4) + [""] if excerpt else []) + wrapped(summary, width - 4)
+                lines += side_chat_preview(session, width - 4)
                 count = max(1, height - preview_y - 7)
                 self.preview_height = count
                 self.preview_max = max(0, len(lines) - count)

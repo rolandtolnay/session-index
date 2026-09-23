@@ -51,7 +51,7 @@ _REFERENCE = re.compile(
     rf"(?P<artifact>(?:\.session-index/transcripts/|(?<![\w/.:~-])transcripts/))"
     rf"(?P<path_id>{LEGACY_ID})(?=[/.]|$)"
     rf"|(?<![\w/.:~-])(?P<file_id>{LEGACY_ID})(?P<ext>\.tools\.md|\.md)(?![\w.-])"
-    rf"|(?<![\w/])(?P<kind>session|tool|skill|question|subagent)/(?P<ref_id>{LEGACY_ID})(?![\w:-])"
+    rf"|(?<![\w/])(?P<kind>session|tool|skill|question|subagent|sidechat)/(?P<ref_id>{LEGACY_ID})(?![\w:-])"
     rf"|(?m:^(?P<header>Parent: |# Tool log — )(?P<header_id>{LEGACY_ID})$)"
 )
 

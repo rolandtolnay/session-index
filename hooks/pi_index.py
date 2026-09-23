@@ -22,13 +22,24 @@ from logger import log
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Index a Pi session")
-    parser.add_argument("--mode", choices=("fast", "full", "turn", "exit"), required=True)
+    parser.add_argument("--mode", choices=("fast", "full", "turn", "exit", "side-chat", "side-chat-close"), required=True)
     parser.add_argument("--session-file", required=True)
     args = parser.parse_args()
 
     session_file = os.path.realpath(os.path.expanduser(args.session_file))
     if not os.path.exists(session_file):
         log("pi", "pi_index", f"missing session file: {session_file}")
+        return
+
+    if args.mode in {"side-chat", "side-chat-close"}:
+        from indexer import IndexOptions, IndexStage, index_source_transcript
+        from side_chats import refresh_headlines
+
+        result = index_source_transcript("pi", session_file, IndexOptions(frozenset({
+            IndexStage.SESSION_METADATA, IndexStage.CLEAN_TRANSCRIPT,
+        })))
+        if not result.skipped_reason and args.mode == "side-chat-close":
+            refresh_headlines(result.session_id)
         return
 
     if args.mode in {"turn", "exit"}:

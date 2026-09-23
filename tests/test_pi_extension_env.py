@@ -22,6 +22,37 @@ def _run_node(script: str) -> None:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_side_chat_notifications_index_captured_parent_without_triggering_main_turn():
+    _run_node(r'''
+        import assert from "node:assert/strict";
+        import { EventEmitter } from "node:events";
+        import { createSessionIndexExtension } from "./pi-extension/index.ts";
+        const events = new EventEmitter();
+        const spawns = [];
+        const pi = { events, registerCommand() {}, on() {} };
+        const register = createSessionIndexExtension({spawnProcess: (...args) => {
+          const child = new EventEmitter(); child.unref = () => {};
+          spawns.push(args);
+          return child;
+        }});
+        register(pi);
+        process.env.SESSION_INDEX_SOURCE_PATH = "/tmp/wrong-active.jsonl";
+        process.env.SESSION_INDEX_NATIVE_SESSION_ID = "wrong-active";
+        events.emit("side-chat:archived", {parentSessionId: "captured-parent", parentSessionFile: "/tmp/parent.jsonl", closed: false});
+        events.emit("side-chat:archived", {parentSessionId: "captured-parent", parentSessionFile: "/tmp/parent.jsonl", closed: true});
+        events.emit("side-chat:archived", {parentSessionId: "x", parentSessionFile: "relative.jsonl", closed: true});
+        assert.equal(spawns.length, 2);
+        assert.equal(spawns[0][1][3], "side-chat");
+        assert.equal(spawns[1][1][3], "side-chat-close");
+        for (const [cmd, args, options] of spawns) {
+          assert.equal(args.at(-1), "/tmp/parent.jsonl");
+          assert.equal(options.env.SESSION_INDEX_NATIVE_SESSION_ID, "captured-parent");
+          assert.equal(options.env.SESSION_INDEX_SOURCE_PATH, "/tmp/parent.jsonl");
+          assert.equal(options.detached, true);
+        }
+    ''')
+
+
 def test_build_session_index_env_exports_pi_contract_with_leaf():
     _run_node(
         r'''

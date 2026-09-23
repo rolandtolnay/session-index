@@ -277,7 +277,7 @@ def _summarize_session(session: ParsedSession, inputs: dict) -> SummaryResult | 
     return summarize(last_assistant_message=last_assistant, **inputs)
 
 
-def _write_clean_transcript(session: ParsedSession, parsed_subagents: list[ParsedSubagent]) -> str | None:
+def _write_clean_transcript(session: ParsedSession, parsed_subagents: list[ParsedSubagent], side_chats: list[dict] | None = None) -> str | None:
     from transcript import write_transcript
 
     if not session.messages:
@@ -289,6 +289,7 @@ def _write_clean_transcript(session: ParsedSession, parsed_subagents: list[Parse
         branch=session.branch,
         timestamp=session.started_at,
         subagents=_subagent_refs(parsed_subagents) or None,
+        side_chats=side_chats,
     )
 
 
@@ -390,7 +391,11 @@ def index_source_transcript(
     lock = (nullcontext() if stages <= {IndexStage.SUMMARY}
             else indexing_lock(os.path.dirname(DB_PATH), session.session_id))
     with lock:
-        return _index_qualified_session(source, path, stages, session, result)
+        result = _index_qualified_session(source, path, stages, session, result)
+    if source == "pi" and IndexStage.SUMMARY in stages:
+        from side_chats import refresh_headlines
+        refresh_headlines(session.session_id, recover_open=True)
+    return result
 
 
 def _index_qualified_session(
@@ -401,6 +406,7 @@ def _index_qualified_session(
     # Check ownership before touching artifacts; artifact-writing callers hold
     # the per-session lock through these writes and the final DB commit.
     identity_conn = get_connection()
+    side_chat_rows = []
     try:
         init_db(identity_conn)
         assert_session_identity(
@@ -409,6 +415,9 @@ def _index_qualified_session(
             source,
             session.native_session_id,
         )
+        if source == "pi" and IndexStage.CLEAN_TRANSCRIPT in stages:
+            from side_chats import build_rows
+            side_chat_rows = build_rows(path, session, identity_conn)
     finally:
         identity_conn.close()
 
@@ -462,7 +471,10 @@ def _index_qualified_session(
     # accurate on the first pass as well as on regeneration.
     transcript_path = None
     if IndexStage.CLEAN_TRANSCRIPT in stages:
-        transcript_path = _write_clean_transcript(session, parsed_subagents)
+        from side_chats import write_child
+        for child in side_chat_rows:
+            write_child(child)
+        transcript_path = _write_clean_transcript(session, parsed_subagents, side_chat_rows)
         result.transcript_path = transcript_path
 
     subagent_runs = normalize_subagent_runs(session, source=source, parsed_subagents=parsed_subagents)
@@ -501,6 +513,9 @@ def _index_qualified_session(
             commit=False,
         )
         _persist_facts(conn, session, source, stages, subagent_runs, combined_tool_calls)
+        if source == "pi" and IndexStage.CLEAN_TRANSCRIPT in stages:
+            from side_chats import replace_rows
+            replace_rows(conn, session.session_id, side_chat_rows)
         conn.commit()
     except Exception:
         conn.rollback()
