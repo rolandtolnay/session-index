@@ -11,7 +11,7 @@ import os
 from collections import Counter
 from dataclasses import dataclass, field
 
-from parser import ParsedToolCall, _clean_text, _format_question_answers, _NOISE_TAGS, _ANSI_ESCAPE
+from parser import ParsedToolCall, bash_changed_paths, _clean_text, _format_question_answers, _NOISE_TAGS, _ANSI_ESCAPE
 
 
 @dataclass
@@ -200,6 +200,8 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
                         tool_results[tuid] = {
                             "content": result_content,
                             "is_error": item.get("is_error", False),
+                            "edit_diff": (entry.get("toolUseResult") or {}).get("bashEditDiff")
+                            if isinstance(entry.get("toolUseResult"), dict) else None,
                         }
 
         # Collect tool_use info from assistant entries
@@ -234,7 +236,6 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
         except Exception:
             pass
 
-    result.files_touched = sorted(files_set)
     result.tool_call_count = sum(tool_counter.values())
     if tool_counter:
         result.tools_used = ", ".join(
@@ -252,7 +253,10 @@ def parse_subagent_jsonl(jsonl_path: str, meta_path: str | None = None) -> Parse
             arguments=call.arguments,
             result=tr.get("content", ""),
             is_error=bool(tr.get("is_error", False)),
+            changed_paths=bash_changed_paths(tr.get("edit_diff"), call.arguments.get("command")),
         ))
+        files_set.update(result.tool_calls[-1].changed_paths)
+    result.files_touched = sorted(files_set)
 
     # Second pass: build messages with subagent cleaning rules
     pending_tool_uses: list[dict] = []

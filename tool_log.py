@@ -229,7 +229,7 @@ def _is_read_only_call(call: ParsedToolCall) -> bool:
     tool = _normalize_tool_name(call.tool_name)
     if tool in _READ_ONLY_TOOLS:
         return True
-    if tool in _AUDIT_RESULT_TOOLS:
+    if tool in _AUDIT_RESULT_TOOLS or call.changed_paths:
         return False
 
     args = call.arguments if isinstance(call.arguments, dict) else {}
@@ -485,6 +485,10 @@ def write_tool_log(
             f"Status: {'error' if call.is_error else 'ok'}",
             f"Tool call ID: {call.tool_call_id or 'unknown'}",
             "",
+        ])
+        if call.changed_paths:
+            lines.extend(["Changed files:", *(f"- {path}" for path in call.changed_paths), ""])
+        lines.extend([
             "Arguments:",
             "```json",
             _format_arguments(call.arguments or {}),

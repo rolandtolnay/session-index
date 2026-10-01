@@ -80,7 +80,7 @@ The most important tables are:
 
 - `sessions` — one row per session
 - `tool_calls` — one row per tool call
-- `file_mutations` — successful writes/edits
+- `file_mutations` — successful writes/edits, and files Claude Code reports Bash commands changed
 - `subagent_runs` — child-agent runs
 - `question_answers` — user answers to structured questions
 
@@ -286,7 +286,7 @@ tool
 path
 ```
 
-Use this for actual successful writes/edits.
+Use this for actual successful writes/edits, including files Claude Code reports Bash commands changed (`tool = 'bash'`).
 
 Do not rely on `sessions.files_touched` for precise mutation audits. That field is broader.
 

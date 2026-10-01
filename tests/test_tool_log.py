@@ -42,6 +42,22 @@ def test_write_tool_log_markdown(tmp_path, monkeypatch):
     assert "2 passed" in content
 
 
+
+def test_write_tool_log_lists_bash_changed_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
+    call = ParsedToolCall(
+        sequence=1,
+        tool_name="Bash",
+        arguments={"command": "grep -q x a.py; sed -i '' s/x/y/ a.py"},
+        result="x" * 5_000,
+        changed_paths=["/repo/a.py"],
+    )
+
+    content = open(write_tool_log("session-1", [call])).read()
+
+    assert "Changed files:\n- /repo/a.py\n\nArguments:" in content
+    assert "compact read-only result" not in content
+
 def test_write_tool_log_truncates_large_result(tmp_path, monkeypatch):
     monkeypatch.setattr("tool_log.TRANSCRIPT_DIR", str(tmp_path))
     result = "a" * 10_500 + "middle" + "z" * 10_500

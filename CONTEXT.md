@@ -88,7 +88,7 @@ A bounded text selection from a Clean Transcript, Tool Log, or Subagent Run tran
 _Avoid_: Excerpt, passage, broad transcript dump
 
 **File Mutation**:
-An attributed file path targeted by a successful write or edit tool action within a session.
+An attributed file path targeted by a successful write or edit tool action, or reported by the harness as changed by a shell command, within a session.
 _Avoid_: Changed File, Session Footprint, File Event
 
 **Session-Collapsed Mutation Candidate**:
@@ -206,5 +206,5 @@ _Avoid_: Observed child type, artifact title
 - Artifact paths can be broad artifact inventories or candidate-specific handles — resolved: **Evidence Find** avoids broad artifact inventories, but candidate-specific artifact pointers are acceptable when they directly help an LLM choose or retrieve scoped context.
 - CLI compactness can mean fewer fields or faster path-to-context — resolved: optimize for the LLM reaching the most relevant scoped context quickly, not for minimal JSON or ceremony for its own sake.
 - CLI usage guidance can live in README, docs, skill docs, or help text — resolved: the **LLM-Facing CLI Surface** is the installed skill documentation plus CLI help; README is for adopters and maintainers, not required LLM operating context.
-- "changed files" can mean read/search references, write/edit targets, git dirty state, or net filesystem delta — resolved: **File Mutation** means successful write/edit tool targets only and is distinct from Pi's **Session Footprint** concept.
+- "changed files" can mean read/search references, write/edit targets, git dirty state, or net filesystem delta — resolved: **File Mutation** means successful write/edit tool targets plus files the harness reports a shell command changed (see `docs/adr/0006-harness-reported-bash-mutations.md`), and is distinct from Pi's **Session Footprint** concept.
 - `find --mutated` can mean event-level audit rows or session-level discovery candidates — resolved: **Session-Collapsed Mutation Candidate** is the default discovery result; event-level rows remain an explicit detail mode.

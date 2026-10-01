@@ -185,6 +185,23 @@ def test_non_mutating_tools_do_not_produce_file_mutation_rows():
     assert build_file_mutation_rows("sess-1", "claude", calls) == []
 
 
+
+def test_bash_changed_paths_produce_file_mutation_rows_even_when_command_fails():
+    calls = [
+        ParsedToolCall(sequence=1, tool_name="Bash", arguments={"command": "python3 edit.py"},
+                       changed_paths=["/repo/a.py", "/repo/b.py"]),
+        ParsedToolCall(sequence=2, tool_name="Bash", arguments={"command": "sed -i '' s/x/y/ c.py && pytest"},
+                       is_error=True, changed_paths=["/repo/c.py"]),
+    ]
+
+    rows = build_file_mutation_rows("sess-1", "claude", calls)
+
+    assert [(r["sequence"], r["tool_name"], r["tool"], r["path"]) for r in rows] == [
+        (1, "Bash", "bash", "/repo/a.py"),
+        (1, "Bash", "bash", "/repo/b.py"),
+        (2, "Bash", "bash", "/repo/c.py"),
+    ]
+
 def test_file_mutations_dedupe_paths_within_call_but_not_across_calls():
     calls = [
         ParsedToolCall(sequence=1, tool_name="edit", arguments={"edits": [{"path": "src/a.py"}, {"path": "src/a.py"}]}),

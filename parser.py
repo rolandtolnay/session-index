@@ -39,6 +39,9 @@ class ParsedToolCall:
     is_error: bool = False
     question_selections: list[ParsedQuestionSelection] = field(default_factory=list)
     question_cancelled: bool = False
+    # Files the harness reports this call changed, for tools without a path
+    # argument (Claude Code Bash); see `bash_changed_paths`.
+    changed_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -210,6 +213,64 @@ def _extract_user_text(content: Any) -> str:
     return ""
 
 
+_SHELL_SEGMENT_RE = re.compile(r"&&|\|\||[;|&\n()]")
+_GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+_GIT_CHECKOUT_MOVERS = {"merge", "rebase", "pull", "cherry-pick", "revert", "am"}
+_GIT_BRANCH_CREATE_FLAGS = {"-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan"}
+
+
+def _moves_checkout(words: list[str]) -> bool:
+    """Whether one simple command replaces working-tree files with other commits' content."""
+    while words and "=" in words[0] and not words[0].startswith("-"):
+        words = words[1:]  # Leading VAR=value assignments.
+    if words[:3] == ["gh", "pr", "checkout"]:
+        return True
+    if not words or os.path.basename(words[0]) != "git":
+        return False
+    i = 1
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] in _GIT_OPTIONS_WITH_VALUE else 1
+    if i >= len(words):
+        return False
+    subcommand, args = words[i], words[i + 1:]
+    if subcommand in _GIT_CHECKOUT_MOVERS:
+        return True
+    if subcommand == "reset":
+        return any(arg in ("--hard", "--merge", "--keep") for arg in args)
+    if subcommand == "stash":
+        return not args or args[0] not in ("list", "show")
+    if subcommand in ("switch", "checkout"):
+        if "--" in args:
+            return False  # Restores named paths: the agent's own edit.
+        if any(arg in _GIT_BRANCH_CREATE_FLAGS for arg in args):
+            # A new branch at the current commit leaves files alone; a start point moves them.
+            return len([arg for arg in args if not arg.startswith("-")]) > 1
+        return True
+    return False
+
+
+def bash_changed_paths(edit_diff: Any, command: Any) -> list[str]:
+    """Files a Claude Code Bash call changed, from `toolUseResult.bashEditDiff`.
+
+    The harness diffs the repository working tree around each command. When a
+    command also merges, rebases, pulls, switches branch, or stashes, the diff
+    includes files the agent never wrote and cannot be split by cause, so the
+    whole diff is dropped. `shared` diffs mix in concurrent agents' changes and
+    `unavailable` ones carry none.
+    """
+    if not isinstance(edit_diff, dict) or edit_diff.get("shared") or edit_diff.get("unavailable"):
+        return []
+    if isinstance(command, str) and any(
+        _moves_checkout(segment.split()) for segment in _SHELL_SEGMENT_RE.split(command)
+    ):
+        return []
+    paths = edit_diff.get("changedFiles")
+    if not isinstance(paths, list):
+        files = edit_diff.get("files")
+        paths = [f.get("filePath") for f in files if isinstance(f, dict)] if isinstance(files, list) else []
+    return list(dict.fromkeys(p for p in paths if isinstance(p, str) and p))
+
+
 def _is_only_tool_results(content: Any) -> bool:
     """Check if user content is exclusively tool_result items."""
     if not isinstance(content, list):
@@ -312,6 +373,8 @@ def parse_jsonl(
                         tool_results[tuid] = {
                             "content": result_content,
                             "is_error": item.get("is_error", False),
+                            "edit_diff": (entry.get("toolUseResult") or {}).get("bashEditDiff")
+                            if isinstance(entry.get("toolUseResult"), dict) else None,
                         }
 
         # Collect tool_use info from assistant entries
@@ -358,7 +421,6 @@ def parse_jsonl(
             pass
 
     # Files and tools
-    session.files_touched = sorted(files_set)
     if tool_counter:
         session.tools_used = ", ".join(
             f"{name}:{count}" for name, count in tool_counter.most_common()
@@ -375,7 +437,10 @@ def parse_jsonl(
             arguments=call.arguments,
             result=tr.get("content", ""),
             is_error=bool(tr.get("is_error", False)),
+            changed_paths=bash_changed_paths(tr.get("edit_diff"), call.arguments.get("command")),
         ))
+        files_set.update(session.tool_calls[-1].changed_paths)
+    session.files_touched = sorted(files_set)
 
     # Second pass: build messages
     pending_tool_uses: list[dict] = []  # tool_use blocks from current assistant turn

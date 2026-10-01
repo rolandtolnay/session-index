@@ -7,7 +7,9 @@ import sys
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _clean_text, _strip_narration, _extract_command
+import pytest
+
+from parser import bash_changed_paths, parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _clean_text, _strip_narration, _extract_command
 from transcript import render_transcript
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
@@ -207,6 +209,73 @@ def test_parse_drops_plain_plugin_reload_and_effort_commands(tmp_path):
     assert session.user_message_count == 0
     assert session.assistant_message_count == 1
 
+
+
+def _bash_entries(session_id, calls):
+    """Assistant Bash calls, each followed by its result carrying `bashEditDiff`."""
+    entries = [{"type": "user", "sessionId": session_id, "message": {"role": "user", "content": "Edit the files"}}]
+    for i, (command, diff, is_error) in enumerate(calls):
+        entries.append({"type": "assistant", "sessionId": session_id, "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"bash-{i}", "name": "Bash", "input": {"command": command}},
+        ]}})
+        result = {"stdout": "", "stderr": "", "interrupted": False, "isImage": False}
+        if diff is not None:
+            result["bashEditDiff"] = diff
+        entries.append({"type": "user", "sessionId": session_id, "toolUseResult": result, "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"bash-{i}", "content": "output", "is_error": is_error},
+        ]}})
+    return entries
+
+
+def test_bash_edit_diff_becomes_changed_paths(tmp_path):
+    source = tmp_path / "bash-diff.jsonl"
+    truncated = {
+        "files": [{"filePath": "/repo/a.py", "hunks": []}],
+        "moreFiles": 1,
+        "changedFiles": ["/repo/a.py", "/repo/b.py"],
+    }
+    failed = {"files": [{"filePath": "/repo/new.py", "created": True, "hunks": []}], "moreFiles": 0}
+    shared = {"files": [], "moreFiles": 0, "shared": True, "changedFiles": ["/repo/other.py"]}
+    merge = {"files": [], "moreFiles": 0, "changedFiles": ["/repo/upstream.py"]}
+    entries = _bash_entries("bash-diff", [
+        ("python3 - <<'EOF'\nopen('a.py','w')\nEOF", truncated, False),
+        ("cat > new.py <<'EOF'\nx\nEOF\npytest", failed, True),
+        ("cat > /tmp/note.sh", shared, False),
+        ("git fetch -q && git merge --no-edit origin/main", merge, False),
+        ("ls", None, False),
+    ])
+    source.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+    session = parse_jsonl(str(source))
+
+    assert [call.changed_paths for call in session.tool_calls] == [
+        ["/repo/a.py", "/repo/b.py"], ["/repo/new.py"], [], [], [],
+    ]
+    assert session.files_touched == ["/repo/a.py", "/repo/b.py", "/repo/new.py"]
+
+
+@pytest.mark.parametrize(("command", "attributed"), [
+    ("git mv a.py b.py && git rm -q c.py", True),
+    ("git checkout -- a.py", True),
+    ("git switch -c fix/x && python3 edit.py", True),
+    ("git checkout -q -b feature/x", True),
+    ("git reset -q HEAD~1", True),
+    ("git -C ../wt rebase origin/main", False),
+    ("git pull -q --ff-only; sed -i '' s/a/b/ a.py", False),
+    ("git checkout -q main && git checkout -b feature/y", False),
+    ("git checkout -b feature/z origin/main", False),
+    ("git stash -q && pytest; git stash pop -q", False),
+    ("git reset --hard origin/main", False),
+    ("gh pr checkout 48", False),
+])
+def test_bash_changed_paths_drop_diffs_from_commands_that_move_the_checkout(command, attributed):
+    diff = {"files": [{"filePath": "/repo/a.py", "hunks": []}], "moreFiles": 0}
+
+    assert bash_changed_paths(diff, command) == (["/repo/a.py"] if attributed else [])
+
+
+def test_bash_changed_paths_ignore_unavailable_diff():
+    assert bash_changed_paths({"files": [], "moreFiles": 0, "unavailable": True}, "make") == []
 
 # ── Transcript cleaning tests ──────────────────────────────────────────────────
 

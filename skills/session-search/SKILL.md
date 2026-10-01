@@ -73,7 +73,7 @@ Key tables:
 
 - `tool_calls` — one row per tool call. Construct `tool/<session_id>/<sequence>`.
 - `skill_invocations` — canonical Skill Invocation audit table for reusable prompt/workflow template use, including slash commands, Pi skill envelopes, provider Skill tools, and exact `SKILL.md` reads. Construct `skill/<session_id>/<sequence>`.
-- `file_mutations` — one row per successful write/edit path. Use this for precise mutation lists and event trails.
+- `file_mutations` — one row per successful write/edit path, or per file Claude Code reports a Bash call changed (`tool='bash'`). Use this for precise mutation lists and event trails.
 - `subagent_runs` — one row per Subagent Run. Construct `subagent/<parent_session_id>/<child_index>` when `child_index` is present.
 - `side_chats` — parent-owned Side Chat artifacts, not independent sessions. Construct `sidechat/<parent_session_id>/<side_chat_id>`. `headline` is nullable; `first_question` is its routing fallback.
 - `question_answers` — one row per asked question. Construct `question/<session_id>/<sequence>/<question_index>`.
@@ -231,7 +231,7 @@ Canonical session IDs use `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`; the
 Generated artifacts are the normal evidence path:
 
 - `~/.session-index/transcripts/<session-id>.md` — Clean Transcript.
-- `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, compact large write/edit argument text with hashes, and larger bounded audit excerpts for mutations/errors.
+- `~/.session-index/transcripts/<session-id>.tools.md` — Tool Log with ordered tool calls, arguments, status, compact read-only result excerpts, compact large write/edit argument text with hashes, the files Claude Code reports each Bash call changed, and larger bounded audit excerpts for mutations/errors.
 - `~/.session-index/transcripts/<session-id>/agent-*.md` — Subagent Run transcripts.
 - `~/.session-index/transcripts/<session-id>/side-chat-<uuid>.md` — Side Chat Transcripts with Focused Content and completed exchanges.
 

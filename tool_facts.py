@@ -136,9 +136,21 @@ def _append_file_mutation_rows(
 def build_file_mutation_rows(
     session_id: str, source: str, combined_calls: list[ParsedToolCall],
 ) -> list[dict[str, Any]]:
-    """One row per successful write/edit file mutation event."""
+    """One row per File Mutation: each path a successful write/edit call
+    targets, and each path the harness reports a Bash call changed."""
     rows: list[dict[str, Any]] = []
     for call in combined_calls:
+        # The harness diffed the working tree, so the change happened even
+        # when the command as a whole exited non-zero.
+        _append_file_mutation_rows(
+            rows,
+            session_id=session_id,
+            source=source,
+            call=call,
+            tool_name=call.tool_name,
+            tool=normalize_tool_name(call.tool_name),
+            paths=call.changed_paths,
+        )
         if call.is_error:
             continue
 

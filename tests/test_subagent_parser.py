@@ -335,3 +335,22 @@ def test_discover_subagents_skips_compact(tmp_path):
     # Normal agent should be found
     results = discover_subagents(str(parent_jsonl))
     assert len(results) == 1
+
+
+def test_bash_edit_diff_becomes_changed_paths(tmp_path):
+    source = tmp_path / "agent-abc.jsonl"
+    entries = [
+        {"type": "user", "agentId": "abc", "sessionId": "parent", "message": {"role": "user", "content": "Fix it"}},
+        {"type": "assistant", "agentId": "abc", "sessionId": "parent", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "bash-1", "name": "Bash", "input": {"command": "sed -i '' s/a/b/ a.py"}},
+        ]}},
+        {"type": "user", "agentId": "abc", "sessionId": "parent",
+         "toolUseResult": {"stdout": "", "bashEditDiff": {"files": [{"filePath": "/repo/a.py", "hunks": []}], "moreFiles": 0}},
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "bash-1", "content": ""}]}},
+    ]
+    source.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+    parsed = parse_subagent_jsonl(str(source))
+
+    assert parsed.tool_calls[0].changed_paths == ["/repo/a.py"]
+    assert parsed.files_touched == ["/repo/a.py"]

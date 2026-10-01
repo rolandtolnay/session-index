@@ -420,7 +420,7 @@ _QUERY_COLUMN_ALIASES = {
         "tool_calls does not store argument text; "
         "inspect tool/<session_id>/<sequence> to read the full call from the Tool Log"
     ),
-    "operation": "file_mutations has no operation column; each row is one successful write/edit path",
+    "operation": "file_mutations has no operation column; each row is one successful write/edit path or Bash-changed file",
 }
 
 

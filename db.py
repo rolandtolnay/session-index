@@ -126,8 +126,10 @@ CREATE TABLE IF NOT EXISTS skill_invocations (
 CREATE INDEX IF NOT EXISTS idx_skill_invocations_session ON skill_invocations(session_id);
 CREATE INDEX IF NOT EXISTS idx_skill_invocations_name ON skill_invocations(skill_name);
 
--- One row per successful write/edit file mutation event. Paths are stored exactly
--- as supplied to the tool call; non-mutating tools and failed mutations are excluded.
+-- One row per successful write/edit file mutation event, plus one per file Claude
+-- Code reports a Bash call changed (tool 'bash', absolute paths). Write/edit paths
+-- are stored exactly as supplied to the tool call; non-mutating tools and failed
+-- write/edit calls are excluded.
 CREATE TABLE IF NOT EXISTS file_mutations (
     session_id TEXT NOT NULL,
     source TEXT,
