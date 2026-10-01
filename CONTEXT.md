@@ -4,6 +4,10 @@ Session Index preserves searchable records of agent conversations and exposes en
 
 ## Language
 
+**Session Manager TUI**:
+The user-facing terminal browser for indexed sessions, opened with the `sessions` alias.
+_Avoid_: Sessions TUI, session browser, manage TUI
+
 **Current Session**:
 The agent conversation associated with the active agent/runtime process.
 _Avoid_: Latest session, current terminal session, current project session
