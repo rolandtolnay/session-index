@@ -39,6 +39,25 @@ uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structure
 
 Use `current` only inside an active runtime exposing exact Session Index or provider-native identity. Codex resolves `CODEX_THREAD_ID` to exactly one active or archived rollout. It does not guess from latest sessions or the database.
 
+### snapshot — fresh Clean Transcript for commit intent
+
+```bash
+uv run ~/.pi/agent/skills/session-search/scripts/snapshot.py --cwd /absolute/git/worktree --resolve-only # resolve origin before guarding its source path
+uv run ~/.pi/agent/skills/session-search/scripts/snapshot.py --cwd /absolute/git/worktree --max-chars 80000
+uv run ~/.pi/agent/skills/session-search/scripts/snapshot.py --cwd /absolute/git/worktree --session pi:<16-hex> --leaf-id <exact-leaf>
+uv run ~/.pi/agent/skills/session-search/scripts/snapshot.py --cwd /absolute/git/worktree --source pi --source-path /exact/session.jsonl --native-session-id <getSessionId> --leaf-id <getLeafId>
+```
+
+Use `snapshot` when commit intent needs the originating conversation **now**, rather than an asynchronously generated artifact. It synchronously captures the Source Transcript once, uses existing conversation cleaning, and emits one JSON object without files, indexing, database mutation, LLM calls, Tool Logs, child transcripts or Side Chats. Existing question answers are retained. It never reads a cached Clean Transcript or guesses the latest session.
+
+For filesystem Security Guard integration, first use `--resolve-only`. It returns only `{session_id, native_session_id, source, source_path, leaf_id}` without opening/parsing the source or reading provider metadata. It applies the same identity, argument, positive `--max-chars`, and required Pi leaf validation as capture, but does not validate source existence, content, ancestry or worktree ownership yet. Exact indexed origin lookup remains read-only; Claude and Codex compatibility discovery uses filename globs only. Guard the returned path (and its canonical filesystem path) before invoking full capture with the returned explicit source identity and leaf. Full capture rejects final-file symlinks; the caller is responsible for guarding raw/resolved parent paths.
+
+Identity modes: exact runtime `SESSION_INDEX_*` (or Claude compatibility env / Codex `CODEX_THREAD_ID`); an exact indexed canonical `--session`; or all three explicit flags `--source`, `--source-path`, `--native-session-id` (Claude, Pi and Codex). Partial/mixed explicit identity flags fail. Pi always requires an exact leaf via `--leaf-id` or runtime `SESSION_INDEX_LEAF_ID`; obtain it from the originating runtime's `getLeafId()`, not the last file entry. An indexed Pi session does not store enough information to guess a leaf. Conflicting runtime/argument leaves fail; non-Pi leaves are unsupported.
+
+The source's native ID and recorded cwd must agree with the requested identity and `--cwd`'s exact Git worktree root, not a common repository directory or project grouping. Missing sources, ambiguous Claude source discovery (set `CLAUDE_TRANSCRIPT_PATH`), unknown IDs, broken Pi ancestry, malformed/incomplete JSONL (including an unfinished final line), missing user/assistant conversation and oversized context fail visibly. `--max-chars` defaults to 80000 and limits the full rendered transcript; nothing is silently truncated. Sources have a 64 MiB read guard. Linear sources use an initial byte-length cutoff; Pi selects only the supplied leaf's ancestry. Appends after capture are not included.
+
+Success fields: `version: 1`, `session_id`, `native_session_id`, `source`, `source_path`, `leaf_id` (null for linear sources), `repo_root`, `branch` (current worktree branch, empty when detached), `captured_at` (UTC ISO timestamp), `source_sha256`, `source_bytes`, `transcript_sha256`, and `transcript` (Markdown). Source hash/length cover the captured source bytes, including alternate Pi branches; transcript hash covers only the returned transcript's UTF-8 bytes. Errors return `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}` and nonzero status. This is conversation intent, not evidence of the staged Git changes.
+
 ### query — read-only SQL over fact tables
 
 ```bash

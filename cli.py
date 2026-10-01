@@ -112,6 +112,42 @@ def add_inspect_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-snippets", type=int, default=5, help="Maximum transcript Evidence Snippet blocks")
 
 
+class SnapshotArgumentParser(argparse.ArgumentParser):
+    """Snapshot callers receive JSON even for invalid command-line arguments."""
+
+    def error(self, message: str) -> None:
+        print(json.dumps({"error": {"code": "invalid_arguments", "message": message}}))
+        raise SystemExit(2)
+
+
+def add_snapshot_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--cwd", required=True, help="Absolute target Git worktree path (must match the source worktree)")
+    parser.add_argument("--max-chars", type=int, default=80000, help="Maximum full Clean Transcript characters; oversized context fails, never truncates (default 80000)")
+    parser.add_argument("--session", help="Exact indexed canonical origin ID; Pi also requires --leaf-id")
+    parser.add_argument("--source", help="Explicit provider: claude, pi or codex; requires source path and native ID")
+    parser.add_argument("--source-path", help="Exact provider Source Transcript JSONL path")
+    parser.add_argument("--native-session-id", help="Exact provider-native origin identity")
+    parser.add_argument("--leaf-id", help="Exact Pi leaf from getLeafId(); required for Pi, never inferred from file order")
+    parser.add_argument("--resolve-only", action="store_true", help="Return exact origin identity only, without opening the source; guard its path before full capture")
+
+
+def cmd_snapshot(args: argparse.Namespace) -> None:
+    """Print exactly one JSON snapshot or error, without indexing or writes."""
+    from snapshot import SnapshotError, capture_snapshot
+
+    try:
+        result = capture_snapshot(
+            cwd=args.cwd, max_chars=args.max_chars, session=args.session,
+            source=args.source, source_path=args.source_path,
+            native_session_id=args.native_session_id, leaf_id=args.leaf_id,
+            resolve_only=getattr(args, "resolve_only", False),
+        )
+    except SnapshotError as exc:
+        print(json.dumps(exc.to_json()))
+        raise SystemExit(1)
+    print(json.dumps(result, ensure_ascii=True))
+
+
 def add_current_arguments(parser: argparse.ArgumentParser) -> None:
     output = parser.add_mutually_exclusive_group()
     output.add_argument(
@@ -1217,6 +1253,11 @@ def _fix_issues(conn, issues: dict) -> int:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["snapshot"]:
+        snapshot_parser = SnapshotArgumentParser(description="Fresh read-only Clean Transcript for an exact origin")
+        add_snapshot_arguments(snapshot_parser)
+        cmd_snapshot(snapshot_parser.parse_args(sys.argv[2:]))
+        return
     parser = argparse.ArgumentParser(
         description=(
             "Session Index CLI. Decision tree: use query for aggregates/custom SQL, "
@@ -1229,6 +1270,11 @@ def main() -> None:
     sp_current = subparsers.add_parser("current", help="Show the active runtime session")
     add_current_arguments(sp_current)
     sp_current.set_defaults(func=cmd_current)
+
+    # snapshot
+    sp_snapshot = subparsers.add_parser("snapshot", help="Fresh read-only Clean Transcript for an exact origin (JSON; no indexing)")
+    add_snapshot_arguments(sp_snapshot)
+    sp_snapshot.set_defaults(func=cmd_snapshot)
 
     # find
     sp_find = subparsers.add_parser(

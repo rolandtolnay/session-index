@@ -148,3 +148,26 @@ def test_apply_and_overlay_session_index_env_clear_stale_values():
         assert.deepEqual(overlaid, { KEEP_ME: "yes" });
         '''
     )
+
+
+def test_direct_user_shell_refreshes_selected_leaf_without_indexing_or_handling_command():
+    _run_node(r'''
+        import assert from "node:assert/strict";
+        import { createSessionIndexExtension } from "./pi-extension/index.ts";
+        const handlers = new Map();
+        createSessionIndexExtension({spawnProcess: () => { throw new Error("No indexing at shell dispatch"); }})({
+          registerCommand() {}, on: (name, handler) => handlers.set(name, handler),
+        });
+        let leaf = "before-navigation";
+        const ctx = {sessionManager: {
+          getSessionFile: () => "/tmp/source.jsonl",
+          getSessionId: () => "origin",
+          getLeafId: () => leaf,
+        }};
+        await handlers.get("session_start")({}, ctx);
+        leaf = "selected-after-navigation";
+        const result = await handlers.get("user_bash")({command: "picommit"}, ctx);
+        assert.equal(process.env.SESSION_INDEX_LEAF_ID, leaf);
+        assert.equal(process.env.SESSION_INDEX_NATIVE_SESSION_ID, "origin");
+        assert.equal(result, undefined, "identity refresh must preserve normal shell handling");
+    ''')

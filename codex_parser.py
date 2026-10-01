@@ -336,12 +336,15 @@ def internal_codex_session_reason(session: ParsedSession, path: str = "") -> str
     return ""
 
 
-def parse_codex_jsonl(path: str) -> ParsedSession:
-    """Parse a Codex rollout JSONL file into a ParsedSession."""
+def parse_codex_jsonl(
+    path: str, *, entries: list[dict[str, Any]] | None = None,
+    enrich_metadata: bool = True,
+) -> ParsedSession:
+    """Parse a rollout; captured sources can opt out of external metadata."""
     session = ParsedSession()
 
     try:
-        entries = _load_jsonl(path)
+        entries = _load_jsonl(path) if entries is None else entries
     except OSError:
         return session
     if not entries:
@@ -403,7 +406,7 @@ def parse_codex_jsonl(path: str) -> ParsedSession:
                     "is_error": _is_error_output(content),
                 }
 
-    thread = _thread_metadata(native_id)
+    thread = _thread_metadata(native_id) if enrich_metadata else CodexThreadMetadata()
     if native_id:
         session.native_session_id = native_id
         session.session_id = canonical_session_id(CODEX_SOURCE, native_id)

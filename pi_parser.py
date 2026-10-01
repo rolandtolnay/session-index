@@ -96,6 +96,38 @@ def _select_active_branch(entries: list[dict[str, Any]]) -> PiParsedFile:
     return PiParsedFile(header=header, entries=body, branch=branch)
 
 
+def select_pi_branch(entries: list[dict[str, Any]], leaf_id: str) -> PiParsedFile:
+    """Select an exact leaf, rejecting unknown, ambiguous or broken ancestry."""
+    if not entries or entries[0].get("type") != "session":
+        raise ValueError("Pi source is missing its session header")
+    body = entries[1:]
+    by_id: dict[str, dict[str, Any]] = {}
+    for entry in body:
+        entry_id = entry.get("id")
+        if entry.get("type") == "session" or not isinstance(entry_id, str) or not entry_id:
+            raise ValueError("Pi source has an invalid entry identity")
+        if entry_id in by_id:
+            raise ValueError(f"Pi source has duplicate entry ID {entry_id!r}")
+        by_id[entry_id] = entry
+    if leaf_id not in by_id:
+        raise ValueError(f"Pi leaf {leaf_id!r} does not belong to this source")
+    branch_rev: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    current: str | None = leaf_id
+    while current is not None:
+        if not isinstance(current, str) or not current or current not in by_id:
+            raise ValueError("Pi leaf ancestry references a missing or invalid parent")
+        if current in seen:
+            raise ValueError("Pi leaf ancestry contains a cycle")
+        seen.add(current)
+        entry = by_id[current]
+        branch_rev.append(entry)
+        if "parentId" not in entry:
+            raise ValueError("Pi leaf ancestry is missing a parentId (root must use null)")
+        current = entry["parentId"]
+    return PiParsedFile(entries[0], body, list(reversed(branch_rev)))
+
+
 def _conversation_entry_identity(entry: dict[str, Any]) -> tuple[str, str, str, str] | None:
     """Return copy-stable identity for one raw Pi user/assistant entry."""
     if entry.get("type") != "message":
@@ -405,12 +437,16 @@ def _tool_result_record(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def parse_pi_jsonl(path: str) -> ParsedSession:
-    """Parse a Pi JSONL session file into a ParsedSession."""
+def parse_pi_jsonl(
+    path: str, *, entries: list[dict[str, Any]] | None = None,
+    leaf_id: str | None = None, include_tool_errors: bool = True,
+) -> ParsedSession:
+    """Parse Pi; an explicit leaf selects strict ancestry rather than latest."""
     session = ParsedSession()
 
     try:
-        parsed = _select_active_branch(_load_jsonl(path))
+        entries = _load_jsonl(path) if entries is None else entries
+        parsed = select_pi_branch(entries, leaf_id) if leaf_id is not None else _select_active_branch(entries)
     except OSError:
         return session
 
@@ -595,7 +631,7 @@ def parse_pi_jsonl(path: str) -> ParsedSession:
                     session.user_messages.append(answered)
                     session.messages.append({"role": "user", "content": answered, "timestamp": ts})
             # Keep parity with Claude parser: otherwise only surface failed bash output.
-            if result.get("is_error") and result.get("tool_name") == "bash":
+            if include_tool_errors and result.get("is_error") and result.get("tool_name") == "bash":
                 result_text = _format_bash_result(str(result.get("content", "")), is_error=True)
                 if result_text and session.messages and session.messages[-1]["role"] == "assistant":
                     session.messages[-1]["content"] += f"\n{result_text}"

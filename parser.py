@@ -240,20 +240,22 @@ def _is_only_tool_results(content: Any) -> bool:
     return True
 
 
-def parse_jsonl(path: str) -> ParsedSession:
-    """Parse a JSONL conversation file into a ParsedSession."""
+def parse_jsonl(
+    path: str, *, entries: list[dict] | None = None, include_tool_errors: bool = True,
+) -> ParsedSession:
+    """Parse a file, or an already captured source without reading it again."""
     session = ParsedSession()
-    entries: list[dict] = []
-
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    if entries is None:
+        entries = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
 
     if not entries:
         return session
@@ -442,7 +444,7 @@ def parse_jsonl(path: str) -> ParsedSession:
                     if tu.get("name") == "Bash":
                         tuid = tu.get("id", "")
                         tr = tool_results.get(tuid, {})
-                        if tr.get("is_error", False):
+                        if include_tool_errors and tr.get("is_error", False):
                             result_text = _format_bash_result(
                                 tr.get("content", ""), is_error=True
                             )

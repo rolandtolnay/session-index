@@ -458,6 +458,15 @@ export function createSessionIndexExtension(dependencies: ExtensionDependencies 
 			};
 		});
 
+		// A question answer or another tool result can advance the leaf within a run.
+		// Export the live origin at shell dispatch, not only at run boundaries.
+		pi.on("tool_execution_start", (_event, ctx) => {
+			refreshSessionIndexEnv(ctx.sessionManager);
+		});
+		pi.on("user_bash", (_event, ctx) => {
+			refreshSessionIndexEnv(ctx.sessionManager);
+		});
+
 		pi.on("agent_end", async (_event, ctx) => {
 			const sessionEnv = refreshSessionIndexEnv(ctx.sessionManager);
 			const sessionFile = sessionEnv?.SESSION_INDEX_SOURCE_PATH ?? ctx.sessionManager.getSessionFile?.();
