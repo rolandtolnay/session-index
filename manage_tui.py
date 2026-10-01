@@ -796,12 +796,14 @@ class SessionManager:
         strong, muted = self.styles["strong"], self.styles["muted"]
         self.put_spans(screen, 2, 2, [("/", self.styles["accent"]), (" ", 0),
                                       (query, strong) if query else ("Search conversations", muted)], width)
-        x = self.put_spans(screen, 3, 2, [("f", self.styles["accent"]), (" ", 0),
-                                          (scope, strong) if scope else ("No filters", muted)], width)
-        x = self.put_spans(screen, 3, x, [("   s", self.styles["accent"]), (" ", 0),
-                                          (self.sort_label, strong if self.sort != "auto" else muted)], 2 + width - x)
+        # Sort and reset keep their room; only a long filter value is shortened.
+        tail = [("   s", self.styles["accent"]), (" ", 0), (self.sort_label, strong if self.sort != "auto" else muted)]
         if self.customized:
-            self.draw_keys(screen, 3, x + 3, [("c", "reset")], 2 + width - x - 3)
+            tail += [("   c", self.styles["accent"]), (" reset", muted)]
+        scope_width = max(8, width - 2 - sum(cells(text) for text, _ in tail))
+        x = self.put_spans(screen, 3, 2, [("f", self.styles["accent"]), (" ", 0),
+                                          (ellipsized(scope, scope_width), strong) if scope else ("No filters", muted)], width)
+        self.put_spans(screen, 3, x, tail, 2 + width - x)
 
     def draw(self, screen):
         screen.erase()
