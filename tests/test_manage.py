@@ -214,15 +214,17 @@ def test_keyboard_hide_unhide_cancel_and_confirm_delete(store):
     assert ui.sessions == []
     ui.handle_key("\t")
     ui.handle_key("d")
-    for key in "yes\n":
+    for key in "h\nq":  # Only y confirms; other keys never act on the session.
         ui.handle_key(key)
     assert ui.delete_target is not None
-    assert path.exists()
+    assert path.exists() and db.get_session(conn, "one")["hidden_from_recents"] == 0
     ui.handle_key("\x1b")
     assert ui.delete_target is None
     ui.handle_key("d")
-    for key in "one\n":
-        ui.handle_key(key)
+    ui.handle_key("n")
+    assert ui.delete_target is None and path.exists()
+    ui.handle_key("d")
+    ui.handle_key("y")
     assert db.get_session(conn, "one") is None
     assert not path.exists()
     assert ui.handle_key("q") is False
@@ -237,15 +239,16 @@ def test_navigation_and_confirmation_cannot_change_target(store):
     assert ui.sessions[ui.selected]["session_id"] == "s-21"
     ui.handle_key(curses.KEY_RIGHT)
     assert ui.offset == 20 and ui.selected == 0
-    ui.handle_key("k")
-    assert ui.selected == 0
+    ui.handle_key("k")  # Browsing flows across page boundaries.
+    assert ui.offset == 0 and ui.sessions[ui.selected]["session_id"] == "s-03"
+    ui.handle_key("j")
+    assert ui.offset == 20 and ui.selected == 0
     ui.handle_key("d")
     ui.handle_key(curses.KEY_DOWN)
-    ui.handle_key("h")  # Dialog input, not the hide action.
+    ui.handle_key("h")  # Inert while confirming, not the hide action.
+    ui.handle_key("\n")
     assert ui.delete_target["session_id"] == "s-02"
     assert db.get_session(conn, "s-02")["hidden_from_recents"] == 0
-    ui.handle_key("\x15")
-    assert not ui.confirmation
     ui.handle_key("\x03")
     assert ui.delete_target is None
     assert db.get_session(conn, "s-02") is not None
@@ -286,7 +289,7 @@ def test_preview_paging_makes_every_word_reachable_on_short_terminals(store, col
     words = {f"word{i:03}" for i in range(100)}
     seed(store, summary=" ".join(sorted(words)))
     ui = SessionManager(conn, cli._delete_managed_session)
-    ui.styles = dict.fromkeys(("muted", "accent", "selected", "warning", "error"), 0)
+    ui.styles = dict.fromkeys(("strong", "muted", "accent", "selected", "state", "danger"), 0)
     screen = Screen()
     seen = set()
     for _ in range(100):

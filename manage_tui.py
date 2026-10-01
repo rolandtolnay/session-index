@@ -23,21 +23,28 @@ BAND_LABELS = {None: "Any substance", "substantial": "Substantial", "useful": "U
                "unknown": "Unknown", "low_value": "Low-value"}
 FILTER_CATEGORIES = ("project", "dates", "source", "visibility", "substance")
 FILTER_LABELS = ("Project", "Date", "Provider", "Visibility", "More")
+PAGE_SIZE = 20
+# Excerpt fields the preview already shows in full; repeating them is noise.
+PREVIEWED_MATCH_FIELDS = ("Headline:", "Summary:", "Project:", "Session ID:")
+PROVIDER_LABELS = {"claude": "Claude", "pi": "Pi", "codex": "Codex"}
+# (key, description) rows render as key hints; uppercase strings are captions.
 HELP_LINES = [
-    "/          Search; Enter applies, Esc cancels",
-    "f          Filter; type a project, Enter applies",
-    "Tab        Next filter category (Shift+Tab back)",
-    "Ctrl+R     Clear filters inside the picker",
-    "s          Sort order; * marks the current choice",
-    "c          Reset search, filters, and sort",
-    "↑↓ / j k   Select a session",
-    "←→ / p n   Previous / next page",
-    "PgUp/PgDn  Scroll selected preview",
-    "Tab        In the list: toggle all / hidden",
-    "h          Hide / unhide selected session",
-    "d          Delete (full session ID required)",
-    "r          Refresh, keeping search and filters",
-    "q / Esc    Quit (Esc first dismisses a panel)",
+    ("↑↓ j k", "Select a session, across pages"),
+    ("←→ p n", "Jump to the previous / next page"),
+    ("PgUp PgDn", "Scroll the preview"),
+    ("/", "Search; Enter applies, Esc cancels"),
+    ("f", "Filter; type a project, Enter applies"),
+    ("s", "Sort order"),
+    ("c", "Reset search, filters, and sort"),
+    ("Tab", "Toggle all / hidden-only sessions"),
+    ("h", "Hide / unhide selected session"),
+    ("d", "Delete selected session; y confirms"),
+    ("r", "Refresh, keeping search and filters"),
+    ("q Esc", "Quit (Esc first dismisses a panel)"),
+    "", "IN PICKERS",
+    ("Tab", "Next filter category (Shift+Tab back)"),
+    ("Ctrl+R", "Clear all filters, keep search and sort"),
+    ("Ctrl+U", "Clear the text input"),
     "", "SEARCH",
     "Every word must match; partial words work.",
     "Typos use near matches only if exact matches fail.",
@@ -53,6 +60,11 @@ HELP_LINES = [
     "Automatic sort: newest browsing, best match searching.",
     "Substance sort: substantial, useful, unknown,",
     "then low-value; newest first within each band.",
+    "", "HIDE & DELETE",
+    "Hidden sessions stay searchable; hiding only keeps",
+    "them out of future recent context.",
+    "Delete removes indexed data and generated files.",
+    "Raw transcripts remain, so re-indexing can restore it.",
 ]
 
 
@@ -82,17 +94,32 @@ def plain(value: str | None) -> str:
     return "".join(c for c in " ".join((value or "").split()) if c.isprintable())
 
 
+def cell_width(char: str) -> int:
+    return 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+
+
+def cells(text: str) -> int:
+    return sum(cell_width(char) for char in text)
+
+
 def clipped(text: str, width: int) -> str:
     """Clip by terminal cells, not bytes or Unicode code-point count."""
     result = []
     used = 0
     for char in text:
-        size = 0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+        size = cell_width(char)
         if used + size > width:
             break
         result.append(char)
         used += size
     return "".join(result)
+
+
+def ellipsized(text: str, width: int) -> str:
+    """Never let a clipped value read as complete, e.g. a worktree project name."""
+    if cells(text) <= width:
+        return text
+    return clipped(text, width - 1) + "…" if width > 0 else ""
 
 
 def wrapped(text: str, width: int) -> list[str]:
@@ -104,15 +131,6 @@ def wrapped(text: str, width: int) -> list[str]:
                 break
             lines.append(part)
             line = line[len(part):].lstrip()
-    return lines
-
-
-def side_chat_preview(session: dict, width: int) -> list[str]:
-    lines = []
-    for child in session.get("side_chats", []):
-        marker = " [matched]" if child.get("matched") else ""
-        lines += [""] + wrapped(plain(f"Side Chat{marker}: {child['headline']}"), width)
-        lines += wrapped(plain(child["transcript_path"]), width)
     return lines
 
 
@@ -149,11 +167,9 @@ class SessionManager:
         self.preview_scroll = 0
         self.preview_max = 0
         self.preview_height = 1
-        self.status = "Hidden sessions remain searchable. Changes apply to future recent context."
+        self.status = ""
         self.status_error = False
         self.delete_target = None
-        self.confirmation = ""
-        self.confirmation_error = False
         self.styles = {}
         self.reload()
 
@@ -168,10 +184,24 @@ class SessionManager:
             order = "relevance" if self.filters.query else "newest"
         return SORT_LABELS[order]
 
+    @property
+    def customized(self):
+        return self.filters != ManageFilters() or self.sort != "auto"
+
+    @property
+    def session(self):
+        return self.sessions[self.selected] if self.sessions else None
+
+    def session_actions(self):
+        """Keys acting on the selected session; add new per-session actions here."""
+        if self.session is None:
+            return []
+        return [("h", "unhide" if self.session["hidden_from_recents"] else "hide"), ("d", "delete")]
+
     def reload(self):
         page = query_manage_sessions(self.conn, self.filters, sort=self.sort, offset=self.offset)
         if self.offset and not page.sessions:
-            self.offset = max(0, (page.total - 1) // 20 * 20)
+            self.offset = max(0, (page.total - 1) // PAGE_SIZE * PAGE_SIZE)
             page = query_manage_sessions(self.conn, self.filters, sort=self.sort, offset=self.offset)
         self.sessions, self.total, self.approximate = page.sessions, page.total, page.approximate
         self.selected = min(self.selected, max(0, len(self.sessions) - 1))
@@ -180,6 +210,21 @@ class SessionManager:
     def reset_position(self):
         self.offset, self.selected = 0, 0
         self.reload()
+
+    def move_selection(self, delta):
+        """Pages are a query detail; browsing flows across their boundaries."""
+        target = self.selected + delta
+        if 0 <= target < len(self.sessions):
+            self.selected = target
+        elif target >= len(self.sessions) and self.offset + PAGE_SIZE < self.total:
+            self.offset += PAGE_SIZE
+            self.selected = 0
+            self.reload()
+        elif target < 0 and self.offset:
+            self.offset = max(0, self.offset - PAGE_SIZE)
+            self.selected = PAGE_SIZE - 1
+            self.reload()
+        self.preview_scroll = 0
 
     def open_panel(self, panel):
         self.panel, self.panel_selected, self.panel_error = panel, 0, ""
@@ -227,8 +272,11 @@ class SessionManager:
             self.cursor = len(self.input)
         self.select_current_option()
 
-    @staticmethod
-    def date_label(filters):
+    def date_label(self, filters):
+        bounds = (filters.since, filters.until)
+        preset = next((key for key, value in self.date_presets().items() if value == bounds), None)
+        if preset:
+            return dict(self.panel_options_for("dates"))[preset]
         if filters.since and filters.until:
             return filters.since if filters.since == filters.until else f"{filters.since} – {filters.until}"
         if filters.since:
@@ -238,20 +286,23 @@ class SessionManager:
         return "Any date"
 
     def panel_options(self):
-        if self.panel == "project":
+        return self.panel_options_for(self.panel)
+
+    def panel_options_for(self, panel):
+        if panel == "project":
             options = [(p, p or "Unknown project") for p in self.projects
                        if self.input.casefold() in (p or "Unknown project").casefold()]
             return options if self.input else [(None, "All projects")] + options
-        if self.panel == "dates":
+        if panel == "dates":
             return [("any", "Any date"), ("today", "Today"), ("7", "Past 7 days"),
                     ("30", "Past 30 days"), ("90", "Past 90 days"), ("custom", "Custom range…")]
-        if self.panel == "source":
+        if panel == "source":
             return [(None, "All providers"), ("claude", "Claude"), ("pi", "Pi"), ("codex", "Codex"), ("", "Unknown")]
-        if self.panel == "visibility":
+        if panel == "visibility":
             return [("all", "All sessions"), ("visible", "Visible in recents"), ("hidden", "Hidden from recents")]
-        if self.panel == "substance":
+        if panel == "substance":
             return list(BAND_LABELS.items())
-        if self.panel == "sort":
+        if panel == "sort":
             return [(key, label) for key, label in SORT_LABELS.items() if key != "relevance" or self.filters.query]
         return []
 
@@ -259,7 +310,7 @@ class SessionManager:
         self.filters = replace(self.filters, **changes)
         self.panel = None
         self.reset_position()
-        self.message("Filter applied. f adds or changes a filter · c resets the view.")
+        self.message("")
 
     def handle_panel_key(self, key):
         if key in ("\x1b", "\x03"):
@@ -286,14 +337,14 @@ class SessionManager:
                 self.filters = ManageFilters(query=self.filters.query)
                 self.panel = None
                 self.reset_position()
-                self.message("Filters cleared. Search and sort kept.")
+                self.message("")
                 return
         if self.panel == "search":
             if enter:
                 self.filters = replace(self.filters, query=self.input.strip())
                 self.panel = None
                 self.reset_position()
-                self.message("Near matches shown; no exact matches in this scope." if self.approximate else "Search updated. / edit · c reset all")
+                self.message("No exact matches in this scope; showing near matches." if self.approximate else "")
             else:
                 self.input, self.cursor = edit_input(self.input, self.cursor, key)
             return
@@ -327,7 +378,7 @@ class SessionManager:
             if self.panel == "sort":
                 self.sort, self.panel = value, None
                 self.reset_position()
-                self.message("Sort updated.")
+                self.message("")
             elif self.panel == "dates":
                 if value == "custom":
                     self.open_panel("range")
@@ -348,31 +399,20 @@ class SessionManager:
     def handle_key(self, key) -> bool:
         """Handle one terminal event; False exits without another redraw."""
         if self.delete_target is not None:
-            if key in ("\x1b", "\x03"):
+            # Only an explicit y deletes; every other key is inert until Esc/n.
+            if key in ("\x1b", "\x03", "n", "N"):
                 self.delete_target = None
                 self.message("Deletion cancelled. Nothing changed.")
-            elif key in (curses.KEY_BACKSPACE, "\x7f", "\b"):
-                self.confirmation = self.confirmation[:-1]
-                self.confirmation_error = False
-            elif key == "\x15":
-                self.confirmation = ""
-                self.confirmation_error = False
-            elif key in ("\n", "\r", curses.KEY_ENTER):
+            elif key in ("y", "Y"):
                 sid = self.delete_target["session_id"]
-                if self.confirmation != sid:
-                    self.confirmation_error = True
-                else:
-                    try:
-                        result = self.delete_session(self.conn, sid)
-                        kept = len(result["skipped_artifacts"])
-                        self.message(f"Deleted {sid}." + (f" Kept {kept} shared/out-of-store artifact(s)." if kept else " Raw transcript preserved."))
-                    except (OSError, ValueError, sqlite3.Error, RuntimeError) as error:
-                        self.message(str(error), error=True)
-                    self.delete_target = None
-                    self.reload()
-            elif isinstance(key, str) and key.isprintable() and len(self.confirmation) < 100:
-                self.confirmation += key
-                self.confirmation_error = False
+                try:
+                    result = self.delete_session(self.conn, sid)
+                    kept = len(result["skipped_artifacts"])
+                    self.message(f"Deleted {sid}." + (f" Kept {kept} shared/out-of-store artifact(s)." if kept else " Raw transcript preserved."))
+                except (OSError, ValueError, sqlite3.Error, RuntimeError) as error:
+                    self.message(str(error), error=True)
+                self.delete_target = None
+                self.reload()
             return True
 
         if self.panel is not None:
@@ -380,28 +420,27 @@ class SessionManager:
             return True
         if key in ("q", "\x1b", "\x03"):
             return False
+        if key != curses.KEY_RESIZE:
+            self.message("")  # Status reports the previous action only.
         if key in ("/", "f", "s", "?"):
             self.open_panel({"/": "search", "f": "filters", "s": "sort", "?": "help"}[key])
         elif key == "c":
             self.filters, self.sort = ManageFilters(), "auto"
             self.reset_position()
-            self.message("Search, filters, and sort reset.")
         elif key in ("\t", "a"):
             self.filters = replace(self.filters, visibility="hidden" if key == "\t" and not self.hidden_only else "all")
             self.reset_position()
         elif key in (curses.KEY_DOWN, "j", curses.KEY_UP, "k"):
-            delta = 1 if key in (curses.KEY_DOWN, "j") else -1
-            self.selected = max(0, min(len(self.sessions) - 1, self.selected + delta))
-            self.preview_scroll = 0
+            self.move_selection(1 if key in (curses.KEY_DOWN, "j") else -1)
         elif key in ("n", curses.KEY_RIGHT):
-            if self.offset + 20 < self.total:
-                self.offset += 20
+            if self.offset + PAGE_SIZE < self.total:
+                self.offset += PAGE_SIZE
                 self.selected = 0
                 self.reload()
             else:
                 self.message("You are on the last page.")
         elif key in ("p", curses.KEY_LEFT):
-            self.offset = max(0, self.offset - 20)
+            self.offset = max(0, self.offset - PAGE_SIZE)
             self.selected = 0
             self.reload()
         elif key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
@@ -422,14 +461,18 @@ class SessionManager:
                 self.message(str(error), error=True)
         elif self.sessions and key == "d":
             self.delete_target = self.sessions[self.selected]
-            self.confirmation = ""
-            self.confirmation_error = False
         return True
 
     def configure_colors(self):
-        self.styles = {"accent": curses.A_BOLD, "muted": curses.A_DIM,
+        """Semantic roles; draw code names a role, never a raw color or attribute.
+
+        strong: primary content    muted: secondary metadata, captions, defaults
+        accent: keys and focus     selected: the focused row
+        state: non-default session state (hidden)    danger: destructive or failed
+        """
+        self.styles = {"strong": curses.A_BOLD, "muted": curses.A_DIM, "accent": curses.A_BOLD,
                        "selected": curses.A_REVERSE | curses.A_BOLD,
-                       "warning": curses.A_BOLD, "error": curses.A_BOLD}
+                       "state": curses.A_BOLD, "danger": curses.A_BOLD}
         if not curses.has_colors() or "NO_COLOR" in os.environ:
             return
         curses.start_color()
@@ -437,7 +480,7 @@ class SessionManager:
         for number, (name, foreground, background) in enumerate([
             ("accent", curses.COLOR_CYAN, -1), ("muted", curses.COLOR_WHITE, -1),
             ("selected", curses.COLOR_WHITE, curses.COLOR_BLUE),
-            ("warning", curses.COLOR_YELLOW, -1), ("error", curses.COLOR_RED, -1),
+            ("state", curses.COLOR_YELLOW, -1), ("danger", curses.COLOR_RED, -1),
         ], 1):
             curses.init_pair(number, foreground, background)
             self.styles[name] = curses.color_pair(number)
@@ -453,13 +496,31 @@ class SessionManager:
         if width is not None:
             available = min(available, max(0, width))
         text = "".join(char if char.isprintable() else " " for char in text)
-        if clipped(text, available) != text:
-            text = clipped(text, available - 1) + "…" if available else ""
+        text = ellipsized(text, available)
         try:
             screen.addstr(y, x, text, style)
         except curses.error:
             # A resize can invalidate coordinates between getmaxyx and addstr.
             pass
+
+    def put_spans(self, screen, y, x, spans, width):
+        """Draw (text, style) runs left to right, clipping the whole line to width."""
+        end = x + width
+        for text, style in spans:
+            if x >= end:
+                break
+            self.put(screen, y, x, text, style, end - x)
+            x += cells(text)
+        return x
+
+    def draw_keys(self, screen, y, x, keys, width):
+        """The one key-hint format: accent key, muted label, two-space gaps."""
+        spans = []
+        for item in keys:
+            key, label, *style = item
+            spans += [(key, style[0] if style else self.styles["accent"]),
+                      (" " + label + "  ", self.styles["muted"])]
+        return self.put_spans(screen, y, x, spans, width)
 
     def rule(self, screen, y, x, width, style, *, corners=""):
         """ASCII strokes avoid macOS curses' broken Unicode REP optimization."""
@@ -476,11 +537,28 @@ class SessionManager:
             self.put(screen, y, x, corners[0], style)
             self.put(screen, y, x + width - 1, corners[1], style)
 
-    def draw_list(self, screen, y, x, height, width):
-        self.put(screen, y, x, "SESSIONS", self.styles["muted"], width)
+    def fill(self, screen, y, x, width, style):
+        try:
+            screen.hline(y, x, " ", width, style)
+        except curses.error:
+            pass
+
+    def pane_heading(self, screen, y, x, width, label, detail=""):
+        self.put(screen, y, x, label, self.styles["muted"], width)
+        if detail and cells(label) + cells(detail) + 2 <= width:
+            self.put(screen, y, x + width - cells(detail), detail, self.styles["muted"])
+
+    def position_label(self):
+        noun = "near matches" if self.approximate else "sessions"
         if not self.sessions:
-            self.put(screen, y + 2, x, "No matching sessions.", curses.A_BOLD, width)
-            self.put(screen, y + 4, x, "/ edit search · f filters · c reset", self.styles["muted"], width)
+            return f"0 {noun}"
+        return f"{self.offset + self.selected + 1:,} of {self.total:,}" + (" near matches" if self.approximate else "")
+
+    def draw_list(self, screen, y, x, height, width):
+        self.pane_heading(screen, y, x, width, "SESSIONS", self.position_label())
+        if not self.sessions:
+            self.put(screen, y + 2, x, "No matching sessions.", self.styles["strong"], width)
+            self.draw_keys(screen, y + 4, x, [("/", "edit search"), ("f", "filters"), ("c", "reset")], width)
             return
         row_height = 3 if height >= 20 else 2
         capacity = max(1, (height - 2) // row_height)
@@ -488,80 +566,98 @@ class SessionManager:
         for position, session in enumerate(self.sessions[start:start + capacity], start):
             line = y + 2 + (position - start) * row_height
             active = position == self.selected
-            style = self.styles["selected"] if active else 0
+            row = self.styles["selected"] if active else 0
             if active:
                 for dy in range(2):
-                    try:
-                        screen.hline(line + dy, x, " ", width, style)
-                    except curses.error:
-                        pass
+                    self.fill(screen, line + dy, x, width, row)
             title = plain(session.get("headline") or session.get("summary") or session.get("user_messages") or "Untitled session")
-            marker = "›" if active else " "
-            badge = "[hidden] " if session["hidden_from_recents"] else ""
-            self.put(screen, line, x, f"{marker} {self.offset + position + 1:02}  {badge}{title}", style, width)
-            project_width = max(8, min(20, width - 8 - len(session["session_id"])))
-            project = clipped(plain(session.get("project") or "Unknown project"), project_width)
+            self.put(screen, line, x, f"{'›' if active else ' '} {title}", row, width)
+            project = ellipsized(plain(session.get("project") or "Unknown project"), max(8, min(28, width // 3)))
             short_date = display_date(session.get("started_at")).split(" · ")[0]
-            provider = {"claude": "Claude", "pi": "Pi", "codex": "Codex"}.get(session.get("source"), "?")
-            metadata = f"{project} · {short_date} · {provider}"
-            self.put(screen, line + 1, x + 5, metadata, style if active else self.styles["muted"], width - 5)
-        self.put(screen, y + height, x, f"{self.selected + 1 if self.sessions else 0}/{len(self.sessions)} on page · ↑↓ browse", self.styles["muted"], width)
+            provider = PROVIDER_LABELS.get(session.get("source"), "?")
+            meta = row if active else self.styles["muted"]
+            spans = [(f"{project} · {short_date} · {provider}", meta)]
+            if session["hidden_from_recents"]:
+                spans += [(" · ", meta), ("hidden", row if active else self.styles["state"])]
+            self.put_spans(screen, line + 1, x + 2, spans, width - 2)
 
-    def draw_preview(self, screen, y, x, height, width):
-        self.put(screen, y, x, "PREVIEW", self.styles["accent"], width)
-        if not self.sessions:
-            self.put(screen, y + 2, x, "Try fewer words or a wider date range.", width=width)
+    def draw_preview(self, screen, y, x, height, width, *, compact=False):
+        """Fixed identity block, then a scrollable body.
+
+        Compact (stacked) mode drops the heading and what the list row already
+        shows; its muted metadata line doubles as the pane's heading.
+        """
+        if not compact:
+            self.pane_heading(screen, y, x, width, "PREVIEW")
+            y, height = y + 2, height - 2
+        session = self.session
+        if session is None:
+            self.put(screen, y, x, "Try fewer words or a wider date range.", width=width)
             return
-        session = self.sessions[self.selected]
-        title = plain(session.get("headline") or "Session details")
-        visibility = "HIDDEN FROM RECENTS · still searchable" if session["hidden_from_recents"] else "VISIBLE IN RECENTS"
-        # Keep metadata fixed while only the summary scrolls.
-        self.put(screen, y + 2, x, session.get("project") or "Unknown project", curses.A_BOLD, width)
-        self.put(screen, y + 3, x, display_date(session.get("started_at")), self.styles["muted"], width)
-        self.put(screen, y + 4, x, session["session_id"], self.styles["accent"], width)
-        self.put(screen, y + 5, x, visibility, self.styles["warning"] if session["hidden_from_recents"] else self.styles["muted"], width)
-        title_lines = wrapped(title, width)
+        provider = PROVIDER_LABELS.get(session.get("source"), "Unknown provider")
+        # Without a headline the summary leads, as it does in the list row.
+        fixed = [] if compact else [(line, self.styles["strong"]) for line in wrapped(
+            plain(session.get("headline")), width)[:3]]
+        if not compact:
+            fixed.append((plain(session.get("project") or "Unknown project"), self.styles["muted"]))
+        fixed.append((f"{display_date(session.get('started_at'))} · {provider} · {session['session_id']}", self.styles["muted"]))
+        if session["hidden_from_recents"]:
+            fixed.append(("Hidden from recents · still searchable", self.styles["state"]))
+        for i, (line, style) in enumerate(fixed):
+            self.put(screen, y + i, x, line, style, width)
+
+        body = []
+        matches = [part for part in plain(session.get("match_excerpt")).split(" | ")
+                   if part and not part.startswith(PREVIEWED_MATCH_FIELDS)]
+        if matches:
+            body += [("MATCHED IN", self.styles["muted"])]
+            body += [(line, 0) for part in matches for line in wrapped(part, width)] + [("", 0)]
         summary = plain(session.get("summary") or session.get("user_messages") or "No preview available yet.")
-        lines = [(line, curses.A_BOLD) for line in title_lines] + [("", 0)]
-        if session.get("match_excerpt"):
-            lines += [(line, self.styles["accent"]) for line in wrapped(plain(session["match_excerpt"]), width)] + [("", 0)]
-        lines += [(line, 0) for line in wrapped(summary, width)]
-        lines += [(line, 0) for line in side_chat_preview(session, width)]
-        count = max(1, height - 8)
+        body += [(line, 0) for line in wrapped(summary, width)]
+        if session.get("side_chats"):
+            body += [("", 0), ("SIDE CHATS", self.styles["muted"])]
+            for child in session["side_chats"]:
+                marker = "matched · " if child.get("matched") else ""
+                body += [(line, 0) for line in wrapped(plain(marker + child["headline"]), width)]
+                body += [(line, self.styles["muted"]) for line in wrapped(plain(child["transcript_path"]), width)]
+        top = y + 1 + len(fixed)
+        count = max(1, y + height - top - 1)  # The last row is kept for the scroll hint.
         self.preview_height = count
-        self.preview_max = max(0, len(lines) - count)
+        self.preview_max = max(0, len(body) - count)
         self.preview_scroll = min(self.preview_scroll, self.preview_max)
-        for i, (line, style) in enumerate(lines[self.preview_scroll:self.preview_scroll + count]):
-            self.put(screen, y + 7 + i, x, line, style, width)
+        for i, (line, style) in enumerate(body[self.preview_scroll:self.preview_scroll + count]):
+            self.put(screen, top + i, x, line, style, width)
         if self.preview_max:
-            self.put(screen, y + height, x, "PgUp/PgDn scroll preview", self.styles["muted"], width)
+            where = f"{self.preview_scroll * 100 // self.preview_max}%"
+            self.draw_keys(screen, y + height - 1, x, [("PgUp/PgDn", f"scroll · {where}")], width)
+
+    def draw_brand(self, screen, context=""):
+        self.put(screen, 1, 2, "SESSION INDEX", self.styles["strong"])
+        if context:
+            self.put(screen, 1, 16, "· " + context, self.styles["muted"])
 
     def draw_confirmation(self, screen):
         # Replace the browser so background rows and inactive shortcuts cannot
         # compete with this destructive decision, especially on narrow screens.
         screen.erase()
         height, columns = screen.getmaxyx()
-        self.put(screen, 1, 2, "SESSION INDEX", self.styles["accent"])
-        self.put(screen, 1, 19, " /  deletion confirmation", self.styles["muted"])
+        self.draw_brand(screen, "delete session")
         width = min(76, columns - 6)
-        x, y = (columns - width) // 2, max(3, (height - 17) // 2)
-        self.rule(screen, y, x, width, self.styles["error"], corners="╭╮")
-        for line in range(y + 1, y + 16):
-            self.put(screen, line, x, "│", self.styles["error"])
-            self.put(screen, line, x + width - 1, "│", self.styles["error"])
-        self.put(screen, y + 1, x + 2, "DELETE SESSION?", self.styles["error"] | curses.A_BOLD, width - 4)
+        x, y = (columns - width) // 2, max(3, (height - 13) // 2)
+        left, inner = x + 2, width - 4
+        self.rule(screen, y, x, width, self.styles["danger"], corners="╭╮")
+        for line in range(y + 1, y + 12):
+            self.put(screen, line, x, "│", self.styles["danger"])
+            self.put(screen, line, x + width - 1, "│", self.styles["danger"])
         session = self.delete_target
-        self.put(screen, y + 3, x + 2, session.get("headline") or session.get("project") or "Selected session", curses.A_BOLD, width - 4)
-        self.put(screen, y + 4, x + 2, session["session_id"], self.styles["accent"], width - 4)
-        warning = "Removes indexed data and owned generated files. No undo. Raw transcripts remain; indexing can recreate this session."
-        for i, line in enumerate(textwrap.wrap(warning, width - 4)):
-            self.put(screen, y + 6 + i, x + 2, line, width=width - 4)
-        self.put(screen, y + 10, x + 2, "Type the full session ID to confirm:", width=width - 4)
-        self.put(screen, y + 11, x + 2, "> " + self.confirmation + "▏", self.styles["accent"], width - 4)
-        if self.confirmation_error:
-            self.put(screen, y + 13, x + 2, "ID does not match. Nothing has been deleted.", self.styles["error"], width - 4)
-        self.put(screen, y + 15, x + 2, "Enter confirm   Esc cancel   Ctrl+U clear", self.styles["muted"], width - 4)
-        self.rule(screen, y + 16, x, width, self.styles["error"], corners="╰╯")
+        self.put(screen, y + 1, left, "DELETE SESSION?", self.styles["danger"] | curses.A_BOLD, inner)
+        self.put(screen, y + 3, left, plain(session.get("headline") or "Untitled session"), self.styles["strong"], inner)
+        self.put(screen, y + 4, left, f"{plain(session.get('project') or 'Unknown project')} · {session['session_id']}", self.styles["muted"], inner)
+        warning = "Removes indexed data and generated files for this session. No undo. Raw transcripts remain, so re-indexing can recreate it."
+        for i, line in enumerate(wrapped(warning, inner)[:3]):
+            self.put(screen, y + 6 + i, left, line, width=inner)
+        self.draw_keys(screen, y + 10, left, [("y", "delete", self.styles["danger"]), ("Esc", "cancel")], inner)
+        self.rule(screen, y + 12, x, width, self.styles["danger"], corners="╰╯")
 
     def draw_input(self, screen, y, x, text, cursor, width):
         # Keep the insertion point visible when editing long queries or paths.
@@ -583,11 +679,11 @@ class SessionManager:
             "search": "Search conversations", "sort": "Sort conversations",
             "range": "Filter · Custom dates", "help": "Keyboard & search guide",
         }[self.panel]
-        self.put(screen, 1, 2, "SESSION INDEX", self.styles["accent"])
+        self.draw_brand(screen)
         self.rule(screen, top, x, width, self.styles["muted"], corners="╭╮")
-        self.put(screen, top + 1, left, title, curses.A_BOLD, content_width)
+        self.put(screen, top + 1, left, title, self.styles["strong"], content_width)
         self.rule(screen, bottom, x, width, self.styles["muted"], corners="╰╯")
-        hint, secondary_hint = "Enter apply · Esc cancel", ""
+        hint, secondary_hint = [("Enter", "apply"), ("Esc", "cancel")], []
 
         if filtering:
             tab_x = left
@@ -601,8 +697,8 @@ class SessionManager:
                 self.put(screen, top + 3, tab_x, tab,
                          self.styles["accent"] if active else self.styles["muted"])
                 tab_x += len(tab) + 2
-            hint = "Tab category · ↑↓ choose · Enter set · Esc cancel"
-            secondary_hint = "Shift+Tab back · Ctrl+R clear filters"
+            hint = [("Tab", "category"), ("↑↓", "choose"), ("Enter", "set"), ("Esc", "cancel")]
+            secondary_hint = [("Shift+Tab", "back"), ("Ctrl+R", "clear filters")]
 
         if self.panel == "search":
             self.put(screen, top + 3, left, "WORDS / FILE / SESSION ID", self.styles["muted"], content_width)
@@ -610,9 +706,9 @@ class SessionManager:
             self.rule(screen, top + 5, left, content_width, self.styles["muted"])
             self.put(screen, top + 7, left, "All words · Partial matches · Typo fallback", self.styles["muted"], content_width)
             self.put(screen, top + 9, left, "WITHIN", self.styles["muted"], content_width)
-            for i, line in enumerate(wrapped(self.scope_label(), content_width)[:3]):
+            for i, line in enumerate(wrapped(self.scope_label() or "All sessions", content_width)[:3]):
                 self.put(screen, top + 10 + i, left, line, width=content_width)
-            hint = "Enter search · Esc cancel · Ctrl+U clear"
+            hint = [("Enter", "search"), ("Esc", "cancel"), ("Ctrl+U", "clear")]
         elif self.panel == "range":
             self.put(screen, top + 3, left, "LOCAL START DATES · YYYY-MM-DD", self.styles["muted"], content_width)
             for i, label in enumerate(("FROM", "THROUGH · inclusive")):
@@ -623,17 +719,20 @@ class SessionManager:
                 else:
                     self.put(screen, y + 1, left, self.date_inputs[i] or "Any date", width=content_width)
                 self.rule(screen, y + 2, left, content_width, self.styles["muted"])
-            hint = "Tab field · Enter next/set · Esc back"
-            secondary_hint = "Blank = unbounded · Ctrl+U clears this field"
+            hint = [("Tab", "field"), ("Enter", "next/set"), ("Esc", "back")]
+            secondary_hint = [("Ctrl+U", "clear field"), ("blank", "unbounded")]
         elif self.panel == "help":
             start_y = top + 3
             capacity = bottom - start_y - 1
             self.help_scroll = min(self.help_scroll, max(0, len(HELP_LINES) - capacity))
             for i, line in enumerate(HELP_LINES[self.help_scroll:self.help_scroll + capacity]):
-                style = self.styles["accent"] if line.isupper() else 0
-                self.put(screen, start_y + i, left, line, style, content_width)
+                if isinstance(line, tuple):
+                    self.put(screen, start_y + i, left, line[0], self.styles["accent"], 11)
+                    self.put(screen, start_y + i, left + 11, line[1], width=content_width - 11)
+                else:
+                    self.put(screen, start_y + i, left, line, self.styles["muted"] if line.isupper() else 0, content_width)
             self.put(screen, bottom - 1, left, f"{self.help_scroll + 1}–{min(len(HELP_LINES), self.help_scroll + capacity)} / {len(HELP_LINES)}", self.styles["muted"], content_width)
-            hint = "↑↓ / PgUp/PgDn scroll · Enter / Esc close"
+            hint = [("↑↓ PgUp PgDn", "scroll"), ("Enter/Esc", "close")]
         else:
             options = self.panel_options()
             if self.panel == "project":
@@ -647,7 +746,7 @@ class SessionManager:
                 value = self.date_label(self.filters) if self.panel == "dates" else next(
                     (label for key, label in options if key == self.current_option()), "")
                 self.put(screen, top + 5, left, "CURRENT", self.styles["muted"], content_width)
-                self.put(screen, top + 6, left, value, self.styles["accent"], content_width)
+                self.put(screen, top + 6, left, value, self.styles["strong"], content_width)
                 caption = {"dates": "STARTED", "source": "PROVIDER", "visibility": "VISIBILITY",
                            "substance": "SUBSTANCE · REFERENCE VALUE", "sort": "ORDER"}[self.panel]
             self.put(screen, top + 8, left, caption, self.styles["muted"], content_width - 12)
@@ -661,23 +760,21 @@ class SessionManager:
                 style = self.styles["selected"] if active else 0
                 y = start_y + i - start
                 if active:
-                    try:
-                        screen.hline(y, left, " ", content_width, style)
-                    except curses.error:
-                        pass
+                    self.fill(screen, y, left, content_width, style)
                 prefix = ("› " if active else "  ") + ("* " if value == current else "  ")
                 self.put(screen, y, left, prefix + plain(label), style, content_width)
             if not options:
                 self.put(screen, start_y, left, "No matching projects.", width=content_width)
-                self.put(screen, start_y + 2, left, "Ctrl+U clears the name; Esc cancels.", self.styles["muted"], content_width)
+                self.draw_keys(screen, start_y + 2, left, [("Ctrl+U", "clear the name"), ("Esc", "cancel")], content_width)
             elif len(options) > capacity:
                 self.put(screen, bottom - 1, left, f"{self.panel_selected + 1}/{len(options)} · ↑↓ scroll", self.styles["muted"], content_width)
         if self.panel_error:
-            self.put(screen, bottom - 2, left, self.panel_error, self.styles["error"], content_width)
-        self.put(screen, bottom + 1, x, hint, self.styles["accent"], width)
-        self.put(screen, bottom + 2, x, secondary_hint, self.styles["muted"], width)
+            self.put(screen, bottom - 2, left, self.panel_error, self.styles["danger"], content_width)
+        self.draw_keys(screen, bottom + 1, x, hint, width)
+        self.draw_keys(screen, bottom + 2, x, secondary_hint, width)
 
     def scope_label(self):
+        """Active filters only; callers choose the wording for 'none'."""
         filters = self.filters
         labels = []
         if filters.project is not None:
@@ -685,61 +782,52 @@ class SessionManager:
         if filters.since or filters.until:
             labels.append(self.date_label(filters))
         if filters.source is not None:
-            labels.append({"claude": "Claude", "pi": "Pi", "codex": "Codex", "": "Unknown provider"}.get(filters.source, filters.source))
+            labels.append(PROVIDER_LABELS.get(filters.source, "Unknown provider"))
         if filters.visibility != "all":
-            labels.append(filters.visibility.capitalize())
+            labels.append(f"{filters.visibility.capitalize()} only")
         if filters.substance is not None:
             labels.append(BAND_LABELS[filters.substance])
-        return " · ".join(labels) if labels else "All projects · Any date · All providers · All visibility"
+        return " · ".join(labels)
+
+    def draw_header(self, screen, width):
+        """View controls: key, then value; user-set values are strong, defaults muted."""
+        self.draw_brand(screen)
+        query, scope = self.filters.query, self.scope_label()
+        strong, muted = self.styles["strong"], self.styles["muted"]
+        self.put_spans(screen, 2, 2, [("/", self.styles["accent"]), (" ", 0),
+                                      (query, strong) if query else ("Search conversations", muted)], width)
+        x = self.put_spans(screen, 3, 2, [("f", self.styles["accent"]), (" ", 0),
+                                          (scope, strong) if scope else ("No filters", muted)], width)
+        x = self.put_spans(screen, 3, x, [("   s", self.styles["accent"]), (" ", 0),
+                                          (self.sort_label, strong if self.sort != "auto" else muted)], 2 + width - x)
+        if self.customized:
+            self.draw_keys(screen, 3, x + 3, [("c", "reset")], 2 + width - x - 3)
 
     def draw(self, screen):
         screen.erase()
         height, width = screen.getmaxyx()
         if height < 24 or width < 60:
-            self.put(screen, 1, 2, "Session Index · enlarge terminal to 60 × 24", curses.A_BOLD)
+            self.put(screen, 1, 2, "Session Index · enlarge terminal to 60 × 24", self.styles["strong"])
             self.put(screen, 3, 2, "Esc cancels deletion; q quits when not confirming.")
             screen.refresh()
             return
-        self.put(screen, 1, 2, "SESSION INDEX", self.styles["accent"])
-        self.put(screen, 1, 19, " /  session manager", self.styles["muted"])
-        search = f"/ {self.filters.query}" if self.filters.query else "/ Search conversations"
-        self.put(screen, 2, 2, search, self.styles["accent"], width - 4)
-        self.put(screen, 3, 2, "f " + self.scope_label(), self.styles["muted"], width - 4)
-        count = f"{self.total} {'near matches' if self.approximate else 'sessions'}"
-        pages = max(1, (self.total + 19) // 20)
-        self.put(screen, 4, 2, f"{count} · {self.offset // 20 + 1}/{pages} pages · {self.sort_label}", curses.A_BOLD, width - 4)
-        self.rule(screen, 5, 2, width - 4, self.styles["muted"])
+        self.draw_header(screen, width - 4)
+        self.rule(screen, 4, 2, width - 4, self.styles["muted"])
+        # Panes span rows 6 .. height-6; the footer owns the last four rows.
+        body_top, body_height = 6, height - 11
         if width >= 112:
             split = width // 2
-            for y in range(6, height - 4):
+            for y in range(5, height - 4):
                 self.put(screen, y, split, "│", self.styles["muted"])
-            self.draw_list(screen, 7, 2, height - 13, split - 4)
-            self.draw_preview(screen, 7, split + 3, height - 13, width - split - 5)
+            self.draw_list(screen, body_top, 2, body_height, split - 4)
+            self.draw_preview(screen, body_top, split + 3, body_height, width - split - 5)
         else:
-            list_height = max(5, (height - 13) // 2)
-            self.draw_list(screen, 7, 2, list_height, width - 4)
-            preview_y = 9 + list_height
-            # Compact stacked preview reserves more space for the actual summary.
-            if self.sessions:
-                session = self.sessions[self.selected]
-                self.put(screen, preview_y, 2, display_date(session.get("started_at")) + " · " + session["session_id"], self.styles["accent"], width - 4)
-                summary = plain(session.get("summary") or session.get("user_messages") or "No preview available yet.")
-                excerpt = plain(session.get("match_excerpt"))
-                lines = (wrapped(excerpt, width - 4) + [""] if excerpt else []) + wrapped(summary, width - 4)
-                lines += side_chat_preview(session, width - 4)
-                count = max(1, height - preview_y - 7)
-                self.preview_height = count
-                self.preview_max = max(0, len(lines) - count)
-                self.preview_scroll = min(self.preview_scroll, self.preview_max)
-                for i, line in enumerate(lines[self.preview_scroll:self.preview_scroll + count]):
-                    self.put(screen, preview_y + 2 + i, 2, line, width=width - 4)
-                if self.preview_max:
-                    self.put(screen, height - 5, 2, "PgUp/PgDn scroll preview", self.styles["muted"], width - 4)
+            list_height = max(6, body_height * 11 // 20)
+            self.draw_list(screen, body_top, 2, list_height - 1, width - 4)
+            self.draw_preview(screen, body_top + list_height, 2, body_height - list_height, width - 4, compact=True)
         self.rule(screen, height - 4, 2, width - 4, self.styles["muted"])
-        self.put(screen, height - 3, 2, self.status, self.styles["error"] if self.status_error else self.styles["muted"], width - 4)
-        visibility_key = "unhide" if self.sessions and self.sessions[self.selected]["hidden_from_recents"] else "hide"
-        keys = "/ search  f filter  s sort  c reset  ? help  q quit" if width < 90 else f"/ search  f filter  s sort  c reset  h {visibility_key}  d delete  ? help  q quit"
-        self.put(screen, height - 2, 2, keys, self.styles["accent"], width - 4)
+        self.put(screen, height - 3, 2, self.status, self.styles["danger"] if self.status_error else 0, width - 4)
+        self.draw_keys(screen, height - 2, 2, self.session_actions() + [("?", "help"), ("q", "quit")], width - 4)
         if self.delete_target is not None:
             self.draw_confirmation(screen)
         elif self.panel is not None:
