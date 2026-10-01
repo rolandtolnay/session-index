@@ -11,7 +11,7 @@ import sqlite3
 import textwrap
 import unicodedata
 
-from db import set_hidden_from_recents, TOP_LEVEL_SESSION_PREDICATE
+from db import project_options, set_hidden_from_recents
 from manage_query import ManageFilters, query_manage_sessions
 
 
@@ -267,6 +267,8 @@ class SessionManager:
         self.sessions, self.total, self.approximate = page.sessions, page.total, page.approximate
 
     def reload(self):
+        self.projects = project_options(self.conn)
+        self.project_labels = {value: label for value, label, _count in self.projects}
         self.fetch()
         self.index = min(self.index, max(0, self.total - 1))
         self.scroll_into_view()
@@ -301,11 +303,8 @@ class SessionManager:
             self.cursor = len(self.input)
         elif panel == "filters":
             self.input, self.cursor = "", 0
-            self.projects = [row[0] for row in self.conn.execute(f"""
-                SELECT DISTINCT COALESCE(project, '') FROM sessions
-                WHERE {TOP_LEVEL_SESSION_PREDICATE}
-                ORDER BY COALESCE(project, '') COLLATE NOCASE, COALESCE(project, '')
-            """)]
+            self.projects = project_options(self.conn)
+            self.project_labels = {value: label for value, label, _count in self.projects}
             self.select_category("project")
         elif panel == "range":
             self.date_inputs = [self.filters.since, self.filters.until]
@@ -358,8 +357,8 @@ class SessionManager:
 
     def panel_options_for(self, panel):
         if panel == "project":
-            options = [(p, p or "Unknown project") for p in self.projects
-                       if self.input.casefold() in (p or "Unknown project").casefold()]
+            options = [(value, label) for value, label, _count in self.projects
+                       if self.input.casefold() in label.casefold() or self.input.casefold() in value.casefold()]
             return options if self.input else [(None, "All projects")] + options
         if panel == "dates":
             return [("any", "Any date"), ("today", "Today"), ("7", "Past 7 days"),
@@ -646,7 +645,7 @@ class SessionManager:
             title = plain(session.get("headline") or session.get("summary") or session.get("user_messages") or "Untitled session")
             marker = ("›", self.styles["selected_accent"]) if active else (" ", 0)
             self.put_spans(screen, line, x, [marker, (" " + title, row)], width)
-            project = ellipsized(plain(session.get("project") or "Unknown project"), max(8, min(28, width // 3)))
+            project = ellipsized(plain(self.project_label(session)), max(8, min(28, width // 3)))
             short_date = display_date(session.get("started_at")).split(" · ")[0]
             provider = PROVIDER_LABELS.get(session.get("source"), "?")
             meta = self.styles["selected_muted"] if active else self.styles["muted"]
@@ -673,7 +672,7 @@ class SessionManager:
         fixed = [] if compact else [(line, self.styles["strong"]) for line in wrapped(
             plain(session.get("headline")), width)[:3]]
         if not compact:
-            fixed.append((plain(session.get("project") or "Unknown project"), self.styles["muted"]))
+            fixed.append((plain(self.project_label(session)), self.styles["muted"]))
         fixed.append((f"{display_date(session.get('started_at'))} · {provider} · {session['session_id']}", self.styles["muted"]))
         if session["hidden_from_recents"]:
             fixed.append(("Hidden from recents · still searchable", self.styles["state"]))
@@ -726,7 +725,7 @@ class SessionManager:
         session = self.delete_target
         self.put(screen, y + 1, left, "DELETE SESSION?", self.styles["danger"] | curses.A_BOLD, inner)
         self.put(screen, y + 3, left, plain(session.get("headline") or "Untitled session"), self.styles["strong"], inner)
-        self.put(screen, y + 4, left, f"{plain(session.get('project') or 'Unknown project')} · {session['session_id']}", self.styles["muted"], inner)
+        self.put(screen, y + 4, left, f"{plain(self.project_label(session))} · {session['session_id']}", self.styles["muted"], inner)
         warning = "Removes indexed data and generated files for this session. No undo. Raw transcripts remain, so re-indexing can recreate it."
         for i, line in enumerate(wrapped(warning, inner)[:3]):
             self.put(screen, y + 6 + i, left, line, width=inner)
@@ -813,7 +812,7 @@ class SessionManager:
                 self.put(screen, top + 5, left, "NARROW PROJECTS", self.styles["muted"], content_width)
                 self.draw_input(screen, top + 6, left, self.input, self.cursor, content_width)
                 if not self.input:
-                    self.put(screen, top + 6, left + 2, "Type a project name…", self.styles["muted"], content_width - 2)
+                    self.put(screen, top + 6, left + 2, "Type a project name or path…", self.styles["muted"], content_width - 2)
                 self.rule(screen, top + 7, left, content_width, self.styles["border"])
                 caption = "PROJECTS"
             else:
@@ -848,12 +847,16 @@ class SessionManager:
         self.draw_keys(screen, bottom + 1, x, hint, width)
         self.draw_keys(screen, bottom + 2, x, secondary_hint, width)
 
+    def project_label(self, session):
+        value = session.get("project_identity") or session.get("project_id") or session.get("project_path") or session.get("project") or ""
+        return self.project_labels.get(value, session.get("project") or "Unknown project")
+
     def scope_label(self):
         """Active filters only; callers choose the wording for 'none'."""
         filters = self.filters
         labels = []
         if filters.project is not None:
-            labels.append(filters.project or "Unknown project")
+            labels.append(self.project_labels.get(filters.project, filters.project or "Unknown project"))
         if filters.since or filters.until:
             labels.append(self.date_label(filters))
         if filters.source is not None:

@@ -77,7 +77,9 @@ Key tables:
 - `subagent_runs` — one row per Subagent Run. Construct `subagent/<parent_session_id>/<child_index>` when `child_index` is present.
 - `side_chats` — parent-owned Side Chat artifacts, not independent sessions. Construct `sidechat/<parent_session_id>/<side_chat_id>`. `headline` is nullable; `first_question` is its routing fallback.
 - `question_answers` — one row per asked question. Construct `question/<session_id>/<sequence>/<question_index>`.
-- `sessions` — session metadata useful for joins: `session_id`, `project`, `branch`, `started_at`, searchable `summary`, compact `headline`, `substance_band` (`substantial`, `useful`, `low_value`; NULL means unknown), evidence-based `substance_reason`, interaction counts, and generated artifact paths.
+- `sessions` — session metadata useful for joins: `session_id`, `project`, `project_id`, `project_path`, `worktree_path`, `cwd`, `branch`, `started_at`, searchable `summary`, compact `headline`, `substance_band` (`substantial`, `useful`, `low_value`; NULL means unknown), evidence-based `substance_reason`, interaction counts, and generated artifact paths.
+
+Project identity groups a local Git repository and its linked worktrees, not independent same-name repositories. `project_id` is `git:<absolute common Git directory>` or `dir:<normalized non-Git folder>`; group SQL project counts by `project_id`, not `project`. `project_path` is the canonical repository location (normally the main checkout), `worktree_path` the known checkout root, and `cwd` the original starting folder when available. Backfilled legacy rows retain their old indexed location but may lack the exact starting `cwd`. SQL exact path comparisons need absolute paths (not `~/...`), for example `WHERE project_path='/absolute/main-checkout'`. Filter `worktree_path` or `cwd` when the exact conversation location matters. Snapshot ownership remains exact-worktree, not project-level.
 
 ### find — compact Evidence Find candidates
 
@@ -94,6 +96,8 @@ Criteria:
 - `--mutation-mode event` — with `--mutated`, return exact event-level File Mutation rows with `tool/<session_id>/<sequence>` refs.
 - `--subagent NAME` — Subagent Run candidates with `subagent/<session_id>/<child_index>` refs and parent-call refs when available.
 - `--tool question --question-recommended true|false` — question-answer candidates with question refs.
+
+`--project` accepts a project name prefix or exact canonical project path (absolute or `~/...`); use the path to distinguish independent same-name projects. It also accepts an exact `git:...` or `dir:...` identity selector. Linked worktrees match their canonical project's path, not their checkout path. Candidates expose `session.project_path` for disambiguation.
 
 Filters compose with criteria: `--project`, `--since`, `--until`, `--session`, and `--limit` (default 8). `--skill` does not compose with `--tool` because Skill Invocations are not Tool Calls. `--session` accepts a canonical session ID, a provider-native ID, or an unambiguous 8+ character prefix; unknown sessions and malformed dates return `invalid_find` errors instead of empty results.
 
@@ -156,8 +160,10 @@ uv run ~/.pi/agent/skills/session-search/scripts/inspect.py --ref subagent/pi:ab
 ### footprint — generated artifact audit
 
 ```bash
-uv run ~/.pi/agent/skills/session-search/scripts/footprint.py [--session ID] [--project NAME] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--limit N] [--json]
+uv run ~/.pi/agent/skills/session-search/scripts/footprint.py [--session ID] [--project NAME_OR_PATH] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--limit N] [--json]
 ```
+
+`--project` uses the same name-prefix or exact canonical-path selection as `find`.
 
 Use `footprint` when users ask where Session Index disk usage is going or which sessions are safe prune candidates. It reports generated Clean Transcript, Tool Log, Subagent Run, and Side Chat transcript sizes; missing/dangling generated paths; source JSONL retention; fact counts; and prune blockers. It never deletes anything.
 
@@ -180,7 +186,7 @@ Results form one continuous list that scrolls a row at a time. Search and filter
 
 Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines/paths, marking matching Side Chats.
 
-Press `f` to open the filter picker. It opens with Project selected. Type part of a project name, then press Enter to apply the filter and return to the session list.
+Press `f` to open the filter picker. It opens with Project selected. Type part of a project name or displayed path, then press Enter to apply the filter and return to the session list. Each choice selects one project identity, including all its linked worktrees. Same-name projects have canonical paths in their labels so they remain distinguishable.
 
 Use Tab or Shift+Tab to switch between these categories:
 

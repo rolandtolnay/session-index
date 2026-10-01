@@ -4,6 +4,14 @@ Session Index preserves searchable records of agent conversations and exposes en
 
 ## Language
 
+**Project**:
+The local repository shared by its linked worktrees, or one specific folder when no repository is available.
+_Avoid_: Checkout name, remote repository, folder-name prefix
+
+**Session Location**:
+The working folder and, when known, exact checkout in which a conversation started, distinct from its Project.
+_Avoid_: Project identity, canonical project path
+
 **Session Manager TUI**:
 The user-facing terminal browser for indexed sessions, opened with the `sessions` alias.
 _Avoid_: Sessions TUI, session browser, manage TUI
@@ -132,6 +140,10 @@ The agent name requested by the parent session for a Subagent Run, used as the c
 _Avoid_: Observed child type, artifact title
 
 ## Relationships
+
+- Sessions in linked worktrees belong to the same **Project** while retaining distinct **Session Locations** and **Canonical Session IDs**.
+- Independent clones, nested independent repositories, and unrelated non-repository folders are separate **Projects**, even when their names or remotes match.
+- A session's resolved **Project** membership survives removal of its worktree; shared membership does not make two **Session Locations** interchangeable for exact-checkout operations.
 
 - A **Current Session** has exactly one **Canonical Session ID**.
 - A **Current Session** has exactly one **Source Transcript** when the provider exposes a session file.

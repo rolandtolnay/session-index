@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from typing import Any
 
-from db import build_fts_query, find_session_candidates, get_session, top_level_session_predicate, topic_hits_sql
+from db import build_fts_query, find_session_candidates, get_session, project_filter_clause, top_level_session_predicate, topic_hits_sql
 from evidence_model import (
     candidate,
     file_mutation_match,
@@ -74,8 +74,7 @@ def _empty_result_hint(args: dict[str, Any]) -> str | None:
 def _session_filters(args: dict[str, Any], params: dict[str, Any], alias: str = "s") -> list[str]:
     clauses: list[str] = [top_level_session_predicate(alias)]
     if args.get("project"):
-        clauses.append(f"{alias}.project LIKE :project_pattern")
-        params["project_pattern"] = f"{args['project']}%"
+        clauses.append(project_filter_clause(args["project"], params, alias))
     if args.get("since"):
         clauses.append(f"{alias}.started_at >= :since")
         params["since"] = args["since"]

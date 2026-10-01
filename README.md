@@ -146,6 +146,16 @@ uv run backfill_substance.py          # preview, no model calls or database upda
 uv run backfill_substance.py --apply  # classify existing Clean Transcripts; safe to resume
 ```
 
+## Project identity and locations
+
+A local Git repository and its linked worktrees are one project. Independent clones and same-name folders remain separate; non-Git folders are identified by normalized absolute path. No name-prefix or remote-URL rule merges projects. Project-group selectors match canonical project paths, so a worktree's physical location does not change group membership.
+
+Session rows retain `project_id` (the repository's absolute common Git directory with a `git:` prefix, or a `dir:` folder identity), `project_path` (canonical repository location, normally the main checkout), `project` (its display name), `worktree_path` (actual checkout root), and `cwd` (original starting folder). Group SQL project counts by `project_id`, not `project`. Snapshot capture still checks the exact source worktree.
+
+`find --project` and `footprint --project` accept a name prefix or exact canonical project path (absolute or `~/...`); use the path to disambiguate same-name projects. Find candidates include `session.project_path`. Backfill's `--project` keeps exact, case-insensitive name matching and also accepts exact canonical paths; persisted corrections survive reparsing a deleted worktree.
+
+For existing sessions, the [historical project backfill](docs/project-identity-backfill.md) applies reviewed exact-path mappings with a database backup. It preserves known legacy locations without inventing unavailable starting directories.
+
 ## Evidence retrieval
 
 Use the installed `session-search` skill and CLI `--help` as the canonical LLM operating surface. README stays intentionally brief for adopters/maintainers.
@@ -183,7 +193,7 @@ Results form one continuous list that scrolls a row at a time. Search and filter
 
 Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines/paths, marking matching Side Chats.
 
-Press `f` to open the filter picker. It opens with Project selected. Type part of a project name, then press Enter to apply the filter and return to the session list.
+Press `f` to open the filter picker. It opens with Project selected. Type part of a project name or displayed path, then press Enter to apply the filter and return to the session list. Each choice selects one project identity, including all its linked worktrees. Same-name projects have canonical paths in their labels so they remain distinguishable.
 
 Use Tab or Shift+Tab to switch between these categories:
 
@@ -293,7 +303,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 | `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
 | `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |
 | `inspect --ref REF [--q TEXT] [--max-snippets N]` | JSON Evidence Packets with generated artifact metadata and scoped Clean Transcript, Tool Log, or Subagent Run Evidence Snippets |
-| `backfill [--source claude\|pi\|codex\|all] [--force] [--prune] [--project NAME] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries and Session Headlines |
+| `backfill [--source claude\|pi\|codex\|all] [--force] [--prune] [--project NAME_OR_PATH] [--session ID] [--with-summary]` | Process JSONL files; deterministic artifacts/facts by default; `--with-summary` also regenerates LLM summaries and Session Headlines |
 | `status [--fix]` | Index stats + integrity check; `--fix` repairs dangling paths and orphans |
 
 `find --mutated` is file conversation history by default: it returns one session-collapsed candidate per Canonical Session ID, with representative matching paths and related tool refs for drill-down. Use `find --mutated PATH --mutation-mode event` for exact File Mutation audit rows. Raw SQL over `file_mutations` remains available for custom aggregates and exact lists, for example: `SELECT DISTINCT path FROM file_mutations WHERE session_id='SESSION_ID' ORDER BY path;`. `files_touched` remains broad search metadata and may include reads/searches.

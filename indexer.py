@@ -70,6 +70,9 @@ _METADATA_FIELDS = {
     "slug",
     "project_path",
     "project",
+    "project_id",
+    "cwd",
+    "worktree_path",
     "branch",
     "model",
     "started_at",
@@ -183,6 +186,9 @@ def upsert_parsed_session(
         slug=session.slug or None,
         project_path=session.project_path or None,
         project=session.project or None,
+        project_id=session.project_id or None,
+        cwd=session.cwd or None,
+        worktree_path=session.worktree_path or None,
         branch=session.branch or None,
         model=session.model or None,
         started_at=session.started_at or None,
@@ -415,6 +421,8 @@ def _index_qualified_session(
             source,
             session.native_session_id,
         )
+        from project_identity import restore_project_identity
+        restore_project_identity(identity_conn, session)
         if source == "pi" and IndexStage.CLEAN_TRANSCRIPT in stages:
             from side_chats import build_rows
             side_chat_rows = build_rows(path, session, identity_conn)

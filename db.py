@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     slug TEXT,
     project_path TEXT,
     project TEXT,
+    project_id TEXT,
+    cwd TEXT,
+    worktree_path TEXT,
     branch TEXT,
     model TEXT,
     started_at TEXT,
@@ -273,6 +276,9 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
 
     # Migrations — add columns that don't exist in older schemas.
     migrations = [
+        ("project_id", "ALTER TABLE sessions ADD COLUMN project_id TEXT"),
+        ("cwd", "ALTER TABLE sessions ADD COLUMN cwd TEXT"),
+        ("worktree_path", "ALTER TABLE sessions ADD COLUMN worktree_path TEXT"),
         ("source", "ALTER TABLE sessions ADD COLUMN source TEXT"),
         ("native_session_id", "ALTER TABLE sessions ADD COLUMN native_session_id TEXT"),
         ("source_path", "ALTER TABLE sessions ADD COLUMN source_path TEXT"),
@@ -293,6 +299,8 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass  # already exists
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_id_started_at ON sessions(project_id, started_at DESC)")
 
     # Backfill provider metadata for pre-Pi rows.
     conn.execute("UPDATE sessions SET source = 'claude' WHERE source IS NULL OR source = ''")
@@ -339,6 +347,9 @@ def upsert_session(
     slug: str | None = None,
     project_path: str | None = None,
     project: str | None = None,
+    project_id: str | None = None,
+    cwd: str | None = None,
+    worktree_path: str | None = None,
     branch: str | None = None,
     model: str | None = None,
     started_at: str | None = None,
@@ -382,6 +393,18 @@ def upsert_session(
                 raise ValueError("Native session identity is required for a new canonical ID")
             native_session_id = session_id
     assert_session_identity(conn, session_id, source, native_session_id)
+    # Project membership is historical metadata, not a fresh filesystem guess.
+    # Keep resolved identity when a checkout disappears (also for direct upserts).
+    existing_project = conn.execute(
+        "SELECT project_id, project_path, project, cwd, worktree_path FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if existing_project and existing_project[0] and (
+        existing_project[0].startswith("git:") or not (project_id or "").startswith("git:")
+    ):
+        project_id, project_path, project = existing_project[:3]
+        cwd = cwd or existing_project[3]
+        worktree_path = worktree_path or existing_project[4]
     params = {
         "session_id": session_id,
         "source": source,
@@ -390,6 +413,9 @@ def upsert_session(
         "slug": slug,
         "project_path": project_path,
         "project": project,
+        "project_id": project_id,
+        "cwd": cwd,
+        "worktree_path": worktree_path,
         "branch": branch,
         "model": model,
         "started_at": started_at,
@@ -418,7 +444,7 @@ def upsert_session(
     conn.execute("""
         INSERT INTO sessions (
             session_id, source, native_session_id, source_path,
-            slug, project_path, project, branch, model,
+            slug, project_path, project, project_id, cwd, worktree_path, branch, model,
             started_at, ended_at, duration_seconds, user_message_count,
             assistant_message_count, assistant_char_count,
             user_messages, files_touched, tools_used, summary, headline,
@@ -426,7 +452,7 @@ def upsert_session(
             tool_log_path, subagent_transcripts, parent_session_path, parent_native_session_id
         ) VALUES (
             :session_id, :source, :native_session_id, :source_path,
-            :slug, :project_path, :project, :branch, :model,
+            :slug, :project_path, :project, :project_id, :cwd, :worktree_path, :branch, :model,
             :started_at, :ended_at, :duration_seconds, :user_message_count,
             :assistant_message_count, :assistant_char_count,
             :user_messages, :files_touched, :tools_used, :summary, :headline,
@@ -440,6 +466,9 @@ def upsert_session(
             slug = COALESCE(:slug, slug),
             project_path = COALESCE(:project_path, project_path),
             project = COALESCE(:project, project),
+            project_id = COALESCE(:project_id, project_id),
+            cwd = COALESCE(:cwd, cwd),
+            worktree_path = COALESCE(:worktree_path, worktree_path),
             branch = COALESCE(:branch, branch),
             model = COALESCE(:model, model),
             started_at = COALESCE(:started_at, started_at),
@@ -522,6 +551,63 @@ def topic_hits_sql(parameter: str = "query") -> str:
     """
 
 
+def project_identity_sql(alias: str = "s") -> str:
+    """Legacy rows at a canonical path inherit its already-known identity.
+
+    The same expression drives picker grouping and exact-ID selection, so a
+    rolling upgrade cannot create overlapping legacy/new project choices.
+    """
+    column = f"{alias}." if alias else "sessions."
+    return f"""COALESCE(NULLIF({column}project_id, ''), (
+        SELECT MIN(known.project_id) FROM sessions known
+        WHERE known.project_path = {column}project_path AND NULLIF(known.project_id, '') IS NOT NULL
+    ), NULLIF({column}project_path, ''), COALESCE({column}project, ''))"""
+
+
+def project_filter_clause(
+    selector: str, params: dict[str, Any], alias: str = "s", *, prefix: bool = True,
+) -> str:
+    """Names are convenient; canonical paths or IDs select one exact project."""
+    column = f"{alias}." if alias else ""
+    if selector.startswith(("git:", "dir:")):
+        params["project_selector"] = selector
+        return f"{project_identity_sql(alias)} = :project_selector"
+    if os.path.isabs(os.path.expanduser(selector)):
+        from project_identity import normalized_path
+        params["project_selector"] = normalized_path(selector)
+        return f"{column}project_path = :project_selector"
+    params["project_selector"] = f"{selector}%" if prefix else selector
+    return f"{column}project {'LIKE' if prefix else '='} :project_selector"
+
+
+def project_options(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
+    """Picker values are identities; duplicate names get a location qualifier."""
+    rows = conn.execute(f"""
+        SELECT {project_identity_sql()} AS identity,
+               COALESCE(s.project, '') AS name, s.project_path, COUNT(*) AS count
+        FROM sessions s WHERE {top_level_session_predicate('s')}
+        GROUP BY identity ORDER BY name, project_path, identity
+    """).fetchall()
+    from collections import defaultdict
+    locations = defaultdict(list)
+    for key, name, path, _count in rows:
+        locations[name].append(path or key)
+    options = []
+    for key, name, path, count in rows:
+        label = name or "Unknown project"
+        if name and len(locations[name]) > 1:
+            location = path or key
+            # Remove only a shared directory prefix. Narrow terminals should
+            # show the distinguishing folder, not identical /Users/... clips.
+            if all(os.path.isabs(item) for item in locations[name]):
+                common = os.path.commonpath(locations[name])
+                if common != os.sep and location != common:
+                    location = "…/" + os.path.relpath(location, common)
+            label = f"{name} — {location}"
+        options.append((key, label, count))
+    return options
+
+
 def find_session_candidates(
     conn: sqlite3.Connection,
     query: str | None = None,
@@ -543,8 +629,7 @@ def find_session_candidates(
     clauses: list[str] = [top_level_session_predicate("s")]
 
     if project:
-        clauses.append("s.project LIKE :project_pattern")
-        params["project_pattern"] = f"{project}%"
+        clauses.append(project_filter_clause(project, params))
     if since:
         clauses.append("s.started_at >= :since")
         params["since"] = since
@@ -654,14 +739,16 @@ def get_recent_by_project(
     conn: sqlite3.Connection, project: str, limit: int = 5,
 ) -> list[dict[str, Any]]:
     """Get recent sessions for a specific project."""
+    params = {"limit": limit}
+    identity_clause = project_filter_clause(project, params, alias="", prefix=False)
     cursor = conn.execute(f"""
         SELECT * FROM sessions
-        WHERE project = :project
+        WHERE {identity_clause}
           AND {TOP_LEVEL_SESSION_PREDICATE}
           AND {_visible_recent_predicate(conn)}
         ORDER BY started_at DESC
         LIMIT :limit
-    """, {"project": project, "limit": limit})
+    """, params)
     return [dict(row) for row in cursor.fetchall()]
 
 
@@ -669,30 +756,40 @@ def get_recent_cross_project(
     conn: sqlite3.Connection, since: str, exclude_project: str = "", limit: int = 10,
 ) -> list[dict[str, Any]]:
     """Get recent sessions across all projects since a timestamp."""
+    params = {"since": since, "limit": limit}
+    exclusion = f"NOT ({project_filter_clause(exclude_project, params, alias='', prefix=False)})" if exclude_project else "1"
     cursor = conn.execute(f"""
         SELECT * FROM sessions
         WHERE started_at >= :since
-        AND (:exclude = '' OR project != :exclude)
+        AND {exclusion}
         AND {TOP_LEVEL_SESSION_PREDICATE}
         AND {_visible_recent_predicate(conn)}
         ORDER BY started_at DESC
         LIMIT :limit
-    """, {"since": since, "exclude": exclude_project, "limit": limit})
+    """, params)
     return [dict(row) for row in cursor.fetchall()]
 
 
+def _same_project_clause(conn: sqlite3.Connection, project_path: str | None, project_id: str | None) -> str:
+    """Use repository identity, retaining path/name fallback for legacy rows."""
+    clause = "COALESCE(project, '') = :project"
+    if project_path is not None:
+        clause = f"""(COALESCE(project_path, '') = :project_path OR (
+            (project_path IS NULL OR trim(project_path) = '') AND {clause}
+        ))"""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if project_id and "project_id" in columns:
+        clause = f"(project_id = :project_id OR (COALESCE(project_id, '') = '' AND {clause}))"
+        # NULL OR false is NULL, which would drop unknown identities from NOT.
+        clause = f"COALESCE({clause}, 0)"
+    return clause
+
+
 def get_headlined_by_project(
-    conn: sqlite3.Connection, project: str, project_path: str | None = None,
+    conn: sqlite3.Connection, project: str, project_path: str | None = None, *, project_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Get headlined sessions for a project root, newest first."""
-    if project_path is None:
-        identity_clause = "project = :project"
-    else:
-        identity_clause = """(
-            project_path = :project_path OR (
-                (project_path IS NULL OR trim(project_path) = '') AND project = :project
-            )
-        )"""
+    """Get headlined sessions for one project, newest first."""
+    identity_clause = _same_project_clause(conn, project_path, project_id)
     cursor = conn.execute(f"""
         SELECT * FROM sessions
         WHERE {identity_clause}
@@ -701,7 +798,7 @@ def get_headlined_by_project(
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY started_at DESC, session_id DESC
-    """, {"project": project, "project_path": project_path})
+    """, {"project": project, "project_path": project_path, "project_id": project_id})
     return [dict(row) for row in cursor.fetchall()]
 
 
@@ -722,7 +819,8 @@ def _headline_columns(conn: sqlite3.Connection) -> str:
     """Read compact routing metadata even before the first post-upgrade migration."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
     band = "substance_band" if "substance_band" in columns else "NULL AS substance_band"
-    return f"session_id, project, project_path, branch, started_at, headline, transcript_path, {band}"
+    identity = "project_id" if "project_id" in columns else "NULL AS project_id"
+    return f"session_id, project, project_path, {identity}, branch, started_at, headline, transcript_path, {band}"
 
 
 def get_headlined_by_project_paths(
@@ -747,18 +845,20 @@ def get_headlined_by_project_paths(
 
 def get_headlined_cross_project(
     conn: sqlite3.Connection, since: str, exclude_project: str, *, until: str,
+    project_path: str | None = None, project_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Get time-bounded cross-project candidates for substance-band selection."""
+    """Exclude an exact project, not every repository sharing its display name."""
+    exclusion = f"NOT ({_same_project_clause(conn, project_path, project_id)})"
     cursor = conn.execute(f"""
         SELECT {_headline_columns(conn)} FROM sessions
         WHERE julianday(started_at) BETWEEN julianday(:since) AND julianday(:until)
-          AND project != :exclude
+          AND {exclusion}
           AND {TOP_LEVEL_SESSION_PREDICATE}
           AND {_visible_recent_predicate(conn)}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY julianday(started_at) DESC, session_id DESC
-    """, {"since": since, "until": until, "exclude": exclude_project})
+    """, {"since": since, "until": until, "project": exclude_project, "project_path": project_path, "project_id": project_id})
     return [dict(row) for row in cursor.fetchall()]
 
 
@@ -774,14 +874,7 @@ def get_stats(conn: sqlite3.Connection) -> dict[str, Any]:
         f"SELECT COUNT(*) FROM sessions WHERE headline IS NOT NULL AND {TOP_LEVEL_SESSION_PREDICATE}"
     ).fetchone()[0]
 
-    projects = conn.execute(f"""
-        SELECT project, COUNT(*) as count
-        FROM sessions
-        WHERE project IS NOT NULL AND project != ''
-          AND {TOP_LEVEL_SESSION_PREDICATE}
-        GROUP BY project
-        ORDER BY count DESC
-    """).fetchall()
+    projects = sorted(project_options(conn), key=lambda item: (-item[2], item[1]))
 
     date_range = conn.execute(f"""
         SELECT MIN(started_at), MAX(started_at) FROM sessions
@@ -794,7 +887,7 @@ def get_stats(conn: sqlite3.Connection) -> dict[str, Any]:
         "missing_summary": total - with_summary,
         "with_headline": with_headline,
         "missing_headline": total - with_headline,
-        "projects": [(row[0], row[1]) for row in projects],
+        "projects": [(label, count) for _key, label, count in projects if label != "Unknown project"],
         "earliest": date_range[0],
         "latest": date_range[1],
     }

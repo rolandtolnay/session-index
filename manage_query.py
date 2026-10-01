@@ -11,7 +11,7 @@ from typing import Any
 
 from rapidfuzz import fuzz, process
 
-from db import top_level_session_predicate
+from db import project_filter_clause, project_identity_sql, top_level_session_predicate
 
 
 @dataclass(frozen=True)
@@ -124,8 +124,7 @@ def _load_scope(conn: sqlite3.Connection, filters: ManageFilters) -> list[dict[s
         if filters.project == "":
             clauses.append("COALESCE(s.project, '') = ''")
         else:
-            clauses.append("s.project = :project")
-            params["project"] = filters.project
+            clauses.append(project_filter_clause(filters.project, params, prefix=False))
     if filters.source is not None:
         if filters.source == "":
             clauses.append("COALESCE(s.source, '') = ''")
@@ -144,7 +143,7 @@ def _load_scope(conn: sqlite3.Connection, filters: ManageFilters) -> list[dict[s
             params["substance"] = filters.substance
 
     cursor = conn.execute(
-        f"""SELECT s.*, (
+        f"""SELECT s.*, {project_identity_sql()} AS project_identity, (
             SELECT group_concat(COALESCE(c.headline, c.first_question) || char(10) || c.search_text, char(10))
             FROM side_chats c WHERE c.parent_session_id=s.session_id
         ) AS side_chat_content FROM sessions s WHERE {' AND '.join(clauses)}""",

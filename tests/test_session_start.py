@@ -16,6 +16,11 @@ import recent_context
 import session_start
 from db import init_db, upsert_session
 from recent_context import _format_session, select_weekly_sessions
+from project_identity import ProjectIdentity
+
+
+def _identity(path):
+    return ProjectIdentity(f"dir:{path}", str(path), path.name, str(path))
 
 
 def _make_conn():
@@ -127,8 +132,8 @@ def test_build_recent_context_limits_filters_and_instructs(tmp_path, monkeypatch
     monkeypatch.setattr(db, "DB_PATH", str(data_dir / "sessions.db"))
     monkeypatch.setattr(
         recent_context,
-        "_project_root_from_cwd",
-        lambda _cwd: str(tmp_path / "current"),
+        "resolve_project",
+        lambda _cwd: _identity(tmp_path / "current"),
     )
     monkeypatch.setattr(
         recent_context,
@@ -255,8 +260,8 @@ def test_build_recent_context_surfaces_matching_project_group_separately(tmp_pat
     monkeypatch.setattr(db, "DB_PATH", str(data_dir / "sessions.db"))
     monkeypatch.setattr(
         recent_context,
-        "_project_root_from_cwd",
-        lambda _cwd: str(current_root),
+        "resolve_project",
+        lambda _cwd: _identity(current_root),
     )
     monkeypatch.setattr(recent_context, "PROJECT_CONTEXT_CONFIG_PATH", str(config_path))
 
@@ -374,14 +379,17 @@ def test_startup_on_pre_classification_schema_keeps_all_sections(tmp_path, monke
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "sessions.db"))
     current_root = tmp_path / "current"
     group_root = tmp_path / "grouped"
-    monkeypatch.setattr(recent_context, "_project_root_from_cwd", lambda cwd: str(current_root))
+    monkeypatch.setattr(recent_context, "resolve_project", lambda cwd: _identity(current_root))
     config = tmp_path / "project-context.json"
     config.write_text(json.dumps({"version": 1, "groups": [{
         "name": "team", "projects": [str(current_root), str(group_root)], "files": ["context.md"],
     }]}))
     monkeypatch.setattr(recent_context, "PROJECT_CONTEXT_CONFIG_PATH", str(config))
     conn = db.get_connection()
-    conn.executescript(db.SCHEMA.replace("    substance_band TEXT,\n", "").replace("    substance_reason TEXT,\n", ""))
+    legacy_schema = db.SCHEMA
+    for column in ("substance_band", "substance_reason", "project_id", "cwd", "worktree_path"):
+        legacy_schema = legacy_schema.replace(f"    {column} TEXT,\n", "")
+    conn.executescript(legacy_schema)
     for name, root in (("current", current_root), ("grouped", group_root), ("other", tmp_path / "other")):
         conn.execute("""INSERT INTO sessions(session_id, source, project, project_path, started_at, headline, transcript_path)
                         VALUES (?, 'claude', ?, ?, ?, 'A useful session', ?)""",

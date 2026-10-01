@@ -246,6 +246,7 @@ def _stub_single_backfill_source(monkeypatch, tmp_path, parsed, result=None):
         monkeypatch.setattr(indexer, "index_source_transcript", lambda *args, **kwargs: pytest.fail("indexing should not run"))
     monkeypatch.setattr(cli, "get_connection", lambda: _DummyConn())
     monkeypatch.setattr(cli, "init_db", lambda _conn: None)
+    monkeypatch.setattr("project_identity.restore_project_identity", lambda *_: None)
 
 
 def test_backfill_prints_indexer_skip_reason(monkeypatch, capsys, tmp_path):

@@ -15,6 +15,7 @@ def session_summary(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "session_id": row["session_id"],
         "project": row["project"],
+        "project_path": row.get("project_path"),
         "started_at": row["started_at"],
         "summary": row["summary"],
     }

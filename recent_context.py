@@ -5,9 +5,10 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
-import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from project_identity import resolve_project
 
 SAME_PROJECT_LIMIT = 7
 PROJECT_GROUP_LIMIT = 14
@@ -73,7 +74,7 @@ def select_weekly_sessions(
     if ensure_project_coverage:
         projects: set[str] = set()
         for session in ranked:
-            project = session.get("project_path") or session.get("project") or ""
+            project = session.get("project_id") or session.get("project_path") or session.get("project") or ""
             if project not in projects:
                 projects.add(project)
                 selected.add(session["session_id"])
@@ -83,25 +84,6 @@ def select_weekly_sessions(
         if session.get("substance_band") != "low_value":
             selected.add(session["session_id"])
     return [session for session in ranked if session["session_id"] in selected]
-
-
-def _project_root_from_cwd(cwd: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        project_root = result.stdout.strip() if result.returncode == 0 else cwd
-    except Exception:
-        project_root = cwd
-    return os.path.abspath(project_root)
-
-
-def _project_from_cwd(cwd: str) -> str:
-    return os.path.basename(_project_root_from_cwd(cwd))
 
 
 def _glob_parts_match(pattern: tuple[str, ...], path: tuple[str, ...]) -> bool:
@@ -147,8 +129,8 @@ def _selector_matches_path(selector: str, path: str) -> bool:
         candidate = parent
 
 
-def _matching_project_groups(cwd: str) -> list[dict[str, Any]]:
-    """Load valid configured groups containing cwd, preserving config order."""
+def _matching_project_groups(project_root: str) -> list[dict[str, Any]]:
+    """Group membership follows the canonical project, never a checkout's parent."""
     try:
         with open(PROJECT_CONTEXT_CONFIG_PATH, encoding="utf-8") as config_file:
             raw = json.load(config_file)
@@ -190,7 +172,7 @@ def _matching_project_groups(cwd: str) -> list[dict[str, Any]]:
 
     return [
         group for group in parsed
-        if any(_selector_matches_path(selector, cwd) for selector in group["selectors"])
+        if any(_selector_matches_path(selector, project_root) for selector in group["selectors"])
     ]
 
 
@@ -211,16 +193,19 @@ def build_recent_context(cwd: str) -> str | None:
     if not os.path.exists(DB_PATH):
         return None
 
-    project_root = _project_root_from_cwd(cwd)
-    project = os.path.basename(project_root)
-    matching_groups = _matching_project_groups(cwd)
+    identity = resolve_project(cwd)
+    project_root = identity.project_path
+    project = identity.project
+    matching_groups = _matching_project_groups(project_root)
     conn = get_connection()
     try:
-        same_candidates = get_headlined_by_project(conn, project, project_root)
+        same_candidates = get_headlined_by_project(conn, project, project_root, project_id=identity.project_id)
         now = datetime.now(timezone.utc)
         since = (now - timedelta(days=RECENT_DAYS)).isoformat()
         until = now.isoformat()
-        cross_candidates = get_headlined_cross_project(conn, since, project, until=until)
+        cross_candidates = get_headlined_cross_project(
+            conn, since, project, until=until, project_path=project_root, project_id=identity.project_id,
+        )
 
         group_project_paths: dict[str, set[str]] = {}
         group_candidates: dict[str, list[dict[str, Any]]] = {}

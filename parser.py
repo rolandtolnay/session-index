@@ -9,12 +9,12 @@ and extracts metadata (session_id, slug, project, branch, model, etc.).
 import json
 import os
 import re
-import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
 from session_identity import canonical_session_id
+from project_identity import set_session_project
 
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 
@@ -46,8 +46,11 @@ class ParsedSession:
     session_id: str = ""
     native_session_id: str = ""
     slug: str = ""
+    project_id: str = ""
     project_path: str = ""
-    project: str = ""  # basename of project_path
+    project: str = ""  # basename of canonical project_path
+    cwd: str = ""
+    worktree_path: str = ""
     branch: str = ""
     model: str = ""
     started_at: str = ""
@@ -146,26 +149,6 @@ def _format_question_answers(
         blocks.append(f"{heading}\n{question.strip()}\n[answer] {', '.join(answers)}")
 
     return "\n\n".join(blocks)
-
-
-def _git_root(cwd: str) -> str:
-    """Derive git root from cwd. Returns cwd if git fails."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            root = result.stdout.strip()
-            # Group worktree sessions under the parent project
-            wt = "/.claude-worktrees/"
-            idx = root.find(wt)
-            if idx != -1:
-                root = root[:idx]
-            return root
-    except Exception:
-        pass
-    return cwd
 
 
 def _format_tool_use(tool: dict[str, Any]) -> str:
@@ -302,8 +285,7 @@ def parse_jsonl(
         if not session.branch and entry.get("gitBranch"):
             session.branch = entry["gitBranch"]
         if not session.project_path and entry.get("cwd"):
-            session.project_path = _git_root(entry["cwd"])
-            session.project = os.path.basename(session.project_path)
+            set_session_project(session, entry["cwd"])
 
         msg = entry.get("message", {})
 

@@ -23,6 +23,7 @@ from db import (
     delete_sessions,
     DB_PATH,
     TOP_LEVEL_SESSION_PREDICATE,
+    project_filter_clause,
 )
 from logger import log
 from evidence_find import find_candidates, validate_date_filter
@@ -95,7 +96,7 @@ def add_find_arguments(parser: argparse.ArgumentParser) -> None:
         choices=[True, False],
         help="For --tool question, filter by true/false recommended answer selection; returns question refs",
     )
-    parser.add_argument("--project", "-p", help="Filter by project name (prefix match)")
+    parser.add_argument("--project", "-p", help="Filter by project name prefix or exact canonical project path (absolute or ~/ path)")
     parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
     parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
     parser.add_argument("--session", help="Only this canonical session ID")
@@ -239,6 +240,18 @@ def _completed_backfill_sessions(conn, options) -> set[str]:
     return {row[0] for row in cursor.fetchall()}
 
 
+def _backfill_project_matches(session, selector: str) -> bool:
+    """Backfill names stay exact; paths and identity selectors disambiguate."""
+    if selector.startswith(("git:", "dir:")):
+        return session.project_id == selector
+    expanded = os.path.expanduser(selector)
+    if os.path.isabs(expanded):
+        return bool(session.project_path) and (
+            os.path.realpath(os.path.expanduser(session.project_path)) == os.path.realpath(expanded)
+        )
+    return (session.project or "").casefold() == selector.casefold()
+
+
 def _print_backfill_skip(index: int, total: int, source: str, session_id: str, reason: str) -> None:
     print(f"[{index}/{total}] {source}:{session_id[:12]}... skipped ({reason})")
 
@@ -251,6 +264,7 @@ def cmd_backfill(args: argparse.Namespace) -> None:
         parse_session_file,
     )
     from sources import discover_sessions
+    from project_identity import restore_project_identity
 
     source = getattr(args, "source", "all")
     try:
@@ -311,8 +325,10 @@ def cmd_backfill(args: argparse.Namespace) -> None:
                 skipped += 1
                 continue
 
-            # Filter by project name before invoking expensive stages.
-            if args.project and (session.project or "").lower() != args.project.lower():
+            # Retain corrected identity when a deleted checkout can no longer
+            # resolve Git, before project selection or expensive indexing stages.
+            restore_project_identity(conn, session)
+            if args.project and not _backfill_project_matches(session, args.project):
                 reason = f"project {session.project or '(unknown)'} does not match {args.project}"
                 _print_backfill_skip(i, total, source_name, session_id, reason)
                 skipped += 1
@@ -752,8 +768,7 @@ def build_footprint_audit(
         params: dict[str, object] = {"limit": max(1, limit)}
         clauses: list[str] = []
         if project:
-            clauses.append("project LIKE :project")
-            params["project"] = f"{project}%"
+            clauses.append(project_filter_clause(project, params))
         if since:
             clauses.append("started_at >= :since")
             params["since"] = since
@@ -766,7 +781,7 @@ def build_footprint_audit(
         rows = [
             dict(row)
             for row in conn.execute(
-                f"SELECT * FROM sessions {where} ORDER BY started_at DESC LIMIT :limit",
+                f"SELECT s.* FROM sessions s {where} ORDER BY started_at DESC LIMIT :limit",
                 params,
             ).fetchall()
         ]
@@ -814,7 +829,7 @@ def _print_footprint_audit(audit: dict) -> None:
 
 def add_footprint_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--session", action="append", help="Audit one exact Canonical Session ID; repeatable")
-    parser.add_argument("--project", help="Filter by project name prefix")
+    parser.add_argument("--project", help="Filter by project name prefix or exact canonical project path (absolute or ~/ path)")
     parser.add_argument("--since", help="Only sessions from this date (YYYY-MM-DD)")
     parser.add_argument("--until", help="Only sessions before this date (YYYY-MM-DD)")
     parser.add_argument("--limit", type=int, default=20, help="Maximum sessions to audit when --session is not used")
@@ -1305,7 +1320,7 @@ def main() -> None:
     sp_backfill.add_argument("--pi-session-dir", help="Override Pi session directory")
     sp_backfill.add_argument("--codex-session-dir", help="Override Codex active session directory")
     sp_backfill.add_argument("--codex-archived-dir", help="Override Codex archived session directory")
-    sp_backfill.add_argument("--project", help="Only process sessions for this project name")
+    sp_backfill.add_argument("--project", help="Only process sessions for this exact project name or canonical project path (absolute or ~/ path)")
     sp_backfill.add_argument("--session", help="Only process this specific session ID")
     sp_backfill.add_argument("--with-summary", action="store_true",
                              help="Also regenerate LLM summaries and headlines (slower; may use network/local LLM)")

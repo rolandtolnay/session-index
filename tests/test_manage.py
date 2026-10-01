@@ -77,7 +77,6 @@ def test_hidden_excluded_from_all_context_sections_but_searchable(store, tmp_pat
         "name": "related", "projects": [str(current), str(group)], "files": ["context.md"],
     }]}))
     monkeypatch.setattr(recent_context, "PROJECT_CONTEXT_CONFIG_PATH", str(config))
-    monkeypatch.setattr(recent_context, "_project_root_from_cwd", lambda _: str(current))
     now = datetime.now(timezone.utc)
     for project in ("current", "group", "other"):
         for visibility in ("visible", "hidden"):

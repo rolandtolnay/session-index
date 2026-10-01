@@ -7,7 +7,7 @@ import re
 from db import SCHEMA
 
 _REVIEWED_TABLES = {
-    "sessions": "one row per indexed conversation. Source Transcript paths are ingestion metadata, not the normal evidence path. substance_band is substantial, useful, or low_value; NULL means unassessed, not low-value. substance_reason records the evidence for the assessment. hidden_from_recents=1 excludes a session from injected recent context, not search or SQL access.",
+    "sessions": "one row per indexed conversation. project_id groups a local Git repository and its linked worktrees (git:<absolute common Git directory>), or a non-Git folder (dir:<normalized folder>). project is a display name, not a unique key. project_path is the canonical repository location (normally the main checkout), worktree_path is the known checkout root, and cwd is the original starting folder when available. Backfilled legacy rows retain their old indexed location but may lack the exact starting cwd. Source Transcript paths are ingestion metadata, not the normal evidence path. substance_band is substantial, useful, or low_value; NULL means unassessed, not low-value. substance_reason records the evidence for the assessment. hidden_from_recents=1 excludes a session from injected recent context, not search or SQL access.",
     "tool_calls": "one row per indexed tool call. The pair (session_id, sequence) constructs a Tool Inspection Reference.",
     "skill_invocations": "one row per named reusable prompt/workflow template invocation. The pair (session_id, sequence) constructs a Skill Invocation Reference.",
     "file_mutations": "one row per successful write/edit path. This is the precise File Mutation table; sessions.files_touched is broad metadata.",
@@ -79,6 +79,14 @@ sidechat/<parent_session_id>/<side_chat_id> for rows from side_chats.
 session/<session_id> for session-level inspection and generated artifact metadata.
 
 Copyable examples
+
+Count sessions by project identity, not display name:
+SELECT project_id, project, project_path, COUNT(*) AS n FROM sessions GROUP BY project_id ORDER BY n DESC;
+
+Disambiguate same-name projects by exact canonical path (SQL paths must be absolute, not ~/):
+SELECT session_id, project, project_path, worktree_path, cwd FROM sessions WHERE project_path='/absolute/main-checkout' ORDER BY started_at DESC LIMIT 20;
+
+`find --project` and `footprint --project` accept a name prefix or exact canonical project path (absolute or ~/). Linked worktrees share a project; independent same-name repositories remain separate. Identity selectors (git:... or dir:...) also match exactly.
 
 Aggregate tool use:
 SELECT tool, COUNT(*) AS n FROM tool_calls GROUP BY tool ORDER BY n DESC LIMIT 20;

@@ -167,7 +167,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 **Evidence Find returns no candidates:**
 - Use `uv run cli.py find --help` to confirm criteria. `find` requires at least one criterion/filter.
 - FTS5 tokenization splits underscores and punctuation. Try fewer words or separated terms, e.g. `cooldown seconds`.
-- Project filter is prefix match: `--project ghostty` matches `ghostty-peon`.
+- Project names use prefix matching: `--project ghostty` matches `ghostty-peon`. Use an absolute canonical project path to distinguish same-name repositories; linked worktrees share their repository's project.
 - Date filters are inclusive for bare dates.
 - For exact File Mutation trails or aggregates, use `query --schema` then SQL over `file_mutations`.
 - For skill audits, `find --skill NAME` and SQL should use `skill_invocations`; `tool_calls` intentionally has no `skill_name` column.

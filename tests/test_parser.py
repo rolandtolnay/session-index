@@ -7,8 +7,7 @@ import sys
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unittest.mock import patch, MagicMock
-from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _git_root, _clean_text, _strip_narration, _extract_command
+from parser import parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _clean_text, _strip_narration, _extract_command
 from transcript import render_transcript
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
@@ -207,25 +206,6 @@ def test_parse_drops_plain_plugin_reload_and_effort_commands(tmp_path):
     assert session.user_messages == []
     assert session.user_message_count == 0
     assert session.assistant_message_count == 1
-
-
-# ── _git_root worktree tests ────────────────────────────────────────────────
-
-def _mock_git_root(toplevel: str) -> str:
-    """Call _git_root with subprocess mocked to return the given toplevel."""
-    mock_result = MagicMock(returncode=0, stdout=toplevel + "\n")
-    with patch("parser.subprocess.run", return_value=mock_result):
-        return _git_root("/dummy")
-
-
-def test_git_root_worktree_resolves_to_parent():
-    root = _mock_git_root("/Users/dev/dashboard-web/.claude-worktrees/feat-payout")
-    assert root == "/Users/dev/dashboard-web"
-
-
-def test_git_root_regular_project_unchanged():
-    root = _mock_git_root("/Users/dev/dashboard-web")
-    assert root == "/Users/dev/dashboard-web"
 
 
 # ── Transcript cleaning tests ──────────────────────────────────────────────────

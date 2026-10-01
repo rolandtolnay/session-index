@@ -198,3 +198,75 @@ def test_search_filter_sort_and_resize_in_terminal(tmp_path, columns, rows, no_c
         assert "Unrelated deployment" in capture()
     finally:
         subprocess.run([*base, "kill-server"], capture_output=True)
+
+
+@pytest.mark.parametrize("columns,rows", [(150, 40), (100, 34), (60, 24)])
+@pytest.mark.parametrize("no_color", [False, True])
+def test_project_identity_labels_in_terminal(tmp_path, columns, rows, no_color):
+    if not shutil.which("tmux"):
+        pytest.skip("terminal interaction requires tmux")
+    base = ["tmux", "-L", f"session-index-projects-{uuid.uuid4().hex}"]
+
+    def tmux(*args):
+        return subprocess.check_output([*base, *args], text=True, timeout=10)
+
+    def key(value):
+        tmux("send-keys", "-t", "fixture", value)
+        tmux("wait-for", "painted")
+
+    def capture(name):
+        rendered = tmux("capture-pane", "-p", "-t", "fixture")
+        (tmp_path / f"{name}.txt").write_text(rendered)
+        return rendered
+
+    repo = str(Path(__file__).resolve().parents[1])
+    script = tmp_path / "projects.py"
+    script.write_text(textwrap.dedent(f"""
+        import curses, locale, sqlite3, subprocess, sys
+        sys.path.insert(0, {repo!r})
+        from db import init_db, upsert_session
+        from manage_tui import SessionManager
+        locale.setlocale(locale.LC_ALL, '')
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        init_db(conn)
+        for sid, root, checkout in [
+            ('main', '/workspace/with/a/long/shared/directory/prefix/one/app', '/one/app'),
+            ('linked', '/workspace/with/a/long/shared/directory/prefix/one/app', '/one/app-feature'),
+            ('clone', '/workspace/with/a/long/shared/directory/prefix/two/app', '/two/app'),
+        ]:
+            upsert_session(conn, session_id=sid, project='app', project_id='git:' + root + '/.git',
+                           project_path=root, worktree_path=checkout, cwd=checkout,
+                           headline=sid + ' conversation', summary='Fixture summary')
+        ui = SessionManager(conn, lambda *_: None)
+        def run(screen):
+            curses.curs_set(0)
+            screen.keypad(True)
+            ui.configure_colors()
+            while True:
+                ui.draw(screen)
+                subprocess.run({base!r} + ['wait-for', '-S', 'painted'], check=True)
+                if not ui.handle_key(screen.get_wch()):
+                    break
+        curses.wrapper(run)
+    """))
+    try:
+        subprocess.run([*base, "new-session", "-d", "-s", "fixture", "-x", str(columns), "-y", str(rows),
+                        "env", "-u", "NO_COLOR", "TERM=xterm-256color",
+                        *(["NO_COLOR=1"] if no_color else []), sys.executable, str(script)], check=True)
+        tmux("wait-for", "painted")
+        key("f")
+        picker = capture("picker")
+        assert "/one/app" in picker and "/two/app" in picker, picker
+        assert "git:" not in picker, picker
+        key("Down")
+        key("Enter")
+        filtered = capture("filtered")
+        assert "/one/app" in filtered and "git:" not in filtered, filtered
+        assert "clone conversation" not in filtered, filtered
+        # At the smallest size only one row fits, but both linked sessions remain reachable.
+        key("j")
+        second = capture("second")
+        assert "main conversation" in second, second
+    finally:
+        subprocess.run([*base, "kill-server"], capture_output=True)

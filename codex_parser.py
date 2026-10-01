@@ -18,7 +18,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
-from parser import ParsedSession, ParsedToolCall, _clean_text, _git_root
+from parser import ParsedSession, ParsedToolCall, _clean_text
+from project_identity import set_session_project
 from session_identity import canonical_session_id
 
 CODEX_SOURCE = "codex"
@@ -417,8 +418,7 @@ def parse_codex_jsonl(
 
     cwd = meta_cwd or thread.cwd
     if cwd:
-        session.project_path = _git_root(cwd)
-        session.project = os.path.basename(session.project_path)
+        set_session_project(session, cwd)
     session.branch = meta_branch or thread.git_branch
 
     for entry in entries:

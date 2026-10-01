@@ -1,0 +1,5 @@
+# Repository identity without losing session location
+
+A Project groups linked Git worktrees by their normalized absolute common Git directory, not checkout names or remote URLs: independent clones remain separate even when their names and remotes match. `project_id` records that identity (`git:<common-directory>`, or `dir:<folder>` outside Git), `project_path` and `project` describe its canonical location and name, and `cwd`/`worktree_path` retain the conversation's actual location; exact-worktree snapshot checks remain independent of project grouping.
+
+Resolved membership is retained on subsequent indexing even after a worktree disappears. Historical corrections use a backed-up metadata-only migration with an explicit reviewed path mapping, never a permanent prefix heuristic; legacy checkout paths are retained without inventing unavailable starting directories. Summaries, conversation text, session IDs, source paths, and File Mutation paths are unchanged. Repository moves and merging independent clones are outside this identity model.

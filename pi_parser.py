@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any
 
 from session_identity import canonical_session_id
+from project_identity import set_session_project
 from parser import (
     ParsedQuestionSelection,
     ParsedSession,
@@ -26,7 +27,6 @@ from parser import (
     _clean_text,
     _format_bash_result,
     _format_question_answers,
-    _git_root,
     _strip_narration,
 )
 from subagent_parser import ParsedSubagent, SubagentInfo
@@ -462,8 +462,7 @@ def parse_pi_jsonl(
         session.parent_native_session_id = _parent_native_session_id(parent_session)
     cwd = header.get("cwd", "")
     if isinstance(cwd, str) and cwd:
-        session.project_path = _git_root(cwd)
-        session.project = os.path.basename(session.project_path)
+        set_session_project(session, cwd)
         session.branch = _git_branch(cwd)
 
     if isinstance(header.get("timestamp"), str):

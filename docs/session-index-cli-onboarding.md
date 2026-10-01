@@ -179,7 +179,10 @@ Useful columns:
 session_id
 source
 project
+project_id
 project_path
+worktree_path
+cwd
 branch
 started_at
 ended_at
@@ -190,6 +193,23 @@ tool_log_path
 ```
 
 Use this table when filtering by project, date, branch, or summary.
+
+Linked Git worktrees belong to one project. `project_id` identifies the local repository by its absolute common Git directory (`git:...`), or a non-Git folder by its normalized path (`dir:...`). Independent repositories with the same name stay separate. `project` is a display name, not a unique key; `project_path` is the canonical repository location (normally the main checkout), `worktree_path` is the known checkout root, and `cwd` is the original starting folder when available. Backfilled legacy rows retain their old indexed location but may lack the exact starting `cwd`.
+
+`find --project` and `footprint --project` accept a name prefix or an exact canonical path (absolute or `~/...`). Use `session.project_path` from Find candidates to distinguish same-name projects:
+
+```bash
+uv run cli.py find --topic "token refresh" --project ~/Documents/Development/merchant-app
+```
+
+For project counts, group by identity, not name:
+
+```sql
+SELECT project_id, project, project_path, COUNT(*) AS n
+FROM sessions GROUP BY project_id ORDER BY n DESC;
+```
+
+SQL path comparisons use absolute paths, without shell `~` expansion. For exact location audits, filter `worktree_path` or `cwd` rather than the grouped `project_path`. Snapshot capture still requires the exact source worktree; shared project membership does not relax that check.
 
 ### `tool_calls`
 
