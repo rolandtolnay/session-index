@@ -1,90 +1,55 @@
-# Session Index — Project Conventions
+# Session Index — Agent Guide
 
-## Runtime
-- Python 3.11+; runtime dependencies are intentionally minimal. `rapidfuzz` is allowed for deterministic Evidence Find fuzzy fallback (see `docs/adr/0001-rapidfuzz-for-evidence-find.md`).
-- Run scripts with `uv run` (not `python3`)
-- Summaries and Substance Bands share one headless Pi call by default (`openai-codex/gpt-5.6-luna`, medium thinking); `client.py` is legacy summary-only Ollama fallback
+Session Index records Claude Code, Pi, and Codex conversations as searchable sessions with Clean Transcripts, summaries, headlines, and extracted facts, then injects relevant recent sessions into new conversations. It is a single-user tool: the person running you owns the indexed data. Agents reach it through the `session-search` skill, the `cli.py` commands, and the `sessions` terminal browser. Domain terms are defined in `CONTEXT.md`; non-obvious decisions are recorded in `docs/adr/`.
 
-## Architecture
-- **Hooks never block:** All hooks exit 0, wrap everything in try/except, self-imposed timeouts
-- **Message threshold:** Sessions need at least 1 user + 1 assistant message to be indexed
-- **WAL mode:** SQLite uses WAL journal mode for concurrent read/write safety from hooks
-- **Detached refresh coordinator:** Claude Stop/SessionEnd, Pi turn/shutdown, and Codex Stop queue per-session detached workers so deterministic indexing and Pi/GPT summaries never block hooks or extension events
-- **Hybrid summary refresh:** First qualifying snapshots summarize immediately; later descriptions refresh after 180 idle seconds or 10,000 new rendered conversation characters, with a 60-second content-trigger cooldown
+## Working in this repo
+- Run scripts with `uv run` (not `python3`). Python 3.11+; runtime dependencies stay minimal (`rapidfuzz` is the one allowed addition, see `docs/adr/0001-rapidfuzz-for-evidence-find.md`).
+- `~/.session-index/` is the user's live data: `sessions.db` (SQLite, WAL mode), `transcripts/{session_id}.md`, `logs/session-index.log` (monthly rotation), and `refresh-jobs/{source}/{session-id}/`. Source JSONL lives in `~/.claude/projects/{encoded_path}/`, `~/.pi/agent/sessions/--<cwd>--/`, and `$CODEX_HOME/sessions/YYYY/MM/DD/`. Read any of it freely. Writing to it (backfills, `prune`, `manage` deletions, migrations, re-indexing) needs the user's go-ahead and a backup first: `sqlite3 ~/.session-index/sessions.db ".backup ~/.session-index/backups/sessions-<date>-<purpose>.db"`.
+- Summaries, headlines, Substance Bands, and benchmarks call paid models through Pi. One smoke-test call is fine; before a batch, give the user the estimated cost and let them decide.
+- The tests use temporary directories and fixture databases, never the live data. Run them without asking: `uv run --with pytest -m pytest tests/` (about 20 seconds; terminal-rendering tests skip without `tmux`). Before reporting done, run the tests covering what you changed, and the full suite when hooks, the database, or indexing changed.
 
-## Data locations
-- **Database:** `~/.session-index/sessions.db`
-- **Transcripts:** `~/.session-index/transcripts/{session_id}.md`
-- **Logs:** `~/.session-index/logs/session-index.log` (monthly rotation)
-- **Claude Source JSONL:** `~/.claude/projects/{encoded_path}/{session_id}.jsonl`
-- **Pi Source JSONL:** `~/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`
-- **Codex Source JSONL:** `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`
-- **Refresh jobs/state:** `~/.session-index/refresh-jobs/{source}/{session-id}/`
+## Invariants
+- **Hooks never block:** every hook exits 0, wraps its work in try/except, and sets its own timeout. Indexing and summaries run in detached per-session workers queued by Claude Stop/SessionEnd, Pi turn/shutdown, and Codex Stop, so no hook or extension event waits on them.
+- **Message threshold:** a session is indexed once it has at least one user and one assistant message.
+- **Summary refresh cadence:** the first qualifying snapshot summarizes immediately; later refreshes wait for 180 idle seconds or 10,000 new rendered conversation characters, with a 60-second cooldown on the content trigger.
+- **Models:** summaries and Substance Bands share one headless Pi call (`openai-codex/gpt-5.6-luna`, medium thinking); headlines come from a separate call over the full transcript. `client.py` is the legacy Ollama fallback, and `gemma4:e2b` is the only local model it may use because Ollama serves one model at a time (see `SUMMARIZATION.md`).
 
 ## Log format
 ```
 HH:MM:SS.mmm [sid_6] hook_name          | message
 ```
 
-## Testing
-```bash
-cd /path/to/session-index
-uv run --with pytest -m pytest tests/
-```
-
-## Local utilities
-- `clean_pi_transcript.py`: local-only helper for turning a raw Pi JSONL transcript into readable Markdown with user messages, assistant messages, assistant thinking blocks, and tool-call names/targets while omitting tool results. Run directly when needed: `uv run clean_pi_transcript.py /path/to/session.jsonl`. This is intentionally not exposed through the project CLI or any skill.
+## Where to look
+- `CONTEXT.md` before naming a new concept; `docs/adr/` before reopening a settled decision.
+- `docs/debugging.md` when a hook, refresh, or context injection misbehaves.
+- `docs/session-index-cli-onboarding.md` when answering a question about past sessions with `find`, `inspect`, or `query`.
+- `SUMMARIZATION.md` for the production summarization configuration and its constraints; `docs/benchmarking.md` to evaluate a prompt or model change.
+- `clean_pi_transcript.py` turns a raw Pi JSONL into readable Markdown (`uv run clean_pi_transcript.py <file>`). It is deliberately not exposed through the CLI or any skill.
 
 ## Skill maintenance
-- `skills/session-search/` is the agent-facing interface for this project. When adding or changing CLI user-facing commands/options, update `skills/session-search/SKILL.md` and add/update thin wrappers in `skills/session-search/scripts/` as needed.
-- Skill scripts should not duplicate CLI logic. They should resolve the repo root, import the relevant `cli.py` command function, parse only the skill entrypoint arguments, and delegate.
-- Installed Codex/Pi skill paths are normally symlinks to this repo, so source changes are picked up without reinstall unless the install layout changes.
+`skills/session-search/` is the agent-facing interface. When a CLI command or option changes, update `skills/session-search/SKILL.md` and the thin wrapper in `skills/session-search/scripts/`. Wrappers resolve the repo root, import the `cli.py` command function, parse only their own arguments, and delegate; CLI logic lives in `cli.py` only. Installed Claude/Codex/Pi skill paths are symlinks into this repo, so changes take effect without reinstalling.
 
-## Benchmarking
+## Session manager TUI (`manage_tui.py`)
+The `sessions` alias opens `cli.py manage`, a dependency-free curses browser. The user plans to grow it with richer previews and more per-session actions, so new work should extend the structure below rather than add a parallel mechanism.
 
-### Overview
-Summary quality is evaluated against 19 ground-truth sessions in `tests/eval_results/ground_truth.json` (5 short, 5 medium, 9 long). Each has manual annotations: `key_topics`, `what_happened`, `key_decisions`, `session_nature`.
+**Layout.** The header is the view controls: `/` search, `f` filters, `s` sort, each key followed by its current value, plus `c reset` only when something is set. The body is the session list and the preview, side by side at 112+ columns and stacked below that. The footer is a status line and an action bar. Panels (search, filters, sort, help) and the delete confirmation replace the whole screen so nothing competes with them.
 
-### Running benchmarks
+**Show each fact once.** Header values are the only place view state appears. The list heading shows the position (`12 of 2,861`), so rows carry no numbers. The preview has a fixed identity block (headline, project, date · provider · ID, state) and a scrollable body (match excerpts, summary, Side Chats); in stacked mode it drops what the list row already shows, and `PREVIEWED_MATCH_FIELDS` keeps excerpts from repeating the headline or summary. The status line reports only outcomes the screen cannot show otherwise (hide/unhide, delete, errors, near-match fallback) and clears on the next key.
 
-The harness (`tests/benchmark.py`) supports two modes:
+**Color roles.** Draw code names a role from `self.styles` rather than a curses color, so a palette change is one edit and `NO_COLOR` (bold/dim/reverse only) keeps the same hierarchy. State is also spelled out in text (`hidden`), so color never carries meaning alone.
 
-**Prompt mode** — test system prompt variants with fixed Config D settings:
-```bash
-uv run tests/benchmark.py \
-  --sessions b6752ab6,b4dcf951,97df64cc,138cd1ed,f2d5afac,f3502323,29b37e3b,edddf940,533998b1,62279197,dc72bdfd,15b6c537,b8a5f3fe,040e3def,9a52498e,83aa1ebd,41673df3,91a78691,324ce4be \
-  --prompts A,B,C,D,E,F \
-  --model gemma4:e2b \
-  --output tests/eval_results/my_results.json
-```
+| Role | Use for | Not for |
+|------|---------|---------|
+| `strong` | The one primary item in a region: preview headline, panel title, user-set header values | List titles (default weight), metadata |
+| default (`0`) | Body text: list titles, summaries, status messages | — |
+| `muted` | Metadata, captions, placeholders, default-valued controls, key-hint labels | Anything the user must act on |
+| `accent` | Keys in hints, text inputs, the active picker tab | Content, IDs, decoration |
+| `selected` | The focused row in the list or a picker | — |
+| `state` | Non-default session state (currently `hidden`) | Errors |
+| `danger` | Destructive actions and errors | Warnings about state |
 
-**Config mode** — test input/output settings (first_msg_budget, token scaling, backend):
-```bash
-uv run tests/benchmark.py \
-  --sessions <ids> \
-  --configs A,B,C,D,E,F \
-  --model qwen3.5:4b \
-  --output tests/eval_results/my_results.json
-```
+**Conventions.** Key hints go through `draw_keys` (accent key, muted label) so every hint reads the same, and any key shown in a hint also has a `HELP_LINES` row. Clipping ends in an ellipsis (`put`, `ellipsized`) so a truncated project name cannot pass for a whole one. Indexed text is user data, never terminal markup: session fields go through `plain()` and `put` replaces any remaining control characters. Pages (`PAGE_SIZE`) are a query detail: ↑/↓ continue across them, ←/→ jump a page.
 
-Use `--select-sessions` to list available sessions by bucket.
+**Adding a session action.** Add it to `session_actions()` (the label can depend on session state), handle its key in `handle_key`, and add a `HELP_LINES` row; the action bar builds itself from `session_actions()`. An action that destroys data gets its own confirmation screen like delete, where only `y` proceeds and other keys do nothing.
 
-### Scoring rubric (applied by Codex Opus during manual scoring)
-
-| Dimension | 1 | 3 | 5 |
-|-----------|---|---|---|
-| **Coverage** | Misses most key decisions | ~60% of key topics | All key decisions captured |
-| **Accuracy** | Multiple hallucinations | Minor inaccuracies | Factually perfect |
-| **Framing** | Reads as project description | Acceptable summary | Clear session summary, distinguishes planning vs implementation |
-
-### Established winners
-- **Historical production baseline:** `openai-codex/gpt-5.4-mini` with low thinking, rich transcript input, and compact prompt: 13.47/15. Current Luna configuration and separately judged results are in `SUMMARIZATION.md`.
-- **Quality ceiling tested:** `openai-codex/gpt-5.5` with rich input: ~13.9/15 but roughly 2x slower.
-- Legacy local benchmarks remain in `tests/benchmark.py`; Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py`.
-- See `tests/eval_results/LEARNINGS.md`, `pi_gpt_benchmark_report.md`, and `pi_gpt_prompt_benchmark_report.md` for findings.
-
-### Constraint: Ollama single-model
-Ollama still serves one model at a time for local fallback/tab-title workflows. `gemma4:e2b` is the only supported local fallback model. Production summarization bypasses Ollama by default through Pi, so do not optimize summary quality by swapping local models.
-
-## Summarization context
-See [SUMMARIZATION.md](SUMMARIZATION.md) for constraints, quality baselines, and next steps.
+**Checking a UI change.** Render it in tmux against a copy of the database (`sqlite3 ~/.session-index/sessions.db ".backup <scratch>/copy.db"`) at 150×40, 100×34, and 60×24, with and without `NO_COLOR`, and look for clipping, overlap, and lost hierarchy. `tests/test_manage_terminal.py` shows the harness.
