@@ -289,7 +289,7 @@ def test_preview_paging_makes_every_word_reachable_on_short_terminals(store, col
     words = {f"word{i:03}" for i in range(100)}
     seed(store, summary=" ".join(sorted(words)))
     ui = SessionManager(conn, cli._delete_managed_session)
-    ui.styles = dict.fromkeys(("strong", "muted", "accent", "selected", "state", "danger"), 0)
+    ui.styles = dict.fromkeys(("strong", "muted", "accent", "border", "selected", "selected_muted", "selected_accent", "state", "danger"), 0)
     screen = Screen()
     seen = set()
     for _ in range(100):

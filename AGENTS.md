@@ -36,7 +36,7 @@ The `sessions` alias opens `cli.py manage`, a dependency-free curses browser. Th
 
 **Show each fact once.** Header values are the only place view state appears. The list heading shows the position (`12 of 2,861`), so rows carry no numbers. The preview has a fixed identity block (headline, project, date · provider · ID, state) and a scrollable body (match excerpts, summary, Side Chats); in stacked mode it drops what the list row already shows, and `PREVIEWED_MATCH_FIELDS` keeps excerpts from repeating the headline or summary. The status line reports only outcomes the screen cannot show otherwise (hide/unhide, delete, errors, near-match fallback) and clears on the next key.
 
-**Color roles.** Draw code names a role from `self.styles` rather than a curses color, so a palette change is one edit and `NO_COLOR` (bold/dim/reverse only) keeps the same hierarchy. State is also spelled out in text (`hidden`), so color never carries meaning alone.
+**Color roles.** Colors come from the user's Pi theme (`~/.pi/agent/themes/claude-code-dark.json`), mapped to the nearest xterm-256 colors in `PALETTE`, so the browser looks like the rest of their harness. Draw code names a role from `self.styles` rather than a curses color, so a palette change is one edit and `NO_COLOR` (bold/dim/reverse only) keeps the same hierarchy. State is also spelled out in text (`hidden`), so color never carries meaning alone.
 
 | Role | Use for | Not for |
 |------|---------|---------|
@@ -44,7 +44,8 @@ The `sessions` alias opens `cli.py manage`, a dependency-free curses browser. Th
 | default (`0`) | Body text: list titles, summaries, status messages | — |
 | `muted` | Metadata, captions, placeholders, default-valued controls, key-hint labels | Anything the user must act on |
 | `accent` | Keys in hints, text inputs, the active picker tab | Content, IDs, decoration |
-| `selected` | The focused row in the list or a picker | — |
+| `border` | Rules, the pane divider, panel frames | Text |
+| `selected` | The focused row in the list or a picker: white on the dark selection background; inside it, `selected_accent` for the `›` marker and `selected_muted` for metadata | — |
 | `state` | Non-default session state (currently `hidden`) | Errors |
 | `danger` | Destructive actions and errors | Warnings about state |
 

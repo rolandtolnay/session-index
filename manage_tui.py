@@ -27,6 +27,10 @@ PAGE_SIZE = 20
 # Excerpt fields the preview already shows in full; repeating them is noise.
 PREVIEWED_MATCH_FIELDS = ("Headline:", "Summary:", "Project:", "Session ID:")
 PROVIDER_LABELS = {"claude": "Claude", "pi": "Pi", "codex": "Codex"}
+# Pi's claude-code-dark theme (~/.pi/agent/themes/claude-code-dark.json):
+# claude (accent), inactive (muted), subtle (border), userMessageBg (selection).
+PALETTE = {"text": "#FFFFFF", "accent": "#D77757", "muted": "#999999", "border": "#505050",
+           "selected_bg": "#373737", "state": "#FFC107", "danger": "#FF6B80"}
 # (key, description) rows render as key hints; uppercase strings are captions.
 HELP_LINES = [
     ("↑↓ j k", "Select a session, across pages"),
@@ -132,6 +136,16 @@ def wrapped(text: str, width: int) -> list[str]:
             lines.append(part)
             line = line[len(part):].lstrip()
     return lines
+
+
+def xterm256(hex_color: str) -> int:
+    """Nearest xterm-256 index; redefining terminal colors would leak past exit."""
+    target = tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    levels = (0, 95, 135, 175, 215, 255)
+    candidates = {16 + 36 * r + 6 * g + b: (levels[r], levels[g], levels[b])
+                  for r in range(6) for g in range(6) for b in range(6)}
+    candidates.update({232 + i: (8 + 10 * i,) * 3 for i in range(24)})
+    return min(candidates, key=lambda index: sum((a - b) ** 2 for a, b in zip(candidates[index], target)))
 
 
 def display_date(value: str | None) -> str:
@@ -467,26 +481,37 @@ class SessionManager:
         """Semantic roles; draw code names a role, never a raw color or attribute.
 
         strong: primary content    muted: secondary metadata, captions, defaults
-        accent: keys and focus     selected: the focused row
+        accent: keys and focus     border: rules and frames
+        selected: the focused row (selected_muted / selected_accent inside it)
         state: non-default session state (hidden)    danger: destructive or failed
         """
         self.styles = {"strong": curses.A_BOLD, "muted": curses.A_DIM, "accent": curses.A_BOLD,
-                       "selected": curses.A_REVERSE | curses.A_BOLD,
+                       "border": curses.A_DIM, "selected": curses.A_REVERSE | curses.A_BOLD,
+                       "selected_muted": curses.A_REVERSE, "selected_accent": curses.A_REVERSE | curses.A_BOLD,
                        "state": curses.A_BOLD, "danger": curses.A_BOLD}
         if not curses.has_colors() or "NO_COLOR" in os.environ:
             return
         curses.start_color()
         curses.use_default_colors()
-        for number, (name, foreground, background) in enumerate([
-            ("accent", curses.COLOR_CYAN, -1), ("muted", curses.COLOR_WHITE, -1),
-            ("selected", curses.COLOR_WHITE, curses.COLOR_BLUE),
-            ("state", curses.COLOR_YELLOW, -1), ("danger", curses.COLOR_RED, -1),
+        if curses.COLORS >= 256:
+            color = {name: xterm256(value) for name, value in PALETTE.items()}
+        else:  # Nearest basic colors; 8-color terminals cannot show the Pi palette.
+            color = {"text": curses.COLOR_WHITE, "accent": curses.COLOR_RED, "muted": curses.COLOR_WHITE,
+                     "border": curses.COLOR_WHITE, "selected_bg": curses.COLOR_BLACK,
+                     "state": curses.COLOR_YELLOW, "danger": curses.COLOR_RED}
+        for number, (name, foreground, background, attribute) in enumerate([
+            ("strong", "text", None, curses.A_BOLD), ("accent", "accent", None, curses.A_BOLD),
+            ("muted", "muted", None, 0), ("border", "border", None, 0),
+            ("selected", "text", "selected_bg", curses.A_BOLD),
+            ("selected_muted", "muted", "selected_bg", 0),
+            ("selected_accent", "accent", "selected_bg", curses.A_BOLD),
+            ("state", "state", None, 0), ("danger", "danger", None, 0),
         ], 1):
-            curses.init_pair(number, foreground, background)
-            self.styles[name] = curses.color_pair(number)
-        self.styles["accent"] |= curses.A_BOLD
-        self.styles["muted"] |= curses.A_DIM
-        self.styles["selected"] |= curses.A_BOLD
+            curses.init_pair(number, color[foreground], color[background] if background else -1)
+            self.styles[name] = curses.color_pair(number) | attribute
+        if curses.COLORS < 256:
+            self.styles["muted"] |= curses.A_DIM
+            self.styles["border"] |= curses.A_DIM
 
     def put(self, screen, y, x, text, style=0, width=None):
         height, columns = screen.getmaxyx()
@@ -571,11 +596,12 @@ class SessionManager:
                 for dy in range(2):
                     self.fill(screen, line + dy, x, width, row)
             title = plain(session.get("headline") or session.get("summary") or session.get("user_messages") or "Untitled session")
-            self.put(screen, line, x, f"{'›' if active else ' '} {title}", row, width)
+            marker = ("›", self.styles["selected_accent"]) if active else (" ", 0)
+            self.put_spans(screen, line, x, [marker, (" " + title, row)], width)
             project = ellipsized(plain(session.get("project") or "Unknown project"), max(8, min(28, width // 3)))
             short_date = display_date(session.get("started_at")).split(" · ")[0]
             provider = PROVIDER_LABELS.get(session.get("source"), "?")
-            meta = row if active else self.styles["muted"]
+            meta = self.styles["selected_muted"] if active else self.styles["muted"]
             spans = [(f"{project} · {short_date} · {provider}", meta)]
             if session["hidden_from_recents"]:
                 spans += [(" · ", meta), ("hidden", row if active else self.styles["state"])]
@@ -680,9 +706,9 @@ class SessionManager:
             "range": "Filter · Custom dates", "help": "Keyboard & search guide",
         }[self.panel]
         self.draw_brand(screen)
-        self.rule(screen, top, x, width, self.styles["muted"], corners="╭╮")
+        self.rule(screen, top, x, width, self.styles["border"], corners="╭╮")
         self.put(screen, top + 1, left, title, self.styles["strong"], content_width)
-        self.rule(screen, bottom, x, width, self.styles["muted"], corners="╰╯")
+        self.rule(screen, bottom, x, width, self.styles["border"], corners="╰╯")
         hint, secondary_hint = [("Enter", "apply"), ("Esc", "cancel")], []
 
         if filtering:
@@ -703,7 +729,7 @@ class SessionManager:
         if self.panel == "search":
             self.put(screen, top + 3, left, "WORDS / FILE / SESSION ID", self.styles["muted"], content_width)
             self.draw_input(screen, top + 4, left, self.input, self.cursor, content_width)
-            self.rule(screen, top + 5, left, content_width, self.styles["muted"])
+            self.rule(screen, top + 5, left, content_width, self.styles["border"])
             self.put(screen, top + 7, left, "All words · Partial matches · Typo fallback", self.styles["muted"], content_width)
             self.put(screen, top + 9, left, "WITHIN", self.styles["muted"], content_width)
             for i, line in enumerate(wrapped(self.scope_label() or "All sessions", content_width)[:3]):
@@ -718,7 +744,7 @@ class SessionManager:
                     self.draw_input(screen, y + 1, left, self.date_inputs[i], self.cursor, content_width)
                 else:
                     self.put(screen, y + 1, left, self.date_inputs[i] or "Any date", width=content_width)
-                self.rule(screen, y + 2, left, content_width, self.styles["muted"])
+                self.rule(screen, y + 2, left, content_width, self.styles["border"])
             hint = [("Tab", "field"), ("Enter", "next/set"), ("Esc", "back")]
             secondary_hint = [("Ctrl+U", "clear field"), ("blank", "unbounded")]
         elif self.panel == "help":
@@ -740,7 +766,7 @@ class SessionManager:
                 self.draw_input(screen, top + 6, left, self.input, self.cursor, content_width)
                 if not self.input:
                     self.put(screen, top + 6, left + 2, "Type a project name…", self.styles["muted"], content_width - 2)
-                self.rule(screen, top + 7, left, content_width, self.styles["muted"])
+                self.rule(screen, top + 7, left, content_width, self.styles["border"])
                 caption = "PROJECTS"
             else:
                 value = self.date_label(self.filters) if self.panel == "dates" else next(
@@ -761,8 +787,9 @@ class SessionManager:
                 y = start_y + i - start
                 if active:
                     self.fill(screen, y, left, content_width, style)
-                prefix = ("› " if active else "  ") + ("* " if value == current else "  ")
-                self.put(screen, y, left, prefix + plain(label), style, content_width)
+                marker = ("› ", self.styles["selected_accent"]) if active else ("  ", 0)
+                label = ("* " if value == current else "  ") + plain(label)
+                self.put_spans(screen, y, left, [marker, (label, style)], content_width)
             if not options:
                 self.put(screen, start_y, left, "No matching projects.", width=content_width)
                 self.draw_keys(screen, start_y + 2, left, [("Ctrl+U", "clear the name"), ("Esc", "cancel")], content_width)
@@ -814,20 +841,20 @@ class SessionManager:
             screen.refresh()
             return
         self.draw_header(screen, width - 4)
-        self.rule(screen, 4, 2, width - 4, self.styles["muted"])
+        self.rule(screen, 4, 2, width - 4, self.styles["border"])
         # Panes span rows 6 .. height-6; the footer owns the last four rows.
         body_top, body_height = 6, height - 11
         if width >= 112:
             split = width // 2
             for y in range(5, height - 4):
-                self.put(screen, y, split, "│", self.styles["muted"])
+                self.put(screen, y, split, "│", self.styles["border"])
             self.draw_list(screen, body_top, 2, body_height, split - 4)
             self.draw_preview(screen, body_top, split + 3, body_height, width - split - 5)
         else:
             list_height = max(6, body_height * 11 // 20)
             self.draw_list(screen, body_top, 2, list_height - 1, width - 4)
             self.draw_preview(screen, body_top + list_height, 2, body_height - list_height, width - 4, compact=True)
-        self.rule(screen, height - 4, 2, width - 4, self.styles["muted"])
+        self.rule(screen, height - 4, 2, width - 4, self.styles["border"])
         self.put(screen, height - 3, 2, self.status, self.styles["danger"] if self.status_error else 0, width - 4)
         self.draw_keys(screen, height - 2, 2, self.session_actions() + [("?", "help"), ("q", "quit")], width - 4)
         if self.delete_target is not None:
