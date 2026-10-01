@@ -21,6 +21,7 @@ import recent_context
 import tool_log
 import transcript
 from evidence_find import find_candidates
+import manage_tui
 from manage_tui import SessionManager, clipped, plain, wrapped
 
 
@@ -236,13 +237,12 @@ def test_navigation_and_confirmation_cannot_change_target(store):
         seed(store, f"s-{i:02}", started_at=f"2026-09-{i + 1:02}T10:00:00Z")
     ui = SessionManager(conn, cli._delete_managed_session)
     ui.handle_key(curses.KEY_DOWN)
-    assert ui.sessions[ui.selected]["session_id"] == "s-21"
+    assert ui.session["session_id"] == "s-21"
     ui.handle_key(curses.KEY_RIGHT)
-    assert ui.offset == 20 and ui.selected == 0
-    ui.handle_key("k")  # Browsing flows across page boundaries.
-    assert ui.offset == 0 and ui.sessions[ui.selected]["session_id"] == "s-03"
-    ui.handle_key("j")
-    assert ui.offset == 20 and ui.selected == 0
+    assert ui.index == 11 and ui.top == 10  # A screen jump keeps the row's place on screen.
+    for _ in range(9):
+        ui.handle_key("j")
+    assert ui.index == 20 and ui.session["session_id"] == "s-02"
     ui.handle_key("d")
     ui.handle_key(curses.KEY_DOWN)
     ui.handle_key("h")  # Inert while confirming, not the hide action.
@@ -252,6 +252,32 @@ def test_navigation_and_confirmation_cannot_change_target(store):
     ui.handle_key("\x03")
     assert ui.delete_target is None
     assert db.get_session(conn, "s-02") is not None
+
+
+def test_list_scrolls_continuously_beyond_one_query_chunk(store, monkeypatch):
+    conn, _ = store
+    monkeypatch.setattr(manage_tui, "CHUNK_SIZE", 12)
+    for i in range(25):
+        seed(store, f"s-{i:02}", started_at=f"2026-09-{i + 1:02}T10:00:00Z")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    ui.rows = 4
+    for _ in range(5):
+        ui.handle_key("j")
+    assert (ui.index, ui.top) == (5, 2)  # The view scrolls one row at a time.
+    ui.handle_key("k")
+    assert (ui.index, ui.top) == (4, 2)  # Moving back within view does not scroll.
+    ui.handle_key(curses.KEY_SF)
+    ui.handle_key(curses.KEY_SF)
+    ui.handle_key(curses.KEY_SF)
+    assert (ui.index, ui.top) == (16, 14) and ui.session["session_id"] == "s-08"
+    for _ in range(4):
+        ui.handle_key(curses.KEY_SF)
+    assert (ui.index, ui.top) == (24, 21)  # The last screen is full, not trailing blanks.
+    ui.handle_key(curses.KEY_SR)
+    assert (ui.index, ui.top) == (20, 17)
+    for _ in range(9):
+        ui.handle_key("p")
+    assert (ui.index, ui.top) == (0, 0) and ui.session["session_id"] == "s-24"
 
 
 def test_nonterminal_is_rejected_without_mutating_store(store, monkeypatch):
@@ -333,9 +359,9 @@ def test_search_is_inventory_wide_and_input_never_dispatches_actions(store):
     keys(ui, "c")
     assert ui.total == 25 and not ui.filters.query
     ui.handle_key(curses.KEY_RIGHT)
-    assert ui.offset == 20
+    assert ui.index == 10
     keys(ui, "/hqdr\n")
-    assert ui.offset == 0 and ui.total == 1
+    assert ui.index == 0 and ui.total == 1
 
 
 def test_filters_apply_directly_and_survive_refresh_and_hide(store):

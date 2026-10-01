@@ -49,7 +49,7 @@ The `sessions` alias opens `cli.py manage`, a dependency-free curses browser. Th
 | `state` | Non-default session state (currently `hidden`) | Errors |
 | `danger` | Destructive actions and errors | Warnings about state |
 
-**Conventions.** Key hints go through `draw_keys` (accent key, muted label) so every hint reads the same, and any key shown in a hint also has a `HELP_LINES` row. Clipping ends in an ellipsis (`put`, `ellipsized`) so a truncated project name cannot pass for a whole one. Indexed text is user data, never terminal markup: session fields go through `plain()` and `put` replaces any remaining control characters. Pages (`PAGE_SIZE`) are a query detail: ↑/↓ continue across them, ←/→ jump a page.
+**Conventions.** Key hints go through `draw_keys` (accent key, muted label) so every hint reads the same, and any key shown in a hint also has a `HELP_LINES` row. Clipping ends in an ellipsis (`put`, `ellipsized`) so a truncated project name cannot pass for a whole one. Indexed text is user data, never terminal markup: session fields go through `plain()` and `put` replaces any remaining control characters. The list is one continuous scroll over absolute positions (`index`, `top`); query chunks (`CHUNK_SIZE`) are a fetch detail the user never sees. ↑/↓ move one session, Shift+↑/↓ (and Option/Ctrl, ←/→) jump one screen of rows.
 
 **Adding a session action.** Add it to `session_actions()` (the label can depend on session state), handle its key in `handle_key`, and add a `HELP_LINES` row; the action bar builds itself from `session_actions()`. An action that destroys data gets its own confirmation screen like delete, where only `y` proceeds and other keys do nothing.
 

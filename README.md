@@ -179,7 +179,7 @@ Run `uv run cli.py manage` from the repository, or `uv run ~/.pi/agent/skills/se
 
 The full-screen terminal browser shows a compact session list beside the selected session’s preview. In narrower terminals, it stacks the list and preview. It uses readable local dates, a visible selection, and color accents. `NO_COLOR` disables colors.
 
-Results load in pages of 20 sessions. Moving past either end of a page continues into the next or previous page. Search and filters cover the full inventory, including sessions on other pages. The header shows the search, active filters, and sort order, each next to its key. The list heading shows the selected position and the result count.
+Results form one continuous list that scrolls a row at a time. Search and filters cover the full inventory. The header shows the search, active filters, and sort order, each next to its key. The list heading shows the selected position and the result count.
 
 Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines/paths, marking matching Side Chats.
 
@@ -205,8 +205,8 @@ Press `s` to change the sort order. Automatic sorts by newest first while browsi
 
 Use these controls:
 
-- ↑/↓ or j/k to select a session, continuing across pages.
-- ←/→ or p/n to jump a page.
+- ↑/↓ or j/k to select the previous or next session.
+- Shift+↑/↓ (or Option/Ctrl+↑/↓, ←/→, p/n) to jump one screen of sessions.
 - / to search; f for filters; s for sorting.
 - c to reset search, filters, and sorting; ? for keyboard help.
 - Tab in the session list to switch between all and hidden sessions, keeping other filters.
@@ -288,7 +288,7 @@ Claude Code may delete JSONL logs after `cleanupPeriodDays` (default: 30 days). 
 
 | Command | Description |
 |---------|-------------|
-| `manage` | Search, filter, and sort conversations in 20-session pages with previews; confirmed deletion and hide/unhide from recent context |
+| `manage` | Search, filter, and sort conversations in a scrolling list with previews; confirmed deletion and hide/unhide from recent context |
 | `current [--path\|--cleaned-paths\|--native\|--json]` | Show the exact active runtime session or its canonical generated paths |
 | `query "SELECT ..." [--json] [--limit N] [--schema]` | Read-only SQL for counts, rankings, aggregates, and custom grouping; `--schema` prints a curated fact-table reference + examples |
 | `find [--topic TEXT] [--tool NAME] [--skill NAME] [--mutated PATH] [--subagent NAME] ...` | Compact JSON Evidence Find candidates with Inspection References, summaries, and match metadata; no evidence text or broad artifact inventories |

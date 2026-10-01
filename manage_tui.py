@@ -23,7 +23,8 @@ BAND_LABELS = {None: "Any substance", "substantial": "Substantial", "useful": "U
                "unknown": "Unknown", "low_value": "Low-value"}
 FILTER_CATEGORIES = ("project", "dates", "source", "visibility", "substance")
 FILTER_LABELS = ("Project", "Date", "Provider", "Visibility", "More")
-PAGE_SIZE = 20
+# Sessions fetched per query; the list scrolls through them as one continuous list.
+CHUNK_SIZE = 60
 # Excerpt fields the preview already shows in full; repeating them is noise.
 PREVIEWED_MATCH_FIELDS = ("Headline:", "Summary:", "Project:", "Session ID:")
 PROVIDER_LABELS = {"claude": "Claude", "pi": "Pi", "codex": "Codex"}
@@ -33,8 +34,9 @@ PALETTE = {"text": "#FFFFFF", "accent": "#D77757", "muted": "#999999", "border":
            "selected_bg": "#373737", "state": "#FFC107", "danger": "#FF6B80"}
 # (key, description) rows render as key hints; uppercase strings are captions.
 HELP_LINES = [
-    ("↑↓ j k", "Select a session, across pages"),
-    ("←→ p n", "Jump to the previous / next page"),
+    ("↑↓ j k", "Select the previous / next session"),
+    ("Shift+↑↓", "Jump one screen of sessions"),
+    ("←→ p n", "Same; Option/Ctrl+↑↓ work too"),
     ("PgUp PgDn", "Scroll the preview"),
     ("/", "Search; Enter applies, Esc cancels"),
     ("f", "Filter; type a project, Enter applies"),
@@ -91,6 +93,46 @@ def edit_input(text: str, cursor: int, key) -> tuple[str, int]:
     elif isinstance(key, str) and key.isprintable() and len(text) < 500:
         text, cursor = text[:cursor] + key + text[cursor:], cursor + len(key)
     return text, cursor
+
+
+def screen_jump(key) -> int:
+    """-1 / 1 for keys that jump a screen of sessions, else 0.
+
+    Shift+arrows arrive as KEY_SR / KEY_SF; Option and Ctrl variants arrive as
+    terminfo extended keys (kUP3, kDN5, ...), which only have a keyname.
+    Terminfo entries without them (tmux-256color) leave the raw CSI sequence.
+    """
+    if isinstance(key, str) and key.startswith("\x1b[1;"):
+        return {"A": -1, "B": 1}.get(key[-1], 0)
+    if key in ("p", curses.KEY_LEFT, curses.KEY_SR):
+        return -1
+    if key in ("n", curses.KEY_RIGHT, curses.KEY_SF):
+        return 1
+    if not isinstance(key, int):
+        return 0
+    try:
+        name = curses.keyname(key)
+    except (ValueError, curses.error):
+        return 0
+    if name.startswith(b"kUP"):
+        return -1
+    if name.startswith(b"kDN"):
+        return 1
+    return 0
+
+
+def escape_sequence(screen) -> str:
+    """Esc plus any sequence curses did not decode, so it never reads as a bare Esc."""
+    sequence = "\x1b"
+    screen.nodelay(True)
+    try:
+        while len(sequence) < 16:
+            sequence += screen.get_wch()
+    except curses.error:
+        pass  # Nothing more is buffered.
+    finally:
+        screen.nodelay(False)
+    return sequence
 
 
 def plain(value: str | None) -> str:
@@ -175,8 +217,12 @@ class SessionManager:
         self.projects = []
         self.date_inputs = ["", ""]
         self.date_field = 0
+        # Positions are absolute in the result set; `sessions` is the fetched
+        # chunk starting at `offset`, and `top` is the first row on screen.
         self.offset = 0
-        self.selected = 0
+        self.index = 0
+        self.top = 0
+        self.rows = 10  # Rows the list shows; draw_list updates it.
         self.sessions = []
         self.preview_scroll = 0
         self.preview_max = 0
@@ -204,7 +250,8 @@ class SessionManager:
 
     @property
     def session(self):
-        return self.sessions[self.selected] if self.sessions else None
+        local = self.index - self.offset
+        return self.sessions[local] if 0 <= local < len(self.sessions) else None
 
     def session_actions(self):
         """Keys acting on the selected session; add new per-session actions here."""
@@ -212,32 +259,39 @@ class SessionManager:
             return []
         return [("h", "unhide" if self.session["hidden_from_recents"] else "hide"), ("d", "delete")]
 
-    def reload(self):
-        page = query_manage_sessions(self.conn, self.filters, sort=self.sort, offset=self.offset)
-        if self.offset and not page.sessions:
-            self.offset = max(0, (page.total - 1) // PAGE_SIZE * PAGE_SIZE)
-            page = query_manage_sessions(self.conn, self.filters, sort=self.sort, offset=self.offset)
+    def fetch(self):
+        """Fetch the chunk around the viewport; chunks are a query detail."""
+        limit = max(CHUNK_SIZE, self.rows * 3)
+        self.offset = max(0, self.top - (limit - self.rows) // 2)
+        page = query_manage_sessions(self.conn, self.filters, sort=self.sort, offset=self.offset, limit=limit)
         self.sessions, self.total, self.approximate = page.sessions, page.total, page.approximate
-        self.selected = min(self.selected, max(0, len(self.sessions) - 1))
+
+    def reload(self):
+        self.fetch()
+        self.index = min(self.index, max(0, self.total - 1))
+        self.scroll_into_view()
         self.preview_scroll = 0
 
     def reset_position(self):
-        self.offset, self.selected = 0, 0
+        self.index, self.top = 0, 0
         self.reload()
 
-    def move_selection(self, delta):
-        """Pages are a query detail; browsing flows across their boundaries."""
-        target = self.selected + delta
-        if 0 <= target < len(self.sessions):
-            self.selected = target
-        elif target >= len(self.sessions) and self.offset + PAGE_SIZE < self.total:
-            self.offset += PAGE_SIZE
-            self.selected = 0
-            self.reload()
-        elif target < 0 and self.offset:
-            self.offset = max(0, self.offset - PAGE_SIZE)
-            self.selected = PAGE_SIZE - 1
-            self.reload()
+    def scroll_into_view(self):
+        """Scroll as little as possible to show the selection, then fetch if needed."""
+        self.top = min(self.top, self.index, max(0, self.total - self.rows))
+        self.top = max(self.top, self.index - self.rows + 1, 0)
+        end = min(self.total, self.top + self.rows)
+        if self.top < self.offset or end > self.offset + len(self.sessions):
+            self.fetch()
+
+    def move_selection(self, delta, *, scroll=False):
+        """Select relative to the current session; scroll also shifts the view by delta."""
+        if not self.total:
+            return
+        self.index = max(0, min(self.total - 1, self.index + delta))
+        if scroll:
+            self.top += delta
+        self.scroll_into_view()
         self.preview_scroll = 0
 
     def open_panel(self, panel):
@@ -446,17 +500,8 @@ class SessionManager:
             self.reset_position()
         elif key in (curses.KEY_DOWN, "j", curses.KEY_UP, "k"):
             self.move_selection(1 if key in (curses.KEY_DOWN, "j") else -1)
-        elif key in ("n", curses.KEY_RIGHT):
-            if self.offset + PAGE_SIZE < self.total:
-                self.offset += PAGE_SIZE
-                self.selected = 0
-                self.reload()
-            else:
-                self.message("You are on the last page.")
-        elif key in ("p", curses.KEY_LEFT):
-            self.offset = max(0, self.offset - PAGE_SIZE)
-            self.selected = 0
-            self.reload()
+        elif jump := screen_jump(key):
+            self.move_selection(jump * self.rows, scroll=True)
         elif key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
             step = max(1, self.preview_height - 1)
             delta = step if key == curses.KEY_NPAGE else -step
@@ -464,8 +509,8 @@ class SessionManager:
         elif key == "r":
             self.reload()
             self.message("Session list refreshed.")
-        elif self.sessions and key in ("h", "u"):
-            session = self.sessions[self.selected]
+        elif self.session and key in ("h", "u"):
+            session = self.session
             hide = not session["hidden_from_recents"] if key == "h" else False
             try:
                 set_hidden_from_recents(self.conn, session["session_id"], hide)
@@ -473,8 +518,8 @@ class SessionManager:
                 self.reload()
             except (ValueError, sqlite3.Error) as error:
                 self.message(str(error), error=True)
-        elif self.sessions and key == "d":
-            self.delete_target = self.sessions[self.selected]
+        elif self.session and key == "d":
+            self.delete_target = self.session
         return True
 
     def configure_colors(self):
@@ -575,22 +620,25 @@ class SessionManager:
 
     def position_label(self):
         noun = "near matches" if self.approximate else "sessions"
-        if not self.sessions:
+        if not self.total:
             return f"0 {noun}"
-        return f"{self.offset + self.selected + 1:,} of {self.total:,}" + (" near matches" if self.approximate else "")
+        return f"{self.index + 1:,} of {self.total:,}" + (" near matches" if self.approximate else "")
 
     def draw_list(self, screen, y, x, height, width):
         self.pane_heading(screen, y, x, width, "SESSIONS", self.position_label())
-        if not self.sessions:
+        if not self.total:
             self.put(screen, y + 2, x, "No matching sessions.", self.styles["strong"], width)
             self.draw_keys(screen, y + 4, x, [("/", "edit search"), ("f", "filters"), ("c", "reset")], width)
             return
         row_height = 3 if height >= 20 else 2
         capacity = max(1, (height - 2) // row_height)
-        start = max(0, min(self.selected - capacity + 1, len(self.sessions) - capacity))
-        for position, session in enumerate(self.sessions[start:start + capacity], start):
-            line = y + 2 + (position - start) * row_height
-            active = position == self.selected
+        if capacity != self.rows:  # A resize changes how far a screen jump goes.
+            self.rows = capacity
+            self.scroll_into_view()
+        start = self.top - self.offset
+        for position, session in enumerate(self.sessions[start:start + capacity], self.top):
+            line = y + 2 + (position - self.top) * row_height
+            active = position == self.index
             row = self.styles["selected"] if active else 0
             if active:
                 for dy in range(2):
@@ -875,6 +923,8 @@ class SessionManager:
             self.draw(screen)
             try:
                 key = screen.get_wch()
+                if key == "\x1b":
+                    key = escape_sequence(screen)
             except KeyboardInterrupt:
                 key = "\x03"
             height, width = screen.getmaxyx()
