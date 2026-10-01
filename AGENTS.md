@@ -5,7 +5,7 @@ Session Index records Claude Code, Pi, and Codex conversations as searchable ses
 ## Working in this repo
 - Run scripts with `uv run` (not `python3`). Python 3.11+; runtime dependencies stay minimal (`rapidfuzz` is the one allowed addition, see `docs/adr/0001-rapidfuzz-for-evidence-find.md`).
 - `~/.session-index/` is the user's live data: `sessions.db` (SQLite, WAL mode), `transcripts/{session_id}.md`, `logs/session-index.log` (monthly rotation), and `refresh-jobs/{source}/{session-id}/`. Source JSONL lives in `~/.claude/projects/{encoded_path}/`, `~/.pi/agent/sessions/--<cwd>--/`, and `$CODEX_HOME/sessions/YYYY/MM/DD/`. Read any of it freely. Writing to it (backfills, `prune`, `manage` deletions, migrations, re-indexing) needs the user's go-ahead and a backup first: `sqlite3 ~/.session-index/sessions.db ".backup ~/.session-index/backups/sessions-<date>-<purpose>.db"`.
-- Summaries, headlines, Substance Bands, and benchmarks call paid models through Pi. One smoke-test call is fine; before a batch, give the user the estimated cost and let them decide.
+- Summaries, headlines, Substance Bands, and Pi/GPT benchmarks run through Pi on the user's `openai-codex` subscription, and the legacy benchmark uses local Ollama; neither is billed per call, so run them as the task needs. Anything billed per call, such as an API key or a paid tier, needs an estimated cost and the user's decision first.
 - The tests use temporary directories and fixture databases, never the live data. Run them without asking: `uv run --with pytest -m pytest tests/` (about 20 seconds; terminal-rendering tests skip without `tmux`). Before reporting done, run the tests covering what you changed, and the full suite when hooks, the database, or indexing changed.
 
 ## Invariants

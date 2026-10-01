@@ -7,7 +7,7 @@ Summary quality is evaluated against 19 ground-truth sessions in `tests/eval_res
 
 ## Running benchmarks
 
-Benchmarks call paid models; agree the run size and cost with the user before starting anything beyond a smoke test.
+Pi/GPT benchmarks run on the user's `openai-codex` subscription and the legacy harness on local Ollama, so neither is billed per call. Switching a benchmark to a per-call API needs an estimated cost and the user's decision first.
 
 The legacy local harness (`tests/benchmark.py`) supports two modes:
 
