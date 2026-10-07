@@ -25,6 +25,7 @@ class ParsedQuestionSelection:
 
     question: str
     selected_labels: list[str] = field(default_factory=list)
+    question_id: str = ""
 
 
 @dataclass
@@ -68,14 +69,26 @@ class ParsedSession:
     assistant_message_count: int = 0
     parent_session_path: str = ""
     parent_native_session_id: str = ""
+    is_subagent: bool = False
     tool_calls: list[ParsedToolCall] = field(default_factory=list)
 
 
-_QUESTION_TOOL_NAMES = {"question", "askuserquestion"}
+_QUESTION_TOOL_NAMES = {"question", "askuserquestion", "request_user_input"}
 
 
 def _is_question_tool(name: str) -> bool:
     return (name or "").rsplit(".", 1)[-1].lower() in _QUESTION_TOOL_NAMES
+
+
+def _question_selection(
+    selections: list[ParsedQuestionSelection], question: dict, index: int,
+) -> ParsedQuestionSelection | None:
+    """Prefer provider question identity; retain text/order matching for legacy outcomes."""
+    if any(selection.question_id for selection in selections):
+        identity = question.get("id")
+        return next((s for s in selections if identity and s.question_id == identity), None)
+    return next((s for s in selections if s.question == question.get("question")),
+                selections[index] if index < len(selections) else None)
 
 
 def _question_answer_from_result(
@@ -135,9 +148,7 @@ def _format_question_answers(
         if not isinstance(question, str) or not question.strip():
             continue
 
-        selection = next((candidate for candidate in normalized if candidate.question == question), None)
-        if selection is None and index < len(normalized):
-            selection = normalized[index]
+        selection = _question_selection(normalized, item, index)
         answers = (
             selection.selected_labels
             if selection

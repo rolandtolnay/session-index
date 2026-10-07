@@ -68,6 +68,7 @@ const CLAUDE_HOOKS = [
 ];
 
 const CODEX_STOP_SCRIPT = path.join(REPO_ROOT, "hooks", "codex_stop.py");
+const CODEX_EVENTS = ["Stop", "Interrupt", "SessionEnd", "SessionStart", "SubagentStop"];
 const CODEX_STOP_HANDLER = {
   type: "command",
   command: `uv run --quiet "${CODEX_STOP_SCRIPT.replaceAll('"', '\\"')}"`,
@@ -275,8 +276,10 @@ function validateCodexHooksDocument(document) {
   if (document.hooks !== undefined && (typeof document.hooks !== "object" || Array.isArray(document.hooks) || document.hooks === null)) {
     throw new Error(`${CODEX_HOOKS_PATH}: "hooks" must be an object`);
   }
-  if (document.hooks?.Stop !== undefined && !Array.isArray(document.hooks.Stop)) {
-    throw new Error(`${CODEX_HOOKS_PATH}: "hooks.Stop" must be an array`);
+  for (const event of CODEX_EVENTS) {
+    if (document.hooks?.[event] !== undefined && !Array.isArray(document.hooks[event])) {
+      throw new Error(`${CODEX_HOOKS_PATH}: "hooks.${event}" must be an array`);
+    }
   }
 }
 
@@ -293,18 +296,24 @@ function installCodex() {
   const document = readJson(CODEX_HOOKS_PATH, {});
   validateCodexHooksDocument(document);
   if (!document.hooks) document.hooks = {};
-  if (!document.hooks.Stop) document.hooks.Stop = [];
-
-  const installed = document.hooks.Stop.some((group) =>
-    Array.isArray(group?.hooks) && group.hooks.some((handler) => isOurCodexHandler(handler))
-  );
-  if (installed) {
-    console.log("  [skip] Hook already registered: Stop");
-  } else {
-    document.hooks.Stop.push({ hooks: [{ ...CODEX_STOP_HANDLER }] });
-    writeJson(CODEX_HOOKS_PATH, document);
-    console.log("  [ok]   Registered hook: Stop");
+  for (const event of CODEX_EVENTS) {
+    if (!document.hooks[event]) document.hooks[event] = [];
+    const handler = { ...CODEX_STOP_HANDLER, timeout: ["Interrupt", "SessionEnd"].includes(event) ? 3 : 5 };
+    const installed = document.hooks[event].some((group) =>
+      Array.isArray(group?.hooks) && group.hooks.some((existing) => isOurCodexHandler(existing))
+    );
+    if (installed) {
+      for (const group of document.hooks[event]) {
+        if (Array.isArray(group?.hooks)) {
+          group.hooks = group.hooks.map((existing) => isOurCodexHandler(existing) ? handler : existing);
+        }
+      }
+    } else {
+      document.hooks[event].push({ hooks: [handler] });
+    }
+    console.log(`  [ok]   Registered hook: ${event}`);
   }
+  writeJson(CODEX_HOOKS_PATH, document);
 
   writeJson(CODEX_MANIFEST_PATH, {
     version: "1.0.0",
@@ -313,7 +322,7 @@ function installCodex() {
     repoRoot: REPO_ROOT,
     skill: SKILL_NAME,
     skills: [SKILL_NAME, CODEX_CURRENT_SKILL_NAME],
-    hookEvents: ["Stop"],
+    hookEvents: CODEX_EVENTS,
     hooksFileCreated,
   });
   console.log(`  [ok]   Manifest: ${CODEX_MANIFEST_PATH}`);
@@ -337,36 +346,23 @@ function uninstallCodex() {
   if (fs.existsSync(CODEX_HOOKS_PATH)) {
     const document = readJson(CODEX_HOOKS_PATH, {});
     validateCodexHooksDocument(document);
-    const stopGroups = document.hooks?.Stop || [];
-    let removed = false;
-    const remainingGroups = [];
-
-    for (const group of stopGroups) {
-      if (!Array.isArray(group?.hooks)) {
-        remainingGroups.push(group);
-        continue;
-      }
-      const remainingHandlers = group.hooks.filter((handler) => !isOurCodexHandler(handler, repoRoot));
-      if (remainingHandlers.length !== group.hooks.length) removed = true;
-      if (remainingHandlers.length) remainingGroups.push({ ...group, hooks: remainingHandlers });
+    for (const event of CODEX_EVENTS) {
+      const groups = document.hooks?.[event] || [];
+      const remaining = groups.flatMap((group) => {
+        if (!Array.isArray(group?.hooks)) return [group];
+        const hooks = group.hooks.filter((handler) => !isOurCodexHandler(handler, repoRoot));
+        return hooks.length ? [{ ...group, hooks }] : [];
+      });
+      if (document.hooks && remaining.length) document.hooks[event] = remaining;
+      else if (document.hooks) delete document.hooks[event];
     }
-
-    if (removed) {
-      if (remainingGroups.length) document.hooks.Stop = remainingGroups;
-      else delete document.hooks.Stop;
-      if (Object.keys(document.hooks).length === 0) delete document.hooks;
-
-      if (manifest.hooksFileCreated && Object.keys(document).length === 0) {
-        fs.rmSync(CODEX_HOOKS_PATH, { force: true });
-      } else {
-        writeJson(CODEX_HOOKS_PATH, document);
-      }
-      console.log("  [ok]   Removed hook: Stop");
+    if (document.hooks && Object.keys(document.hooks).length === 0) delete document.hooks;
+    if (manifest.hooksFileCreated && Object.keys(document).length === 0) {
+      fs.rmSync(CODEX_HOOKS_PATH, { force: true });
     } else {
-      console.log("  [skip] Hook not found: Stop");
+      writeJson(CODEX_HOOKS_PATH, document);
     }
-  } else {
-    console.log("  [skip] Hook not found: Stop");
+    console.log("  [ok]   Removed Codex lifecycle hooks");
   }
 
   fs.rmSync(CODEX_MANIFEST_PATH, { force: true });
@@ -411,7 +407,7 @@ if (uninstall) {
     console.log(`  ${nextStep++}. In Pi, run /reload or restart Pi so the extension and skill load.`);
   }
   if (includesTarget(target, "codex")) {
-    console.log(`  ${nextStep++}. Restart Codex, open /hooks, and review/trust the Session Index Stop hook.`);
+    console.log(`  ${nextStep++}. Restart Codex, open /hooks, and review/trust the Session Index lifecycle hooks.`);
   }
   console.log("");
 }

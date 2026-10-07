@@ -160,9 +160,54 @@ def enqueue_refresh(
     return final_path
 
 
+def recover_pending(source: str) -> int:
+    """Restart durable pending jobs after a crash or exhausted retry budget."""
+    from _session_refresh_worker import _load_pending_jobs
+
+    root = os.path.join(REFRESH_JOBS_DIR, _source_name(source))
+    if not os.path.isdir(root):
+        return 0
+    recovered = 0
+    for directory in os.scandir(root):
+        if not directory.is_dir():
+            continue
+        # The directory component is a sanitized canonical ID, not a native ID.
+        pending = os.path.join(directory.path, "pending")
+        if not os.path.isdir(pending):
+            continue
+        for name in os.listdir(pending):
+            if not name.endswith(".json") or name.startswith("."):
+                continue
+            try:
+                with open(os.path.join(pending, name)) as handle:
+                    payload = json.load(handle)
+                sid = canonical_session_id(source, payload["session_id"])
+                if session_job_dir(source, sid) != directory.path:
+                    continue
+                if _load_pending_jobs(source, sid):
+                    _ensure_worker(source, sid)
+                    recovered += 1
+                    break
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+    return recovered
+
+
+def launch_recovery(source: str) -> None:
+    """Keep startup hooks within their deadline; scan only in the child."""
+    subprocess.Popen(
+        [sys.executable, os.path.realpath(__file__), "--recover", _source_name(source)],
+        cwd=REPO_ROOT, start_new_session=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def main() -> None:
     """Minimal non-throwing JSON CLI for provider adapters."""
     try:
+        if len(sys.argv) == 3 and sys.argv[1] == "--recover":
+            recover_pending(sys.argv[2])
+            return
         payload = json.load(sys.stdin)
         enqueue_refresh(
             payload["source"],

@@ -113,7 +113,7 @@ _GEMINI_URL = (
 )
 _GEMINI_MODEL = "gemini-2.5-flash-lite"
 _LONG_SESSION_THRESHOLD = 30
-_PI_MODEL = "openai-codex/gpt-5.6-luna"
+_PI_MODEL = "openai/gpt-6-luna"
 _PI_THINKING = "medium"
 _PI_TIMEOUT_SECONDS = 180
 _SUBSTANCE_BANDS = frozenset({"substantial", "useful", "low_value"})

@@ -5,14 +5,14 @@ Session Index records Claude Code, Pi, and Codex conversations as searchable ses
 ## Working in this repo
 - Run scripts with `uv run` (not `python3`). Python 3.11+; runtime dependencies stay minimal (`rapidfuzz` is the one allowed addition, see `docs/adr/0001-rapidfuzz-for-evidence-find.md`).
 - `~/.session-index/` is the user's live data: `sessions.db` (SQLite, WAL mode), `transcripts/{session_id}.md`, `logs/session-index.log` (monthly rotation), and `refresh-jobs/{source}/{session-id}/`. Source JSONL lives in `~/.claude/projects/{encoded_path}/`, `~/.pi/agent/sessions/--<cwd>--/`, and `$CODEX_HOME/sessions/YYYY/MM/DD/`. Read any of it freely. Writing to it (backfills, `prune`, `manage` deletions, migrations, re-indexing) needs the user's go-ahead and a backup first: `sqlite3 ~/.session-index/sessions.db ".backup ~/.session-index/backups/sessions-<date>-<purpose>.db"`.
-- Summaries, headlines, Substance Bands, and Pi/GPT benchmarks run through Pi on the user's `openai-codex` subscription, and the legacy benchmark uses local Ollama; neither is billed per call, so run them as the task needs. Anything billed per call, such as an API key or a paid tier, needs an estimated cost and the user's decision first.
+- Summaries, headlines, Substance Bands, and Pi/GPT benchmarks run through Pi's `openai` provider on the user's subscription, and the legacy benchmark uses local Ollama; neither is billed per call, so run them as the task needs. Anything billed per call, such as an API key or a paid tier, needs an estimated cost and the user's decision first.
 - The tests use temporary directories and fixture databases, never the live data. Run them without asking: `uv run --with pytest -m pytest tests/` (about 20 seconds; terminal-rendering tests skip without `tmux`). Before reporting done, run the tests covering what you changed, and the full suite when hooks, the database, or indexing changed.
 
 ## Invariants
-- **Hooks never block:** every hook exits 0, wraps its work in try/except, and sets its own timeout. Indexing and summaries run in detached per-session workers queued by Claude Stop/SessionEnd, Pi turn/shutdown, and Codex Stop, so no hook or extension event waits on them.
+- **Hooks never block:** every hook exits 0, wraps its work in try/except, and sets its own timeout. Indexing and summaries run in detached per-session workers queued by Claude Stop/SessionEnd, Pi turn/shutdown, and Codex Stop/Interrupt/SubagentStop/SessionEnd, so no hook or extension event waits on them.
 - **Message threshold:** a session is indexed once it has at least one user and one assistant message.
 - **Summary refresh cadence:** the first qualifying snapshot summarizes immediately; later refreshes wait for 180 idle seconds or 10,000 new rendered conversation characters, with a 60-second cooldown on the content trigger.
-- **Models:** summaries and Substance Bands share one headless Pi call (`openai-codex/gpt-5.6-luna`, medium thinking); headlines come from a separate call over the full transcript. `client.py` is the legacy Ollama fallback, and `gemma4:e2b` is the only local model it may use because Ollama serves one model at a time (see `SUMMARIZATION.md`).
+- **Models:** summaries and Substance Bands share one headless Pi call (`openai/gpt-6-luna`, medium thinking); headlines come from a separate call over the full transcript. `client.py` is the legacy Ollama fallback, and `gemma4:e2b` is the only local model it may use because Ollama serves one model at a time (see `SUMMARIZATION.md`).
 
 ## Log format
 ```

@@ -1,4 +1,4 @@
-"""Compact recent-session context shared by Claude hooks and the Pi extension."""
+"""Compact recent-session context shared by Claude/Codex hooks and the Pi extension."""
 
 from __future__ import annotations
 

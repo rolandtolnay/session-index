@@ -22,7 +22,9 @@ Pi extension
 
 Codex hooks.json
     │
-    └─ Stop ───────────────► codex_stop.py ──► queue turn refresh
+    ├─ Stop/Interrupt/SubagentStop ► codex_stop.py ► queue refresh
+    ├─ SessionEnd ─────────► codex_stop.py ──► force final refresh
+    └─ SessionStart ───────► codex_stop.py ──► inject recent context + detached pending-job recovery
 
 Shared active-session coordinator
     │
@@ -33,7 +35,7 @@ Shared active-session coordinator
          ├─ 60-second cooldown between content-trigger attempts
          └─ forced final summary for Claude SessionEnd and Pi shutdown
 
-Codex exposes no distinct session-exit event; its latest Stop is finalized by the idle path.
+Codex finalizes on SessionEnd; switching away from a chat need not emit this event, so the idle path remains active.
 
 Shared full pass:
     parser adapter ─► rich transcript render ─► LLM summary + Substance Band via headless Pi ─► Session Headline via separate headless Pi process
@@ -60,7 +62,7 @@ Current-session lookup:
 | `hooks/_session_refresh_worker.py` | Per-session deterministic/summary refresh coordinator |
 | `hooks/pi_index.py` | Pi extension entry point for automatic turn/exit and manual full indexing |
 | `hooks/pi_context.py` | Pi extension entry point for recent-context system prompt injection |
-| `hooks/codex_stop.py` | Codex Stop: queue the latest rollout snapshot and exit immediately |
+| `hooks/codex_stop.py` | Codex lifecycle adapter: queue refresh/finalization or inject context and launch recovery |
 | `pi-extension/index.ts` | Pi extension wiring for lifecycle events |
 | `pi-extension/session-index-env.ts` | Pi runtime environment helper for current-session lookup |
 | `current_session.py` | Exact current-session resolver using Session Index runtime env |
@@ -156,7 +158,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - `refresh_worker | source transcript missing` / `pi_index | missing session file` — Source Transcript path mismatch
 
 **Summary or Session Headline missing:**
-- Check Pi auth/model availability: default is `openai-codex/gpt-5.6-luna` with medium thinking via `pi -p --no-session --no-tools`.
+- Check Pi auth/model availability: default is `openai/gpt-6-luna` with medium thinking via `pi -p --no-session --no-tools`.
 - Headlines use a second isolated Pi process independently of summary success; a failed headline call preserves any previous value.
 - Substance Bands are generated in the summary call. Invalid classifications preserve prior assessments; unknown bands remain eligible alongside useful sessions. Inspect `substance_band` and `substance_reason` through `query`; run `uv run backfill_substance.py --apply` for missing eligible past-week assessments.
 - Set `SESSION_INDEX_SUMMARY_MODEL`, `SESSION_INDEX_SUMMARY_THINKING`, or `SESSION_INDEX_SUMMARY_TIMEOUT` to override the default.
@@ -255,7 +257,7 @@ The script simulates what SessionStart would have injected and checks if those p
 3. Injects one shared Clean Transcript root, retaining branch names for current-project entries while cross-project entries contain only dates, projects, canonical transcript filenames, and headlines.
 4. Directs the agent to `session-search` when the needed session is absent.
 
-Pi's `before_agent_start` path calls the same `recent_context.py` builder, so selection and formatting are identical across Claude and Pi.
+Pi's `before_agent_start` and Codex's SessionStart paths call the same `recent_context.py` builder, so selection and formatting are identical across all three providers. Codex emits `hookSpecificOutput` with `hookEventName: SessionStart` and `additionalContext`. Missing or unreadable indexes produce an empty JSON response without failing the hook. Recovery runs in a detached process, and failure to launch it does not prevent context injection.
 
 ### Shared active-session refresh
 
@@ -264,7 +266,7 @@ Pi's `before_agent_start` path calls the same `recent_context.py` builder, so se
 3. The first qualifying snapshot (at least one user and one assistant message) immediately attempts a joint Session Summary/Substance Band and an independent Session Headline.
 4. Later descriptions refresh after 180 seconds without a newer assistant turn or after 10,000 newly rendered user/assistant characters since the last successful summary. Content-trigger attempts have a 60-second cooldown.
 5. Failed summary/headline generation preserves prior descriptions and never advances the successful-summary content watermark.
-6. Claude SessionEnd and Pi non-reload shutdown queue a forced final refresh. Codex has no distinct session-exit event, so its latest Stop uses the idle path.
+6. Claude SessionEnd and Pi non-reload shutdown queue a forced final refresh. Codex SessionEnd also forces finalization; Interrupt and SubagentStop queue ordinary refreshes.
 7. Workers and hook boundaries catch/log failures; provider hooks never wait for deterministic indexing or LLM calls.
 
 Nested Pi subagent lifecycle sessions are skipped by the shared indexer. Their activity remains represented through the parent session's Subagent Run facts and generated subagent transcript rather than a duplicate top-level session row.
@@ -277,4 +279,17 @@ Nested Pi subagent lifecycle sessions are skipped by the shared indexer. Their a
 | `stop.py` | `Stop` | 10s | detached coordinator |
 | `session_end.py` | `SessionEnd` | 5s | detached coordinator |
 
-Codex registers `codex_stop.py` as a 5-second command handler under `Stop` in `~/.codex/hooks.json`. Codex must review and trust the exact hook definition before it runs.
+Codex registers `codex_stop.py` under Stop, SubagentStop, and SessionStart (5 seconds), plus Interrupt and SessionEnd (3 seconds), in `~/.codex/hooks.json`. Codex must review and trust each exact hook definition before it runs. SessionStart reads saved recent-session context and launches detached recovery; hook processes never wait for indexing or model calls.
+
+
+## Codex compatibility and recovery
+
+Completed `item_completed` records supply visible UserMessage/AgentMessage exchanges and FileChange/CommandExecution/McpToolCall results. Completed user input supersedes mirrored legacy input within its turn; assistant/tool items deduplicate by identity so pending final output survives. Older turns remain supported. Raw user response items alone are not conversation because they also contain injected instructions. Unsupported visible-message encodings raise a diagnostic error and retain the refresh job instead of silently dropping the conversation. Provider metadata is read afresh; transcript activity timestamps take precedence over UI metadata timestamps.
+
+Codex child identity comes from session metadata, including `source.subagent.thread_spawn.parent_thread_id`. Parent indexing generates child transcripts and incorporates child tool/fact evidence. Existing independent child rows are marked `is_subagent=1` on repair and excluded from top-level consumers; their artifacts remain available by exact reference. Explicit user threads (including forks) remain independent. Spawn requests are linked by returned agent identity rather than file order.
+
+`request_user_input` results map question IDs to answer lists. The parser matches IDs rather than wording or result order, renders answered prompts as user input at the tool-result position, and stores selections in `question_answers`. Replayed results render once; absent, empty, cancelled, failed, or malformed outcomes remain unanswered. Free-text and multiple returned answers are preserved. Asynchronous question acknowledgements are not answers; subsequent user messages are retained without inferring which question they answered.
+
+A refresh job is a durable source reference, not a copy of the source. If Codex moves a rollout to its archive, the worker resolves the exact native/canonical identity and updates the queued path. Ambiguous identity fails closed. Deterministic failures retry after 1, 5, and 15 seconds, then retain the job with a logged diagnostic. Codex SessionStart launches a detached scan to restart retained jobs. This recovers missed workers; it does not reconstruct deleted provider sources or replace historical backfill.
+
+After a parser compatibility repair, back up the live database before running `uv run cli.py backfill --source codex --force`. This rebuilds deterministic artifacts without spending model calls or replacing descriptions. Use scoped `--with-summary` repairs for newly recovered conversations or descriptions that need refreshing. Review/trust newly installed hooks through Codex `/hooks`.

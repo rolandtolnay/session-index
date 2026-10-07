@@ -9,11 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from parser import ParsedToolCall
+from parser import ParsedToolCall, _is_question_tool, _question_selection
 from subagent_runs import ParsedSubagentRun
 from tool_events import iter_tool_use_candidates
 
-_QUESTION_TOOLS = {"askuserquestion", "question"}
 _FILE_MUTATION_TOOLS = {"write", "edit", "apply_patch"}
 _RECOMMENDED_MARKER = "(Recommended)"
 
@@ -222,18 +221,12 @@ def _recommended_labels(options: Any) -> set[str]:
     return rec
 
 
-def _selected_from_question_outcome(call: ParsedToolCall, question_index: int, question_text: str) -> list[str] | None:
+def _selected_from_question_outcome(call: ParsedToolCall, question_index: int, question: dict) -> list[str] | None:
     """Resolve selected option(s) from parser-normalized question outcomes."""
     if call.question_cancelled:
         return []
 
-    selection = None
-    for candidate in call.question_selections:
-        if candidate.question == question_text:
-            selection = candidate
-            break
-    if selection is None and 0 <= question_index < len(call.question_selections):
-        selection = call.question_selections[question_index]
+    selection = _question_selection(call.question_selections, question, question_index)
 
     if selection and selection.selected_labels:
         return selection.selected_labels
@@ -283,7 +276,7 @@ def build_question_rows(
     """
     rows: list[dict[str, Any]] = []
     for call in combined_calls:
-        if normalize_tool_name(call.tool_name) not in _QUESTION_TOOLS:
+        if not _is_question_tool(call.tool_name):
             continue
         args = call.arguments if isinstance(call.arguments, dict) else {}
         questions = args.get("questions")
@@ -301,10 +294,11 @@ def build_question_rows(
             question_text = question.get("question") or ""
             header = question.get("header") or ""
 
-            selected = _selected_from_question_outcome(call, question_index, question_text)
-            if selected is None:
+            selected = _selected_from_question_outcome(call, question_index, question)
+            if selected is None and normalize_tool_name(call.tool_name) != "request_user_input":
                 selected = _selected_from_text(result_text, question_text)
             answered = bool(selected)
+            multi_select = multi_select or bool(selected and len(selected) > 1)
 
             if not answered:
                 selected_label: str | None = None

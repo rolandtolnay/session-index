@@ -7,7 +7,7 @@ Summary quality is evaluated against 19 ground-truth sessions in `tests/eval_res
 
 ## Running benchmarks
 
-Pi/GPT benchmarks run on the user's `openai-codex` subscription and the legacy harness on local Ollama, so neither is billed per call. Switching a benchmark to a per-call API needs an estimated cost and the user's decision first.
+Pi/GPT benchmarks run through Pi's `openai` provider on the user's subscription and the legacy harness on local Ollama, so neither is billed per call. Switching a benchmark to a per-call API needs an estimated cost and the user's decision first.
 
 The legacy local harness (`tests/benchmark.py`) supports two modes:
 
@@ -31,7 +31,7 @@ uv run tests/benchmark.py \
 
 Use `--select-sessions` to list available sessions by bucket.
 
-Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py` (summaries via `generate`, headlines via `generate-headlines`).
+Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py` (summaries via `generate`, headlines via `generate-headlines`). The default GPT judge is `openai/gpt-6.1-sol`; use `--judge-model` to override it.
 
 ## Scoring rubric (applied by Claude Opus during manual scoring)
 
@@ -42,7 +42,9 @@ Pi/GPT benchmarks use `tests/pi_gpt_benchmark.py` (summaries via `generate`, hea
 | **Framing** | Reads as project description | Acceptable summary | Clear session summary, distinguishes planning vs implementation |
 
 ## Established winners
-- **Production winner (August 2026):** `openai-codex/gpt-5.6-luna` with medium thinking, rich transcript input, and compact prompt — best summary and headline composites in the blind-judged luna/terra eval; transcript-based headlines beat the old summary-based design at equal model. See `tests/eval_results/luna_terra_2026_08/report.md`.
+The current configured production default is `openai/gpt-6-luna` with medium thinking, rich transcript input, and compact prompt. It has not been benchmarked here; the measured winners below retain their original model identities and scores.
+
+- **Historical production winner (August 2026):** `openai-codex/gpt-5.6-luna` with medium thinking, rich transcript input, and compact prompt — best summary and headline composites in the blind-judged luna/terra eval; transcript-based headlines beat the old summary-based design at equal model. See `tests/eval_results/luna_terra_2026_08/report.md`.
 - **Prior winner:** `openai-codex/gpt-5.4-mini` with low thinking, rich transcript input, and compact prompt: 13.47/15 (GPT judges; not comparable to the Opus-judged 2026-08 scores).
 - **Quality ceiling tested:** `openai-codex/gpt-5.5` with rich input: ~13.9/15 but roughly 2x slower.
 - See `tests/eval_results/LEARNINGS.md`, `pi_gpt_benchmark_report.md`, and `pi_gpt_prompt_benchmark_report.md` for findings.

@@ -10,9 +10,10 @@ session-index database.
 
 Examples:
     uv run tests/pi_gpt_benchmark.py generate \
-      --model openai-codex/gpt-5.4-mini \
+      --model openai/gpt-6-luna \
+      --thinking medium \
       --inputs current,rich \
-      --output tests/eval_results/pi_gpt_54mini.json
+      --output tests/eval_results/pi_gpt_6luna.json
 
     uv run tests/pi_gpt_benchmark.py score \
       --input tests/eval_results/pi_gpt_combined.json \
@@ -47,7 +48,7 @@ from summarizer import SYSTEM_PROMPT_LOCAL as EXISTING_VARIANT_F_PROMPT  # noqa:
 DB_PATH = Path(os.path.expanduser("~/.session-index/sessions.db"))
 GROUND_TRUTH_PATH = ROOT / "tests" / "eval_results" / "ground_truth.json"
 DEFAULT_OUTPUT_DIR = ROOT / "tests" / "eval_results"
-DEFAULT_JUDGE_MODEL = "openai-codex/gpt-5.5"
+DEFAULT_JUDGE_MODEL = "openai/gpt-6.1-sol"
 
 COMPACT_PROMPT = """\
 You summarize coding sessions so an AI assistant can find relevant past work by keyword search.

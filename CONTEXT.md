@@ -148,7 +148,7 @@ _Avoid_: Observed child type, artifact title
 - A **Current Session** has exactly one **Canonical Session ID**.
 - A **Current Session** has exactly one **Source Transcript** when the provider exposes a session file.
 - Provider-internal Codex UI-title and approval-evaluator rollouts are not indexed conversations, even though Codex stores them beside Source Transcripts as `rollout-*.jsonl` files.
-- A **Top-Level Session** may contain zero or more **Subagent Runs**; nested Subagent Run conversations are not separate Top-Level Sessions.
+- A **Top-Level Session** may contain zero or more **Subagent Runs**; nested Subagent Run conversations are not separate Top-Level Sessions. Codex child ownership comes from provider parent-thread metadata; historical child rows remain directly inspectable with `is_subagent=1`, while new child evidence is saved through its parent. Explicit user-created forks remain Top-Level Sessions.
 - A parented Pi clone becomes a separate indexed **Top-Level Session** only after raw entry identity proves that it contains a new user-and-assistant exchange; inherited history alone does not create another indexed conversation.
 - Recent-session injection and cross-project ranking consider only **Top-Level Sessions**.
 - A session may own zero or more **Side Chats**; they are not independent sessions and do not receive **Session Summaries** or **Substance Bands**.

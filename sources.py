@@ -164,6 +164,25 @@ def discover_codex_sessions(
     return matches
 
 
+def resolve_codex_source(session_id: str, supplied_path: str = "") -> str | None:
+    """Resolve a moved source by exact native or canonical identity; never newest."""
+    from codex_parser import _session_meta_payload, _native_id_from_filename
+    from session_identity import canonical_session_id
+
+    def matches(path: str) -> bool:
+        meta = _session_meta_payload(path)
+        native = meta.get("id") or meta.get("session_id") or _native_id_from_filename(path)
+        return bool(native and (native == session_id or canonical_session_id("codex", native) == session_id))
+
+    if supplied_path and os.path.isfile(supplied_path) and matches(supplied_path):
+        return supplied_path
+    paths = {source.path for source in discover_codex_sessions()
+             if matches(source.path)}
+    if len(paths) > 1:
+        raise ValueError(f"Ambiguous Codex source identity: {session_id}")
+    return next(iter(paths), None)
+
+
 def _canonical_session_row(session_id: str) -> dict | None:
     """Resolve a short canonical ID through stored provider identity metadata."""
     from db import DB_PATH, get_connection

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from codex_parser import internal_codex_session_reason, parse_codex_jsonl
+from codex_parser import internal_codex_session_reason, parse_codex_jsonl, discover_codex_subagents, parse_codex_subagent
 from parser import ParsedSession, ParsedToolCall, clean_user_messages, parse_jsonl as parse_claude_jsonl
 from pi_parser import discover_pi_subagents, new_pi_conversation_counts, parse_pi_jsonl, parse_pi_subagent_jsonl
 from session_identity import canonical_session_id
@@ -86,6 +86,7 @@ _METADATA_FIELDS = {
     "tools_used",
     "parent_session_path",
     "parent_native_session_id",
+    "is_subagent",
 }
 
 _STAGE_FIELDS = {
@@ -118,7 +119,7 @@ def discover_session_subagents(source: str, path: str) -> list[SubagentInfo]:
     if source == "pi":
         return discover_pi_subagents(path)
     if source == "codex":
-        return []
+        return discover_codex_subagents(path)
     return discover_subagents(path)
 
 
@@ -127,7 +128,7 @@ def parse_session_subagent(source: str, info: SubagentInfo) -> ParsedSubagent:
     if source == "pi":
         return parse_pi_subagent_jsonl(info.jsonl_path, info.agent_id, info.agent_type)
     if source == "codex":
-        return ParsedSubagent(agent_id=info.agent_id, agent_type=info.agent_type, source_path=info.jsonl_path)
+        return parse_codex_subagent(info)
     return parse_subagent_jsonl(info.jsonl_path, info.meta_path)
 
 
@@ -209,6 +210,7 @@ def upsert_parsed_session(
         subagent_transcripts=", ".join(subagent_transcripts) if subagent_transcripts else None,
         parent_session_path=session.parent_session_path or None,
         parent_native_session_id=session.parent_native_session_id or None,
+        is_subagent=int(session.is_subagent),
         overwrite_fields=stage_overwrite_fields,
         commit=commit,
     )
@@ -370,6 +372,23 @@ def index_source_transcript(
 
     if source == "codex":
         result.skipped_reason = internal_codex_session_reason(session, path)
+        if session.is_subagent:
+            # Retain historical child rows/artifacts for direct inspection, but
+            # remove them from all top-level consumers. New children live only
+            # through their parent's Subagent Run artifacts.
+            if os.path.exists(DB_PATH):
+                from db import get_connection, init_db
+                conn = get_connection()
+                try:
+                    init_db(conn)
+                    conn.execute("UPDATE sessions SET is_subagent = 1, parent_native_session_id = ? "
+                                 "WHERE source = 'codex' AND native_session_id = ?",
+                                 (session.parent_native_session_id or None, session.native_session_id))
+                    conn.commit()
+                finally:
+                    conn.close()
+            result.skipped_reason = result.skipped_reason or "nested Codex subagent session"
+            return result
         if result.skipped_reason:
             return result
 

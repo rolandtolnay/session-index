@@ -7,6 +7,7 @@ subagent artifacts. This intentionally does not persist anything yet.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 from typing import Any
 
 from parser import ParsedToolCall
@@ -95,6 +96,16 @@ def _request_fact(
     requested_agent_type: str,
     task_preview: str = "",
 ) -> ParsedSubagentRun:
+    agent_id = ""
+    if source == "codex":
+        try:
+            output = json.loads(call.result)
+            if isinstance(output, dict):
+                identity = output.get("agent_id") or output.get("id")
+                if isinstance(identity, str):
+                    agent_id = identity
+        except (ValueError, TypeError):
+            pass
     return ParsedSubagentRun(
         parent_session_id=parent_session_id,
         source=source,
@@ -102,6 +113,7 @@ def _request_fact(
         call_tool=_tool_name(call.tool_name),
         call_sequence=call.sequence or None,
         call_tool_id=call.tool_call_id or "",
+        agent_id=agent_id,
         task_preview=task_preview,
         match_confidence="request_only",
     )
@@ -258,7 +270,15 @@ def build_subagent_runs(
     # Explicit IDs are not consistently available yet; preserve today's stable
     # transcript-linking behavior by matching remaining requests by artifact order.
     for idx, request in enumerate(requests):
-        if idx < len(artifacts):
+        if source == "codex":
+            match = next((i for i, sub in enumerate(artifacts)
+                          if i not in matched_artifacts and request.agent_id and sub.agent_id == request.agent_id), None)
+            if match is None:
+                facts.append(request)
+            else:
+                facts.append(_with_artifact(request, artifacts[match], match, "exact"))
+                matched_artifacts.add(match)
+        elif idx < len(artifacts):
             facts.append(_with_artifact(request, artifacts[idx], idx, "ordered"))
             matched_artifacts.add(idx)
         else:

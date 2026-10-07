@@ -11,18 +11,16 @@ from typing import Any
 
 DATA_DIR = os.path.expanduser("~/.session-index")
 DB_PATH = os.path.join(DATA_DIR, "sessions.db")
-TOP_LEVEL_SESSION_PREDICATE = (
-    "NOT (source = 'pi' AND COALESCE(source_path, '') GLOB '*/run-*/session.jsonl')"
-)
-
-
 def top_level_session_predicate(alias: str = "") -> str:
-    """Return the SQL predicate that excludes nested Pi subagent sessions."""
+    """Exclude provider-classified children and legacy Pi child paths."""
     prefix = f"{alias}." if alias else ""
     return (
-        f"NOT ({prefix}source = 'pi' AND "
+        f"COALESCE({prefix}is_subagent, 0) = 0 AND NOT ({prefix}source = 'pi' AND "
         f"COALESCE({prefix}source_path, '') GLOB '*/run-*/session.jsonl')"
     )
+
+
+TOP_LEVEL_SESSION_PREDICATE = top_level_session_predicate()
 
 
 SCHEMA = """
@@ -57,6 +55,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     subagent_transcripts TEXT,
     parent_session_path TEXT,
     parent_native_session_id TEXT,
+    is_subagent INTEGER NOT NULL DEFAULT 0,
     hidden_from_recents INTEGER NOT NULL DEFAULT 0 CHECK (hidden_from_recents IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_project_path_started_at
@@ -288,6 +287,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         ("tool_log_path", "ALTER TABLE sessions ADD COLUMN tool_log_path TEXT"),
         ("parent_session_path", "ALTER TABLE sessions ADD COLUMN parent_session_path TEXT"),
         ("parent_native_session_id", "ALTER TABLE sessions ADD COLUMN parent_native_session_id TEXT"),
+        ("is_subagent", "ALTER TABLE sessions ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0"),
         ("assistant_message_count", "ALTER TABLE sessions ADD COLUMN assistant_message_count INTEGER"),
         ("assistant_char_count", "ALTER TABLE sessions ADD COLUMN assistant_char_count INTEGER"),
         ("headline", "ALTER TABLE sessions ADD COLUMN headline TEXT"),
@@ -372,6 +372,7 @@ def upsert_session(
     subagent_transcripts: str | None = None,
     parent_session_path: str | None = None,
     parent_native_session_id: str | None = None,
+    is_subagent: int = 0,
     overwrite_fields: set[str] | None = None,
     commit: bool = True,
 ) -> None:
@@ -438,6 +439,7 @@ def upsert_session(
         "subagent_transcripts": subagent_transcripts,
         "parent_session_path": parent_session_path,
         "parent_native_session_id": parent_native_session_id,
+        "is_subagent": is_subagent,
     }
 
     from artifact_references import normalize_row
@@ -451,7 +453,7 @@ def upsert_session(
             assistant_message_count, assistant_char_count,
             user_messages, files_touched, tools_used, summary, headline,
             substance_band, substance_reason, transcript_path,
-            tool_log_path, subagent_transcripts, parent_session_path, parent_native_session_id
+            tool_log_path, subagent_transcripts, parent_session_path, parent_native_session_id, is_subagent
         ) VALUES (
             :session_id, :source, :native_session_id, :source_path,
             :slug, :project_path, :project, :project_id, :cwd, :worktree_path, :branch, :model,
@@ -459,7 +461,7 @@ def upsert_session(
             :assistant_message_count, :assistant_char_count,
             :user_messages, :files_touched, :tools_used, :summary, :headline,
             :substance_band, :substance_reason, :transcript_path,
-            :tool_log_path, :subagent_transcripts, :parent_session_path, :parent_native_session_id
+            :tool_log_path, :subagent_transcripts, :parent_session_path, :parent_native_session_id, :is_subagent
         )
         ON CONFLICT(session_id) DO UPDATE SET
             source = COALESCE(:source, source),
@@ -490,7 +492,8 @@ def upsert_session(
             tool_log_path = COALESCE(:tool_log_path, tool_log_path),
             subagent_transcripts = COALESCE(:subagent_transcripts, subagent_transcripts),
             parent_session_path = COALESCE(:parent_session_path, parent_session_path),
-            parent_native_session_id = COALESCE(:parent_native_session_id, parent_native_session_id)
+            parent_native_session_id = COALESCE(:parent_native_session_id, parent_native_session_id),
+            is_subagent = :is_subagent
     """, params)
 
     if overwrite_fields:

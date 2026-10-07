@@ -118,3 +118,18 @@ def test_management_tools_do_not_create_subagent_run_facts():
     )
 
     assert facts == []
+
+
+def test_codex_child_matching_uses_identity_not_artifact_order():
+    facts = build_subagent_runs(
+        parent_session_id="parent", source="codex",
+        tool_calls=[ParsedToolCall(tool_name="spawn_agent", arguments={"agent_type": "reviewer"},
+                                   result='{"agent_id":"child-b"}'),
+                    ParsedToolCall(tool_name="spawn_agent", arguments={"agent_type": "scout"},
+                                   result='{"id":"missing-child"}')],
+        subagents=[ParsedSubagent(agent_id="child-a", transcript_path="/a.md"),
+                   ParsedSubagent(agent_id="child-b", transcript_path="/b.md")],
+    )
+    assert facts[0].transcript_path == "/b.md" and facts[0].match_confidence == "exact"
+    assert facts[1].match_confidence == "request_only" and not facts[1].transcript_path
+    assert facts[2].agent_id == "child-a" and facts[2].match_confidence == "artifact_only"

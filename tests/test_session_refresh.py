@@ -341,7 +341,7 @@ def test_deterministic_failure_waits_for_inflight_summary_to_finalize(monkeypatc
         "claude", "session-1", idle_seconds=180,
         deterministic_index=deterministic,
         summary_index=summarize,
-        has_summary=lambda _sid: False,
+        has_summary=lambda _sid: False, retry_delays=(),
     )))
     coordinator.start()
     assert summary_started.wait(2)
@@ -455,6 +455,55 @@ def test_deterministic_failure_retains_job_for_next_event(monkeypatch, tmp_path)
     assert worker.process_pending_jobs(
         "claude", "session-1", idle_seconds=0,
         deterministic_index=lambda _job: (_ for _ in ()).throw(RuntimeError("busy")),
-        summary_index=lambda _job: None, has_summary=lambda _sid: False,
+        summary_index=lambda _job: None, has_summary=lambda _sid: False, retry_delays=(),
     ) is False
     assert path.exists()
+
+
+def test_transient_deterministic_failure_retries_without_another_event(monkeypatch, tmp_path):
+    path, _ = _job(monkeypatch, tmp_path)
+    attempts = []
+    delays = []
+    def index(job):
+        attempts.append(job.event_id)
+        if len(attempts) < 3:
+            raise RuntimeError("database busy")
+        return _result(2, (("user", 1, "u"), ("assistant", 1, "a")))
+    assert worker.process_pending_jobs(
+        "claude", "session-1", idle_seconds=0, deterministic_index=index,
+        summary_index=lambda j: _result(2, (), summary=True), has_summary=lambda s: False,
+        retry_delays=(1, 2), sleep=lambda delay: delays.append(delay),
+    )
+    assert len(attempts) == 3 and 2 in delays
+    assert not path.exists()
+
+
+def test_codex_archive_move_recovers_by_identity_and_summary_uses_new_path(monkeypatch, tmp_path):
+    path, source = _job(monkeypatch, tmp_path, source="codex", session_id="moving")
+    home = tmp_path / "codex"
+    archive = home / "archived_sessions" / "rollout-moving.jsonl"
+    archive.parent.mkdir(parents=True)
+    source.write_text(json.dumps({"type": "session_meta", "payload": {"id": "moving"}}) + "\n")
+    source.rename(archive)
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(home))
+    read_paths = []
+    def index(job):
+        read_paths.append(job.transcript_path)
+        assert Path(job.transcript_path).exists()
+        return _result(2, (), summary=True)
+    assert worker.process_pending_jobs(
+        "codex", "moving", idle_seconds=0, deterministic_index=index,
+        summary_index=index, has_summary=lambda s: False,
+    )
+    assert read_paths == [str(archive), str(archive)]
+    assert not path.exists()
+
+
+def test_startup_recovery_restarts_stranded_jobs_only(monkeypatch, tmp_path):
+    path, _ = _job(monkeypatch, tmp_path, source="codex", session_id="stranded")
+    launches = []
+    monkeypatch.setattr(session_refresh, "_ensure_worker", lambda source, sid: launches.append((source, sid)))
+    assert session_refresh.recover_pending("codex") == 1
+    assert launches == [("codex", session_refresh.canonical_session_id("codex", "stranded"))]
+    path.unlink()
+    assert session_refresh.recover_pending("codex") == 0

@@ -57,7 +57,12 @@ def test_codex_install_is_idempotent_and_uninstall_preserves_unrelated_hooks(tmp
     assert len(ours) == 1
     assert "uv run --quiet" in ours[0]
     assert document["custom"] == {"keep": True}
-    assert document["hooks"]["SessionStart"] == original["hooks"]["SessionStart"]
+    assert document["hooks"]["SessionStart"][0] == original["hooks"]["SessionStart"][0]
+    for event in ("Stop", "Interrupt", "SessionEnd", "SessionStart", "SubagentStop"):
+        handlers = [h for g in document["hooks"][event] for h in g.get("hooks", [])
+                    if "codex_stop.py" in h.get("command", "")]
+        assert len(handlers) == 1
+        assert handlers[0]["timeout"] <= (3 if event in {"Interrupt", "SessionEnd"} else 5)
 
     search_skill = codex_dir / "skills" / "session-search"
     current_skill = codex_dir / "skills" / "current-session"

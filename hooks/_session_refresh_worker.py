@@ -11,7 +11,7 @@ import os
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 
@@ -307,12 +307,13 @@ def process_pending_jobs(
     deterministic_index: Callable[[PendingJob], object] = _run_deterministic,
     summary_index: Callable[[PendingJob], object] = _run_summary,
     has_summary: Callable[[str], bool] = _has_existing_summary,
+    retry_delays: tuple[float, ...] = (1.0, 5.0, 15.0),
 ) -> bool:
-    """Process until drained or deterministic failure.
+    """Process until drained or the bounded deterministic retry budget is exhausted.
 
     Summary work runs in a side thread so newer queued turns can refresh
     deterministic artifacts without waiting for the LLM call to finish.
-    Returns False only when retained jobs need a future enqueue to retry.
+    Returns False when retained jobs need a future enqueue or startup recovery.
     """
     source = source.strip().lower()
     session_id = canonical_session_id(source, session_id)
@@ -326,6 +327,8 @@ def process_pending_jobs(
     deterministic_generation = ""
     deterministic_result: object | None = None
     summary_attempt: SummaryAttempt | None = None
+    failed_generation = ""
+    failures = 0
 
     while True:
         if summary_attempt is not None and summary_attempt.done.is_set():
@@ -343,19 +346,35 @@ def process_pending_jobs(
                 continue
             return True
         latest = jobs[-1]
+        if latest.path != failed_generation:
+            failures = 0
+            failed_generation = latest.path
 
         if latest.path != deterministic_generation:
-            if not os.path.isfile(latest.transcript_path):
-                log(session_id, "refresh_worker", f"source transcript missing: {latest.transcript_path}")
-                if summary_attempt is not None:
-                    _settle_summary_attempt(source, session_id, summary_attempt, sleep)
-                return False
             try:
+                if not os.path.isfile(latest.transcript_path) and source == "codex":
+                    from sources import resolve_codex_source
+                    resolved = resolve_codex_source(session_id)
+                    if resolved:
+                        latest = replace(latest, transcript_path=resolved)
+                        from session_refresh import _atomic_json
+                        with open(latest.path) as handle:
+                            payload = json.load(handle)
+                        payload["transcript_path"] = resolved
+                        _atomic_json(latest.path, payload)
+                if not os.path.isfile(latest.transcript_path):
+                    raise FileNotFoundError(f"source transcript missing: {latest.transcript_path}")
                 deterministic_result = deterministic_index(latest)
             except Exception as error:
                 log(session_id, "refresh_worker", f"deterministic error: {error}")
+                if failures < len(retry_delays):
+                    delay = retry_delays[failures]
+                    failures += 1
+                    sleep(delay)
+                    continue
                 if summary_attempt is not None:
                     _settle_summary_attempt(source, session_id, summary_attempt, sleep)
+                log(session_id, "refresh_worker", "retry budget exhausted; pending work retained for startup recovery")
                 return False
             skipped_reason = getattr(deterministic_result, "skipped_reason", "")
             if skipped_reason:
@@ -492,7 +511,7 @@ def run_worker(source: str, session_id: str) -> None:
             before = {job.path for job in _load_pending_jobs(source, session_id)}
             drained = process_pending_jobs(source, session_id)
             if not drained:
-                # Retained deterministic failures are retried only after a new event.
+                # Retained deterministic failures await a new event or startup recovery.
                 # Compare under dispatch.lock so an enqueue cannot land between the
                 # late-work check and PID cleanup.
                 dispatch_path = os.path.join(job_dir, "dispatch.lock")

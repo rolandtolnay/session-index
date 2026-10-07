@@ -6,7 +6,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 
 - **Claude Code hooks** — refresh active-session artifacts after turns, force a final refresh on SessionEnd, and inject recent context on SessionStart
 - **Pi extension** — refreshes active-session artifacts after turns/shutdown and injects recent context before the first prompt in a session
-- **Codex hooks** — refresh active-session artifacts after each Stop (Codex has no distinct session-exit event)
+- **Codex hooks** — refresh artifacts on Stop, Interrupt, and SubagentStop; finalize on SessionEnd; inject recent context and recover pending work on SessionStart
 - **Hybrid summary refresh** — summarize the first qualifying turn immediately, then after 180 idle seconds or 10,000 new conversation characters
 - **Unified DB** — stores all supported sources in `~/.session-index/sessions.db`
 - **Clean transcripts** — writes compact markdown transcripts to `~/.session-index/transcripts/`
@@ -21,7 +21,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 - [Node.js](https://nodejs.org) (for the installer)
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv) (for running scripts)
-- [Pi](https://pi.dev) authenticated with a GPT-capable provider (default summaries use `openai-codex/gpt-5.6-luna`)
+- [Pi](https://pi.dev) authenticated with a GPT-capable provider (default summaries use `openai/gpt-6-luna`)
 - Optional fallback: [Ollama](https://ollama.ai) with the configured local model
 
 ## Quick start
@@ -30,14 +30,14 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 git clone https://github.com/rolandtolnay/session-index.git
 cd session-index
 node install.js
-pi          # then run /login and choose a GPT-capable provider such as OpenAI Codex
+pi          # then run /login and choose OpenAI (the openai provider)
 ```
 
 By default the installer sets up all three integrations:
 
 - Claude Code: skill symlink in `~/.claude/skills/` and hooks in `~/.claude/settings.json`
 - Pi: skill symlink in `~/.pi/agent/skills/` and extension symlink in `~/.pi/agent/extensions/`
-- Codex: `session-search` and `current-session` skill symlinks in `~/.codex/skills/`, plus the Stop hook in `~/.codex/hooks.json`
+- Codex: `session-search` and `current-session` skill symlinks in `~/.codex/skills/`, plus lifecycle hooks in `~/.codex/hooks.json`
 
 Install one target only:
 
@@ -56,7 +56,7 @@ node install.js --uninstall --target codex
 ```
 
 After installing the Pi integration, run `/reload` in Pi or restart Pi.
-After installing the Codex integration, restart Codex and use `/hooks` to review and trust the Session Index Stop hook. Codex skips new or changed non-managed hooks until they are trusted.
+After installing the Codex integration, restart Codex and use `/hooks` to review and trust the Session Index lifecycle hooks. Codex skips new or changed non-managed hooks until they are trusted.
 In Codex, invoke `$current-session` to display the canonical Clean Transcript and Tool Log paths for the active conversation.
 
 ## Summary model configuration
@@ -64,7 +64,7 @@ In Codex, invoke `$current-session` to display the canonical Clean Transcript an
 Summaries with Substance Bands (`substantial`, `useful`, `low_value`) and separately generated Session Headlines (target 8-15 words, hard maximum 15) run in the background through isolated headless Pi print-mode processes. Defaults:
 
 ```bash
-SESSION_INDEX_SUMMARY_MODEL=openai-codex/gpt-5.6-luna
+SESSION_INDEX_SUMMARY_MODEL=openai/gpt-6-luna
 SESSION_INDEX_SUMMARY_THINKING=medium
 SESSION_INDEX_SUMMARY_TIMEOUT=180
 SESSION_INDEX_SUMMARY_IDLE_SECONDS=180
@@ -74,7 +74,7 @@ SESSION_INDEX_SUMMARY_CONTENT_COOLDOWN_SECONDS=60
 
 The model/thinking overrides apply to summaries, Substance Bands, Session Headlines, and Side Chat Headlines. Set `SESSION_INDEX_DISABLE_PI_SUMMARIZER=1` to skip Pi and use the legacy summary fallback path; headlines and classification require Pi. Failed assessments preserve the last successful band; unassessed sessions are not classified as low-value.
 
-For every supported provider, the first session snapshot with at least one user and one assistant message gets deterministic artifacts plus an immediate summary/headline attempt. Later assistant turns refresh deterministic artifacts immediately. Summary/headline refreshes are coalesced per session and run after either the idle interval or the configured amount of newly rendered user/assistant content; content-trigger attempts observe the cooldown. Claude SessionEnd and Pi shutdown force a final refresh. Codex exposes only turn-level Stop, so its latest snapshot is finalized by the normal idle refresh. `SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS` remains a compatibility fallback when the shared idle variable is unset.
+For every supported provider, the first session snapshot with at least one user and one assistant message gets deterministic artifacts plus an immediate summary/headline attempt. Later assistant turns refresh deterministic artifacts immediately. Summary/headline refreshes are coalesced per session and run after either the idle interval or the configured amount of newly rendered user/assistant content; content-trigger attempts observe the cooldown. Claude/Codex SessionEnd and Pi shutdown force a final refresh. Codex Interrupt also preserves partial turns that meet the message threshold; SubagentStop refreshes parent-owned child evidence. SessionStart restarts stranded Codex jobs. `SESSION_INDEX_CODEX_SUMMARY_IDLE_SECONDS` remains a compatibility fallback when the shared idle variable is unset.
 
 ## Pi Side Chat archives
 
@@ -113,6 +113,10 @@ Codex defaults:
 ~/.codex/archived_sessions/rollout-*.jsonl
 ```
 
+Codex reads completed conversation and tool items, with a legacy rollout fallback. Child runs belong to their parent; historical standalone child rows remain directly inspectable but are excluded from top-level results. See [Codex compatibility and recovery](docs/debugging.md#codex-compatibility-and-recovery).
+
+Answers to Codex `request_user_input` questions are matched by question ID and saved as user input in the Clean Transcript and as searchable question-answer facts. Empty, cancelled, failed, or malformed results do not imply an answer. Asynchronous question tools return an acknowledgement; subsequent replies remain ordinary user messages and are not guessed into structured answer facts.
+
 `SESSION_INDEX_CODEX_HOME` overrides Codex discovery for Session Index-specific testing. Otherwise discovery follows `CODEX_HOME`, then `~/.codex`.
 
 Override those roots when needed:
@@ -137,7 +141,7 @@ Summary regeneration is opt-in. Each successful summary is followed by a separat
 uv run cli.py backfill --source all --with-summary
 ```
 
-Recent context keeps the latest seven current-project sessions. Configured project groups target 14 sessions from the past seven days, ensuring each active group project has a representative even if that exceeds 14. The remaining “Other projects” section contains up to 21 sessions from the same week. Both weekly sections prefer substantial sessions, then useful sessions, newest first within each band. Unknown assessments compete with useful sessions; low-value sessions appear only when needed for group-project coverage.
+Claude and Codex SessionStart hooks and Pi's first-prompt extension use the same recent-context builder. Codex returns the context through `hookSpecificOutput.additionalContext` on startup, resume, clear, and compaction; no model call is needed. Recent context keeps the latest seven current-project sessions. Configured project groups target 14 sessions from the past seven days, ensuring each active group project has a representative even if that exceeds 14. The remaining “Other projects” section contains up to 21 sessions from the same week. Both weekly sections prefer substantial sessions, then useful sessions, newest first within each band. Unknown assessments compete with useful sessions; low-value sessions appear only when needed for group-project coverage.
 
 To populate missing bands for eligible recent sessions without regenerating their summaries or artifacts:
 

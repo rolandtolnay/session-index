@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Codex Stop hook — queue non-blocking active-session refresh.
+"""Codex lifecycle hooks — queue non-blocking active-session refresh.
 
-Codex exposes Stop at turn scope rather than a distinct SessionEnd event. Each
-Stop queues the latest Source Transcript snapshot for the shared coordinator.
+Stop/Interrupt queue turns; SessionEnd forces a final refresh. SessionStart
+injects recent-session context and recovers stranded work in a detached process.
 The hook always emits valid JSON, exits zero, and never waits for indexing or
 summarization.
 """
@@ -24,23 +24,31 @@ from session_refresh import enqueue_refresh
 def _resolve_transcript_path(session_id: str, supplied_path: object) -> str | None:
     if isinstance(supplied_path, str) and supplied_path.strip():
         candidate = os.path.realpath(os.path.expanduser(supplied_path.strip()))
-        if os.path.isfile(candidate):
-            return candidate
-
-    from sources import discover_codex_sessions
-
-    matches = discover_codex_sessions(session_id)
-    if not matches:
-        return None
-    return max(
-        (match.path for match in matches),
-        key=lambda path: os.path.getmtime(path) if os.path.exists(path) else 0,
-    )
+    else:
+        candidate = ""
+    from sources import resolve_codex_source
+    return resolve_codex_source(session_id, candidate)
 
 
-def _handle_hook() -> None:
+def _handle_hook() -> dict | None:
     hook_input = json.load(sys.stdin)
     if not isinstance(hook_input, dict):
+        return
+
+    event = hook_input.get("hook_event_name", "Stop")
+    if event == "SessionStart":
+        from session_refresh import launch_recovery
+        from recent_context import build_recent_context
+        try:
+            launch_recovery("codex")
+        except Exception as error:
+            log("codex", "codex_start", f"recovery launch failed: {error}")
+        cwd = hook_input.get("cwd")
+        context = build_recent_context(cwd) if isinstance(cwd, str) and cwd.strip() else None
+        if context:
+            return {"hookSpecificOutput": {
+                "hookEventName": "SessionStart", "additionalContext": context,
+            }}
         return
 
     session_id = hook_input.get("session_id", "")
@@ -55,18 +63,21 @@ def _handle_hook() -> None:
 
     turn_id = hook_input.get("turn_id", "")
     turn_id = turn_id.strip() if isinstance(turn_id, str) else ""
+    options = {"force_summary": True} if event == "SessionEnd" else {}
     job_path = enqueue_refresh(
         "codex",
         session_id,
         transcript_path,
         event_id=turn_id,
+        **options,
     )
     log(session_id, "codex_stop", f"queued {os.path.basename(job_path)}")
 
 
 def main() -> None:
+    output = {}
     try:
-        _handle_hook()
+        output = _handle_hook() or {}
     except Exception as error:
         try:
             log("codex", "codex_stop", f"error: {error}")
@@ -74,7 +85,7 @@ def main() -> None:
             pass
     finally:
         # Stop hooks require JSON on stdout. Never leak diagnostics here.
-        sys.stdout.write("{}\n")
+        sys.stdout.write(json.dumps(output) + "\n")
         sys.stdout.flush()
 
 

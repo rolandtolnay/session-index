@@ -226,6 +226,8 @@ Press y to confirm deletion; Esc or n cancels. Run the browser in an interactive
 
 ## Transcript storage
 
+Codex Subagent Runs are linked to their parent and excluded from top-level discovery. Historical child rows with `is_subagent=1` remain inspectable by exact reference; exclude them from custom SQL counts of top-level conversations.
+
 Canonical session IDs use `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`; they are not provider-native IDs. Use `current --native` for provider resume/fork commands. Generated text normalizes recognized historical Session Index paths and Inspection References; raw provider logs remain untouched.
 
 Generated artifacts are the normal evidence path:

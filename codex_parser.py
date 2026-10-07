@@ -15,12 +15,12 @@ import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Any
 
-from parser import ParsedSession, ParsedToolCall, _clean_text
+from parser import ParsedQuestionSelection, ParsedSession, ParsedToolCall, _clean_text, _format_question_answers
 from project_identity import set_session_project
 from session_identity import canonical_session_id
+from codex_items import CodexFormatError, normalize_completed_items
 
 CODEX_SOURCE = "codex"
 
@@ -59,7 +59,9 @@ def _load_jsonl(path: str) -> list[dict[str, Any]]:
             if not line:
                 continue
             try:
-                entries.append(json.loads(line))
+                entry = json.loads(line)
+                if isinstance(entry, dict):
+                    entries.append(entry)
             except json.JSONDecodeError:
                 continue
     return entries
@@ -95,7 +97,6 @@ def _iso_from_epoch(value: Any, *, milliseconds: bool = False) -> str:
         return ""
 
 
-@lru_cache(maxsize=4)
 def _session_index_titles(codex_home: str) -> dict[str, str]:
     titles: dict[str, str] = {}
     path = os.path.join(codex_home, "session_index.jsonl")
@@ -115,7 +116,6 @@ def _session_index_titles(codex_home: str) -> dict[str, str]:
     return titles
 
 
-@lru_cache(maxsize=4)
 def _state_thread_metadata(codex_home: str) -> dict[str, CodexThreadMetadata]:
     db_path = os.path.join(codex_home, "state_5.sqlite")
     if not os.path.exists(db_path):
@@ -240,6 +240,35 @@ def _tool_arguments(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _question_outcome(call: ParsedToolCall) -> tuple[list[ParsedQuestionSelection], bool]:
+    """Only structured, ID-matched answers are evidence of a Codex user decision."""
+    if call.tool_name.rsplit(".", 1)[-1] != "request_user_input":
+        return [], False
+    result = _parse_arguments(call.result)
+    cancelled = result.get("cancelled") is True
+    answers = result.get("answers")
+    questions = call.arguments.get("questions")
+    if cancelled or call.is_error or not isinstance(answers, dict) or not isinstance(questions, list):
+        return [], cancelled
+    selections = []
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        identity, text = question.get("id"), question.get("question")
+        if not isinstance(identity, str) or not identity or not isinstance(text, str):
+            continue
+        answer = answers.get(identity)
+        labels = answer.get("answers") if isinstance(answer, dict) else None
+        # Do not stringify malformed payloads into apparent user input.
+        if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
+            labels = []
+        selections.append(ParsedQuestionSelection(
+            question=text, question_id=identity,
+            selected_labels=[label for label in labels if label.strip()],
+        ))
+    return selections, False
+
+
 def _top_level_paths(arguments: dict[str, Any]) -> list[str]:
     paths: list[str] = []
     for key in ("file_path", "path"):
@@ -299,12 +328,80 @@ def _session_meta_payload(path: str) -> dict[str, Any]:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if entry.get("type") == "session_meta":
+                if isinstance(entry, dict) and entry.get("type") == "session_meta":
                     payload = entry.get("payload")
                     return payload if isinstance(payload, dict) else {}
     except OSError:
         pass
     return {}
+
+
+def is_codex_subagent(metadata: dict) -> bool:
+    if metadata.get("thread_source") == "user":
+        return False
+    source = metadata.get("source")
+    return metadata.get("thread_source") in {"subagent", "guardian_review"} or (
+        isinstance(source, dict) and "subagent" in source
+    )
+
+
+def codex_parent_id(metadata: dict) -> str:
+    source = metadata.get("source")
+    child = source.get("subagent") if isinstance(source, dict) else None
+    spawn = child.get("thread_spawn") if isinstance(child, dict) else None
+    parent = spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+    return parent if isinstance(parent, str) else ""
+
+
+def discover_codex_subagents(path: str):
+    from sources import discover_codex_sessions
+    from subagent_parser import SubagentInfo
+
+    meta = _session_meta_payload(path)
+    parent = meta.get("id") or meta.get("session_id") or _native_id_from_filename(path)
+    candidates = []
+    for source in discover_codex_sessions():
+        child = _session_meta_payload(source.path)
+        owner = codex_parent_id(child)
+        if not owner or not is_codex_subagent(child):
+            continue
+        identity = child.get("id") or child.get("session_id") or _native_id_from_filename(source.path)
+        spawn = child["source"]["subagent"]["thread_spawn"]
+        candidates.append((owner, SubagentInfo(source.path, None, identity,
+                          child.get("agent_role") or spawn.get("agent_role") or "subagent")))
+    # Include descendants, even if their parent had no direct spawn tool record.
+    owners = {parent}
+    results = {}
+    while True:
+        additions = [info for owner, info in candidates if owner in owners and info.agent_id not in owners]
+        if not additions:
+            break
+        for info in additions:
+            owners.add(info.agent_id)
+            results[info.agent_id] = info
+    return sorted(results.values(), key=lambda info: info.jsonl_path)
+
+
+def parse_codex_subagent(info):
+    from subagent_parser import ParsedSubagent
+
+    entries = _load_jsonl(info.jsonl_path)
+    meta = next((e.get("payload", {}) for e in entries if e.get("type") == "session_meta"), {})
+    started = meta.get("timestamp", "")
+    # Forked child rollouts may carry inherited history. Only the child's own
+    # exchanges belong in its transcript; retain metadata for identity.
+    if started:
+        entries = [e for e in entries if e.get("type") == "session_meta" or _entry_timestamp(e) >= started]
+    session = parse_codex_jsonl(info.jsonl_path, entries=entries, enrich_metadata=False)
+    return ParsedSubagent(
+        agent_id=info.agent_id, agent_type=info.agent_type,
+        parent_session_id=session.parent_native_session_id,
+        started_at=session.started_at, ended_at=session.ended_at,
+        duration_seconds=session.duration_seconds, files_touched=session.files_touched,
+        tools_used=session.tools_used, tool_call_count=len(session.tool_calls),
+        messages=session.messages, initial_prompt=session.user_messages[0] if session.user_messages else "",
+        tool_calls=session.tool_calls, source_path=info.jsonl_path,
+    )
 
 
 def internal_codex_session_reason(session: ParsedSession, path: str = "") -> str:
@@ -351,20 +448,28 @@ def parse_codex_jsonl(
     if not entries:
         return session
 
+    raw_user_items = any(
+        e.get("type") == "response_item" and isinstance(e.get("payload"), dict)
+        and e["payload"].get("role") == "user" for e in entries
+    )
+    entries = normalize_completed_items(entries)
+
     native_id = _native_id_from_filename(path)
     meta_cwd = ""
     meta_branch = ""
     meta_started_at = ""
+    agent_path = ""
     timestamps: list[str] = []
     tool_outputs: dict[str, dict[str, Any]] = {}
     raw_tool_calls: list[ParsedToolCall] = []
+    question_calls: dict[str, ParsedToolCall] = {}
     files_set: set[str] = set()
     tool_counter: Counter[str] = Counter()
     patch_call_ids: set[str] = set()
     task_complete_fallback = ""
     task_complete_ts = ""
 
-    for entry in entries:
+    for entry_index, entry in enumerate(entries):
         ts = _entry_timestamp(entry)
         if ts:
             timestamps.append(ts)
@@ -374,7 +479,16 @@ def parse_codex_jsonl(
         payload = payload if isinstance(payload, dict) else {}
 
         if entry_type == "session_meta":
-            native_id = native_id or str(payload.get("session_id") or payload.get("id") or "")
+            # Forks can retain their ancestor's session_id; id is the thread's
+            # native identity (and matches the rollout filename).
+            native_id = str(payload.get("id") or payload.get("session_id") or native_id)
+            session.is_subagent = is_codex_subagent(payload)
+            session.parent_native_session_id = codex_parent_id(payload)
+            if session.is_subagent:
+                source = payload.get("source")
+                child = source.get("subagent") if isinstance(source, dict) else None
+                spawn = child.get("thread_spawn", {}) if isinstance(child, dict) else {}
+                agent_path = payload.get("agent_path") or spawn.get("agent_path") or ""
             if not meta_started_at and isinstance(payload.get("timestamp"), str):
                 meta_started_at = payload["timestamp"]
             if not meta_cwd and isinstance(payload.get("cwd"), str):
@@ -405,6 +519,7 @@ def parse_codex_jsonl(
                 tool_outputs[call_id] = {
                     "content": content,
                     "is_error": _is_error_output(content),
+                    "entry_index": entry_index,
                 }
 
     thread = _thread_metadata(native_id) if enrich_metadata else CodexThreadMetadata()
@@ -421,7 +536,7 @@ def parse_codex_jsonl(
         set_session_project(session, cwd)
     session.branch = meta_branch or thread.git_branch
 
-    for entry in entries:
+    for entry_index, entry in enumerate(entries):
         ts = _entry_timestamp(entry)
         entry_type = entry.get("type")
         payload = entry.get("payload", {})
@@ -468,7 +583,26 @@ def parse_codex_jsonl(
 
         elif entry_type == "response_item":
             payload_type = payload.get("type")
-            if payload_type == "message":
+            if payload_type in {"function_call_output", "custom_tool_call_output"}:
+                call_id = payload.get("call_id")
+                if not isinstance(call_id, str):
+                    continue
+                call = question_calls.get(call_id)
+                if call and tool_outputs[call_id]["entry_index"] == entry_index:
+                    text = _format_question_answers(
+                        call.tool_name, call.arguments, "",
+                        selections=call.question_selections, cancelled=call.question_cancelled,
+                    )
+                    if text:
+                        session.user_messages.append(text)
+                        session.messages.append({"role": "user", "content": text, "timestamp": ts})
+            elif payload_type == "agent_message" and session.is_subagent and agent_path and payload.get("recipient") == agent_path:
+                text = _clean_text(_content_text(payload.get("content", [])))
+                if text:
+                    text = f"[Agent message from {payload.get('author', 'parent')}]\n{text}"
+                    session.user_messages.append(text)
+                    session.messages.append({"role": "user", "content": text, "timestamp": ts})
+            elif payload_type == "message":
                 role = payload.get("role")
                 if role == "assistant":
                     text = _clean_text(_content_text(payload.get("content", [])))
@@ -495,14 +629,18 @@ def parse_codex_jsonl(
                 output = tool_outputs.get(call_id if isinstance(call_id, str) else "", {})
                 tool_counter[name] += 1
                 files_set.update(_top_level_paths(arguments))
-                raw_tool_calls.append(ParsedToolCall(
+                call = ParsedToolCall(
                     timestamp=ts,
                     tool_call_id=call_id if isinstance(call_id, str) else "",
                     tool_name=name,
                     arguments=arguments,
                     result=output.get("content", ""),
                     is_error=bool(output.get("is_error", False) or payload.get("status") == "failed"),
-                ))
+                )
+                call.question_selections, call.question_cancelled = _question_outcome(call)
+                raw_tool_calls.append(call)
+                if isinstance(call_id, str) and call_id and name.rsplit(".", 1)[-1] == "request_user_input":
+                    question_calls[call_id] = call
 
     if not session.assistant_messages and task_complete_fallback:
         session.assistant_messages.append(task_complete_fallback)
@@ -512,7 +650,7 @@ def parse_codex_jsonl(
         session.slug = _first_user_slug(session)
 
     session.started_at = meta_started_at or thread.created_at or (timestamps[0] if timestamps else "")
-    session.ended_at = thread.updated_at or (timestamps[-1] if timestamps else "")
+    session.ended_at = timestamps[-1] if timestamps else thread.updated_at
     if session.started_at and session.ended_at:
         try:
             t0 = datetime.fromisoformat(session.started_at.replace("Z", "+00:00"))
@@ -529,4 +667,6 @@ def parse_codex_jsonl(
     session.tool_calls = raw_tool_calls
     session.user_message_count = len(session.user_messages)
     session.assistant_message_count = len(session.assistant_messages)
+    if raw_user_items and session.assistant_messages and not session.user_messages:
+        raise CodexFormatError("Codex has response user items but no supported visible user messages")
     return session

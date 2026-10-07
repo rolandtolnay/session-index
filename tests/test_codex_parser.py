@@ -4,12 +4,112 @@ import json
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from codex_parser import internal_codex_session_reason, parse_codex_jsonl
 from parser import ParsedSession
+from tool_facts import build_question_rows
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "codex_sample.jsonl")
+
+
+def _question_entries(questions, result, *, status="completed"):
+    def entry(kind, **payload):
+        return {"timestamp": "2026-10-06T10:00:00Z", "type": kind, "payload": payload}
+    return [
+        entry("session_meta", id="questions", cwd="/tmp"),
+        entry("event_msg", type="user_message", message="Configure the project"),
+        entry("response_item", type="function_call", name="functions.request_user_input",
+              call_id="question-call", arguments=json.dumps({"questions": questions}), status=status),
+        entry("response_item", type="message", role="assistant", content=[{"text": "Waiting for your choice"}]),
+        entry("response_item", type="function_call_output", call_id="question-call",
+              output=json.dumps(result) if isinstance(result, dict) else result),
+        entry("response_item", type="message", role="assistant", content=[{"text": "Continuing"}]),
+    ]
+
+
+def test_codex_question_answers_match_ids_preserve_free_text_and_result_order():
+    # Same wording and shuffled result keys must not swap answers or fill the unanswered question.
+    questions = [{"id": identity, "header": identity, "question": "Which scope?", "options": [
+        {"label": "Small (Recommended)"}, {"label": "Large"},
+    ]} for identity in ("api", "ui", "pending")]
+    result = {"answers": {
+        "ui": {"answers": ['Custom "quoted" answer\nwith another line']},
+        "api": {"answers": ["Small (Recommended)"]},
+        "unknown": {"answers": ["Must not leak"]},
+    }}
+    session = parse_codex_jsonl("unused", entries=_question_entries(questions, result), enrich_metadata=False)
+    assert [m["role"] for m in session.messages] == ["user", "assistant", "user", "assistant"]
+    assert session.user_message_count == 2
+    assert session.user_messages[-1].count("[question]") == 2
+    assert 'Custom "quoted" answer\nwith another line' in session.user_messages[-1]
+    assert "Must not leak" not in session.user_messages[-1]
+    facts = build_question_rows(session.session_id, "codex", session.tool_calls)
+    assert [f["selected_label"] for f in facts] == ["Small (Recommended)", 'Custom "quoted" answer\nwith another line', None]
+    assert [f["was_recommended"] for f in facts] == [1, 0, None]
+    assert [f["is_other"] for f in facts] == [0, 1, None]
+
+
+@pytest.mark.parametrize("result,status", [
+    ({"answers": {}}, "completed"),
+    ({"answers": {"q": {"answers": ["Yes"]}}, "cancelled": True}, "completed"),
+    ({"answers": {"q": {"answers": ["Yes"]}}}, "failed"),
+    ({"answers": {"q": {"answers": "Yes"}}}, "completed"),
+    ({"answers": {"q": {"answers": [None, {"label": "Yes"}]}}}, "completed"),
+    ('Error: "Proceed?"="Yes"', "completed"),
+    (None, "completed"),
+])
+def test_codex_missing_cancelled_failed_or_malformed_answers_never_invent_user_input(result, status):
+    questions = [{"id": "q", "question": "Proceed?", "options": [{"label": "Yes"}]}]
+    entries = _question_entries(questions, result, status=status)
+    if result is None:
+        del entries[4]  # Snapshot taken while the question is still open.
+    session = parse_codex_jsonl("unused", entries=entries, enrich_metadata=False)
+    assert session.user_messages == ["Configure the project"]
+    fact, = build_question_rows(session.session_id, "codex", session.tool_calls)
+    assert fact["selected_label"] is None and fact["was_recommended"] is None
+
+
+def test_codex_replayed_question_result_renders_once_and_keeps_all_answers():
+    questions = [{"id": "q", "question": "Which checks?", "options": [{"label": "Tests"}, {"label": "Docs"}]}]
+    entries = _question_entries(questions, {"answers": {"q": {"answers": ["Tests", "Docs"]}}})
+    entries.insert(5, entries[4].copy())
+    session = parse_codex_jsonl("unused", entries=entries, enrich_metadata=False)
+    assert session.user_message_count == 2
+    fact, = build_question_rows(session.session_id, "codex", session.tool_calls)
+    assert fact["selected_label"] == "Tests, Docs"
+    assert fact["multi_select"] == 1 and fact["was_recommended"] is None
+
+
+def test_codex_question_answers_persist_in_transcript_and_searchable_facts(tmp_path, monkeypatch):
+    import db
+    import indexer
+    import tool_log
+    import transcript
+
+    data = tmp_path / "data"
+    monkeypatch.setattr(db, "DATA_DIR", str(data))
+    monkeypatch.setattr(db, "DB_PATH", str(data / "sessions.db"))
+    for module in (transcript, tool_log):
+        monkeypatch.setattr(module, "TRANSCRIPT_DIR", str(data / "transcripts"))
+    monkeypatch.setenv("SESSION_INDEX_CODEX_HOME", str(tmp_path / "codex"))
+    entries = _question_entries([{"id": "q", "question": "Which checks?"}],
+                                {"answers": {"q": {"answers": ["Keep regression tests"]}}})
+    source = tmp_path / "rollout-questions.jsonl"
+    source.write_text("\n".join(map(json.dumps, entries)) + "\n")
+    result = indexer.index_source_transcript("codex", str(source), indexer.NO_SUMMARY_INDEX_OPTIONS)
+    conn = db.get_connection()
+    try:
+        saved = db.get_session(conn, result.session_id)
+        with open(saved["transcript_path"]) as artifact:
+            assert "Keep regression tests" in artifact.read()
+        row = conn.execute("SELECT question, selected_label FROM question_answers WHERE session_id = ?",
+                           (result.session_id,)).fetchone()
+        assert tuple(row) == ("Which checks?", "Keep regression tests")
+    finally:
+        conn.close()
 
 
 def test_internal_codex_prompt_from_user_thread_is_not_filtered(tmp_path):
