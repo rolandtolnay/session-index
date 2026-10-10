@@ -61,6 +61,32 @@ class IndexResult:
     stages: frozenset[IndexStage] = field(default_factory=frozenset)
 
 
+@dataclass(frozen=True)
+class PreparedIndexInputs:
+    session: ParsedSession
+    identity_key: str
+    parsed_subagents: list[ParsedSubagent]
+    side_chat_rows: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PiSnapshot:
+    session: ParsedSession
+    result: IndexResult
+    identity_key: str
+    registered: bool
+    entries: list[dict]
+    token: tuple[str, str, bytes]
+
+
+@dataclass(frozen=True)
+class GeneratedDescriptions:
+    summary: str | None = None
+    headline: str | None = None
+    substance_band: str | None = None
+    substance_reason: str | None = None
+
+
 SUPPORTED_SOURCES = {"claude", "pi", "codex"}
 
 _METADATA_FIELDS = {
@@ -145,6 +171,7 @@ def upsert_parsed_session(
     *,
     source: str,
     source_path: str,
+    identity_key: str | None = None,
     files_touched: list[str] | None = None,
     summary: str | None = None,
     headline: str | None = None,
@@ -164,7 +191,10 @@ def upsert_parsed_session(
     if not native_session_id:
         raise ValueError("ParsedSession.native_session_id is required")
     expected_session_id = canonical_session_id(source, native_session_id)
-    if session.session_id != expected_session_id:
+    from session_identity import is_canonical_session_id
+
+    if ((source != "pi" and session.session_id != expected_session_id)
+            or (source == "pi" and not is_canonical_session_id(session.session_id))):
         raise ValueError(
             f"ParsedSession identity mismatch: expected {expected_session_id}, got {session.session_id}"
         )
@@ -183,6 +213,7 @@ def upsert_parsed_session(
         session_id=session.session_id,
         source=source,
         native_session_id=native_session_id,
+        identity_key=identity_key,
         source_path=source_path,
         slug=session.slug or None,
         project_path=session.project_path or None,
@@ -216,7 +247,9 @@ def upsert_parsed_session(
     )
 
 
-def _parse_subagents_for_stages(source: str, path: str, stages: frozenset[IndexStage]) -> list[ParsedSubagent]:
+def _parse_subagents_for_stages(
+    source: str, path: str, stages: frozenset[IndexStage], *, infos: list[SubagentInfo] | None = None,
+) -> list[ParsedSubagent]:
     needs_subagents = bool(stages & {
         IndexStage.SUMMARY,
         IndexStage.CLEAN_TRANSCRIPT,
@@ -227,7 +260,9 @@ def _parse_subagents_for_stages(source: str, path: str, stages: frozenset[IndexS
         return []
 
     parsed_subagents: list[ParsedSubagent] = []
-    for info in discover_session_subagents(source, path):
+    if infos is None:
+        infos = discover_session_subagents(source, path)
+    for info in infos:
         parsed = parse_session_subagent(source, info)
         if parsed.messages:
             parsed_subagents.append(parsed)
@@ -283,6 +318,20 @@ def _summarize_session(session: ParsedSession, inputs: dict) -> SummaryResult | 
         last_assistant = session.assistant_messages[-1]
 
     return summarize(last_assistant_message=last_assistant, **inputs)
+
+
+def _generate_descriptions(session: ParsedSession, inputs: dict) -> GeneratedDescriptions:
+    """Summary/classification and headline retain independent failure results."""
+    from summarizer import generate_headline
+
+    summary_result = _summarize_session(session, inputs)
+    headline = generate_headline(**inputs)
+    return GeneratedDescriptions(
+        summary=summary_result.summary if summary_result else None,
+        headline=headline,
+        substance_band=summary_result.substance_band if summary_result else None,
+        substance_reason=summary_result.substance_reason if summary_result else None,
+    )
 
 
 def _write_clean_transcript(session: ParsedSession, parsed_subagents: list[ParsedSubagent], side_chats: list[dict] | None = None) -> str | None:
@@ -361,6 +410,8 @@ def index_source_transcript(
 
         if is_nested_pi_subagent_session(path):
             return IndexResult(skipped_reason="nested Pi subagent session", stages=stages)
+    if source == "pi":
+        return _index_pi_source(path, stages)
     session = parsed_session or parse_session_file(source, path)
     result = IndexResult(
         session_id=session.session_id,
@@ -392,12 +443,6 @@ def index_source_transcript(
         if result.skipped_reason:
             return result
 
-    if source == "pi" and session.parent_session_path:
-        new_conversation = new_pi_conversation_counts(path)
-        if new_conversation is not None and (new_conversation[0] < 1 or new_conversation[1] < 1):
-            result.skipped_reason = "no new Pi conversation after clone"
-            return result
-
     if session.user_message_count < 1 or session.assistant_message_count < 1:
         result.skipped_reason = f"{session.user_message_count} user, {session.assistant_message_count} assistant msgs"
         return result
@@ -416,39 +461,166 @@ def index_source_transcript(
     lock = (nullcontext() if stages <= {IndexStage.SUMMARY}
             else indexing_lock(os.path.dirname(DB_PATH), session.session_id))
     with lock:
-        result = _index_qualified_session(source, path, stages, session, result)
-    if source == "pi" and IndexStage.SUMMARY in stages:
-        from side_chats import refresh_headlines
-        refresh_headlines(session.session_id, recover_open=True)
+        from db import assert_session_identity, get_connection, init_db
+        from project_identity import restore_project_identity
+
+        conn = get_connection()
+        try:
+            init_db(conn)
+            assert_session_identity(conn, session.session_id, source, session.native_session_id)
+            restore_project_identity(conn, session)
+        finally:
+            conn.close()
+        prepared = PreparedIndexInputs(
+            session=session,
+            identity_key=session.native_session_id,
+            parsed_subagents=_parse_subagents_for_stages(source, path, stages),
+        )
+        result = _index_qualified_session(source, path, stages, prepared, result)
     return result
 
 
-def _index_qualified_session(
-    source: str, path: str, stages: frozenset[IndexStage], session: ParsedSession, result: IndexResult,
-) -> IndexResult:
-    from db import assert_session_identity, get_connection, init_db
+def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
+    """Resolve and parse inside the publication boundary; generate outside it."""
+    import hashlib
+    import os
+    from pathlib import Path
+    import db
+    from indexing_lock import indexing_lock
+    from pi_continuations import ownership_lock, resolve, exact_path, _assert_owner
 
-    # Check ownership before touching artifacts; artifact-writing callers hold
-    # the per-session lock through these writes and the final DB commit.
-    identity_conn = get_connection()
-    side_chat_rows = []
-    try:
-        init_db(identity_conn)
-        assert_session_identity(
-            identity_conn,
-            session.session_id,
-            source,
-            session.native_session_id,
+    path = exact_path(path)
+
+    def snapshot() -> PiSnapshot:
+        # Parse the very bytes used for the stale-result token. No caller's
+        # pre-lock ParsedSession may dictate ownership or publish old history.
+        import json
+        raw = Path(path).read_bytes()
+        entries = []
+        for line in raw.splitlines():
+            try:
+                entry = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+        session = parse_pi_jsonl(path, entries=entries)
+        conn = db.get_connection()
+        try:
+            db.init_db(conn)
+            owner, key, publishable, registered = resolve(conn, session.native_session_id, path, entries)
+            session.session_id = owner
+            result = IndexResult(session_id=owner, user_message_count=session.user_message_count,
+                                 assistant_message_count=session.assistant_message_count,
+                                 files_touched=len(session.files_touched), stages=stages)
+            if not publishable:
+                result.skipped_reason = "unchanged transferred Pi ancestor"
+            elif not registered and session.parent_session_path:
+                counts = new_pi_conversation_counts(path)
+                if counts is not None and (counts[0] < 1 or counts[1] < 1):
+                    result.skipped_reason = "no new Pi conversation after clone"
+            if not result.skipped_reason and (session.user_message_count < 1 or session.assistant_message_count < 1):
+                result.skipped_reason = f"{session.user_message_count} user, {session.assistant_message_count} assistant msgs"
+            if not result.skipped_reason:
+                if registered:
+                    _assert_owner(conn, owner, key, session.native_session_id, path, header=entries[0])
+                    conn.commit()
+                else:
+                    db.assert_session_identity(conn, owner, "pi", session.native_session_id, identity_key=key)
+                original = conn.execute("SELECT started_at FROM pi_conversation_owners WHERE session_id=?", (owner,)).fetchone() if registered else None
+                existing = conn.execute("SELECT started_at FROM sessions WHERE session_id=?", (owner,)).fetchone()
+                started_at = (original[0] if original and original[0] else existing[0] if existing else None)
+                if registered and started_at:
+                    session.started_at = started_at
+                    from datetime import datetime
+                    try:
+                        session.duration_seconds = max(0, int((datetime.fromisoformat(session.ended_at.replace('Z', '+00:00')) - datetime.fromisoformat(session.started_at.replace('Z', '+00:00'))).total_seconds()))
+                    except ValueError:
+                        pass
+        finally:
+            conn.close()
+        return PiSnapshot(
+            session=session, result=result, identity_key=key, registered=registered,
+            entries=entries, token=(owner, key, hashlib.sha256(raw).digest()),
         )
-        from project_identity import restore_project_identity
-        restore_project_identity(identity_conn, session)
-        if source == "pi" and IndexStage.CLEAN_TRANSCRIPT in stages:
-            from side_chats import build_rows
-            side_chat_rows = build_rows(path, session, identity_conn)
-    finally:
-        identity_conn.close()
 
-    parsed_subagents = _parse_subagents_for_stages(source, path, stages)
+    with ownership_lock():
+        initial = snapshot()
+        if initial.result.skipped_reason:
+            return initial.result
+        with indexing_lock(os.path.dirname(db.DB_PATH), initial.session.session_id):
+            prepared = _prepare_pi_publication(path, stages, initial)
+            if IndexStage.SUMMARY not in stages:
+                return _index_qualified_session("pi", path, stages, prepared, initial.result)
+            inputs = _description_inputs(
+                prepared.session, _enriched_files(prepared.session, prepared.parsed_subagents),
+                prepared.parsed_subagents,
+            )
+
+    descriptions = _generate_descriptions(initial.session, inputs)
+    with ownership_lock():
+        current = snapshot()
+        if current.result.skipped_reason or current.token != initial.token:
+            initial.result.skipped_reason = "stale Pi refresh; ownership or source changed"
+            return initial.result
+        with indexing_lock(os.path.dirname(db.DB_PATH), current.session.session_id):
+            # Contributor children can finish while models run even when the
+            # main source token is unchanged. Always prepare fresh evidence.
+            prepared = _prepare_pi_publication(path, stages, current)
+            result = _index_qualified_session("pi", path, stages, prepared, current.result, descriptions=descriptions)
+    from side_chats import refresh_headlines
+    refresh_headlines(result.session_id, recover_open=True)
+    return result
+
+
+def _prepare_pi_publication(path: str, stages: frozenset[IndexStage], snapshot: PiSnapshot) -> PreparedIndexInputs:
+    """Prepare children only while ownership and per-conversation locks are held."""
+    from db import get_connection, init_db
+    from pi_continuations import publication_children
+    from project_identity import restore_project_identity
+    from side_chats import build_rows, parse_archives
+
+    session = snapshot.session
+    infos = None
+    archives = None
+    side_chat_rows = []
+    conn = get_connection()
+    try:
+        init_db(conn)
+        restore_project_identity(conn, session)
+        needs_children = bool(stages & {
+            IndexStage.SUMMARY, IndexStage.CLEAN_TRANSCRIPT,
+            IndexStage.SUBAGENT_TRANSCRIPTS, IndexStage.TOOL_LOG,
+        })
+        if snapshot.registered and needs_children:
+            owned = publication_children(
+                conn, session.session_id, path, session.native_session_id, entries=snapshot.entries,
+            )
+            infos, archives = owned.subagent_infos, owned.archives
+        if IndexStage.CLEAN_TRANSCRIPT in stages:
+            if archives is None:
+                archives = parse_archives(path, session.native_session_id, entries=snapshot.entries)
+            side_chat_rows = build_rows(path, session, conn, archives=archives)
+    finally:
+        conn.close()
+    return PreparedIndexInputs(
+        session=session, identity_key=snapshot.identity_key,
+        parsed_subagents=_parse_subagents_for_stages("pi", path, stages, infos=infos),
+        side_chat_rows=side_chat_rows,
+    )
+
+
+def _index_qualified_session(
+    source: str, path: str, stages: frozenset[IndexStage], prepared: PreparedIndexInputs, result: IndexResult,
+    *, descriptions: GeneratedDescriptions | None = None,
+) -> IndexResult:
+    from db import get_connection, init_db
+
+    # Preparation checks identity before artifacts; persistence independently
+    # validates registry ownership, including callers outside this pipeline.
+    session = prepared.session
+    parsed_subagents = prepared.parsed_subagents
+    side_chat_rows = prepared.side_chat_rows
     from transcript import rendered_conversation_signature
 
     rendered_signature = rendered_conversation_signature(
@@ -463,22 +635,15 @@ def _index_qualified_session(
         enriched_files = _enriched_files(session, parsed_subagents)
         result.files_touched = len(enriched_files)
 
-    summary = None
-    headline = None
-    substance_band = None
-    substance_reason = None
-    if IndexStage.SUMMARY in stages:
-        from summarizer import generate_headline
-
-        description_inputs = _description_inputs(session, enriched_files, parsed_subagents)
-        summary_result = _summarize_session(session, description_inputs)
-        if summary_result is not None:
-            summary = summary_result.summary
-            substance_band = summary_result.substance_band
-            substance_reason = summary_result.substance_reason
-        result.summary_generated = bool(summary)
-        headline = generate_headline(**description_inputs)
-        result.headline_generated = bool(headline)
+    if descriptions is None:
+        descriptions = (_generate_descriptions(session, _description_inputs(session, enriched_files, parsed_subagents))
+                        if IndexStage.SUMMARY in stages else GeneratedDescriptions())
+    summary = descriptions.summary
+    headline = descriptions.headline
+    substance_band = descriptions.substance_band
+    substance_reason = descriptions.substance_reason
+    result.summary_generated = bool(summary)
+    result.headline_generated = bool(headline)
 
     subagent_paths: list[str] = []
     if IndexStage.SUBAGENT_TRANSCRIPTS in stages:
@@ -527,6 +692,7 @@ def _index_qualified_session(
             session,
             source=source,
             source_path=path,
+            identity_key=prepared.identity_key,
             files_touched=enriched_files,
             summary=summary,
             headline=headline,

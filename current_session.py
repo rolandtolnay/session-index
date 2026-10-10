@@ -315,9 +315,9 @@ def _resolve_env_inputs(env: Mapping[str, str]) -> tuple[str, str, str, str, str
 def resolve_current_session(env: Mapping[str, str] | None = None) -> CurrentSession:
     """Resolve the active current session from exact runtime env.
 
-    This intentionally does not query the database, latest sessions, terminal
-    state, or any registry. Missing or inconsistent env is reported as an
-    explicit failure because guessing can identify the wrong parallel session.
+    Exact runtime identity is validated before looking up explicit Pi transfer
+    ownership. This never guesses from latest sessions or terminal state.
+    Missing or inconsistent env is reported as an explicit failure.
     Session Index's public SESSION_INDEX_* contract takes precedence. Claude's
     native env is accepted via CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID or
     CODEX_THREAD_ID. Provider source transcripts are located by exact native id;
@@ -328,6 +328,12 @@ def resolve_current_session(env: Mapping[str, str] | None = None) -> CurrentSess
 
     session_id, native_session_id, source, source_path, leaf_id = _resolve_env_inputs(env)
     canonical, native = _normalize_identity(source, session_id, native_session_id)
+    if source == "pi":
+        from pi_continuations import resolve_identity
+        try:
+            canonical = resolve_identity(native, source_path)
+        except ValueError as exc:
+            raise _fail(str(exc)) from exc
     transcript_path = _artifact_transcript_path(canonical)
     tool_log_path = _artifact_tool_log_path(canonical)
 

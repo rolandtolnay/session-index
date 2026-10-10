@@ -233,7 +233,14 @@ def resolve_snapshot_origin(
             canonical, native, provider, path, resolved_leaf = canonical_session_id(source, native_session_id), native_session_id, source, source_path, None
         else:
             canonical, native, provider, path, resolved_leaf = _runtime_inputs(os.environ if env is None else env)
-        _normalize_identity(provider, canonical, native)
+        # An exact indexed lookup already binds the logical ID to its current
+        # raw origin. Runtime/explicit inputs still validate the native-derived
+        # identity before any guarded source read; no continuation lookup may
+        # parse a raw file during --resolve-only.
+        if session is not None and provider == "pi":
+            canonical_session_id(provider, native)
+        else:
+            _normalize_identity(provider, canonical, native)
     except (CurrentSessionError, KeyError, ValueError) as exc:
         if isinstance(exc, SnapshotError):
             raise

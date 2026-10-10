@@ -14,11 +14,14 @@ CUSTOM_TYPE = "side-chat-archive"
 _ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
-def parse_archives(path: str, owner_session_id: str) -> list[dict[str, Any]]:
+def parse_archives(
+    path: str, owner_session_id: str, *, include_empty: bool = False,
+    entries: list[dict] | None = None,
+) -> list[dict[str, Any]]:
     """Read owned records across ALL branches; clones cannot adopt copied records."""
     from pi_parser import _load_jsonl
 
-    entries = _load_jsonl(path)
+    entries = _load_jsonl(path) if entries is None else entries
     if not entries or entries[0].get("type") != "session" or entries[0].get("id") != owner_session_id:
         return []
     children: dict[str, dict] = {}
@@ -59,7 +62,7 @@ def parse_archives(path: str, owner_session_id: str) -> list[dict[str, Any]]:
                 child["closed_at"] = timestamp
     result = []
     for child in children.values():
-        if child["turns"]:
+        if child["turns"] or include_empty:
             child["turns"] = [turn for _, turn in sorted(child["turns"].items())]
             result.append(child)
     return result
@@ -80,12 +83,12 @@ def refs(rows: list[dict]) -> list[dict]:
              "headline": label(row), "opener": row["opener"], "started_at": row["started_at"]} for row in rows]
 
 
-def build_rows(path: str, session, conn) -> list[dict]:
+def build_rows(path: str, session, conn, *, archives: list[dict] | None = None) -> list[dict]:
     import transcript
 
     previous = {row["side_chat_id"]: row for row in list_side_chats(conn, session.session_id)}
     rows = []
-    for child in parse_archives(path, session.native_session_id):
+    for child in (parse_archives(path, session.native_session_id) if archives is None else archives):
         focus = child["focused_content"]
         turns = child["turns"]
         content = json.dumps({"focus": focus, "turns": turns}, sort_keys=True, ensure_ascii=False)

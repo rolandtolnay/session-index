@@ -12,6 +12,8 @@ export const SESSION_INDEX_ENV_KEYS = [
 
 export type SessionIndexEnvKey = (typeof SESSION_INDEX_ENV_KEYS)[number];
 export type SessionIndexEnv = {
+	// Exact native-derived input identity. The `current` resolver applies recorded
+	// worktree ownership for artifact lookup without changing this raw origin.
 	SESSION_INDEX_SESSION_ID: string;
 	SESSION_INDEX_NATIVE_SESSION_ID: string;
 	SESSION_INDEX_SOURCE: "pi";

@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     source TEXT,
     native_session_id TEXT,
+    identity_key TEXT,
     source_path TEXT,
     slug TEXT,
     project_path TEXT,
@@ -87,6 +88,32 @@ CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
     INSERT INTO sessions_fts(rowid, user_messages, summary, files_touched, project)
     VALUES (new.rowid, new.user_messages, new.summary, new.files_touched, new.project);
 END;
+
+CREATE TABLE IF NOT EXISTS pi_conversation_owners (
+    session_id TEXT PRIMARY KEY,
+    identity_key TEXT NOT NULL UNIQUE,
+    active_path TEXT NOT NULL,
+    active_native_id TEXT NOT NULL,
+    started_at TEXT
+);
+CREATE TABLE IF NOT EXISTS pi_continuation_sources (
+    source_path TEXT PRIMARY KEY,
+    native_session_id TEXT NOT NULL UNIQUE,
+    owner_id TEXT NOT NULL,
+    checkpoint_json TEXT
+);
+CREATE TABLE IF NOT EXISTS pi_continuation_children (
+    kind TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    child_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    PRIMARY KEY(kind, source_path, child_id)
+);
+CREATE TABLE IF NOT EXISTS pi_transfers (
+    destination_path TEXT PRIMARY KEY,
+    source_path TEXT NOT NULL,
+    owner_id TEXT NOT NULL
+);
 
 -- ── Structured fact tables ────────────────────────────────────────────────
 -- Owned by sessions and rebuilt with delete-then-insert (idempotent).
@@ -277,6 +304,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
 
     # Migrations — add columns that don't exist in older schemas.
     migrations = [
+        ("identity_key", "ALTER TABLE sessions ADD COLUMN identity_key TEXT"),
         ("project_id", "ALTER TABLE sessions ADD COLUMN project_id TEXT"),
         ("cwd", "ALTER TABLE sessions ADD COLUMN cwd TEXT"),
         ("worktree_path", "ALTER TABLE sessions ADD COLUMN worktree_path TEXT"),
@@ -302,6 +330,11 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         except sqlite3.OperationalError:
             pass  # already exists
 
+    try:
+        conn.execute("ALTER TABLE pi_conversation_owners ADD COLUMN started_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_id_started_at ON sessions(project_id, started_at DESC)")
 
     # Backfill provider metadata for pre-Pi rows.
@@ -311,11 +344,20 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         SET native_session_id = session_id
         WHERE native_session_id IS NULL OR native_session_id = ''
     """)
+    conn.execute("UPDATE sessions SET identity_key = native_session_id WHERE identity_key IS NULL")
     conn.commit()
     conn.executescript("""
-        CREATE TRIGGER IF NOT EXISTS sessions_identity_guard
-        BEFORE UPDATE OF source, native_session_id ON sessions
-        WHEN old.source IS NOT new.source OR old.native_session_id IS NOT new.native_session_id
+        DROP TRIGGER IF EXISTS sessions_identity_guard;
+        CREATE TRIGGER sessions_identity_guard
+        BEFORE UPDATE OF source, identity_key, native_session_id ON sessions
+        WHEN old.source IS NOT new.source OR old.identity_key IS NOT new.identity_key
+          OR (old.native_session_id IS NOT new.native_session_id AND NOT EXISTS (
+              SELECT 1 FROM pi_conversation_owners o
+              WHERE new.source = 'pi' AND o.session_id = new.session_id
+                AND o.identity_key = new.identity_key
+                AND o.active_native_id = new.native_session_id
+                AND o.active_path = new.source_path
+          ))
         BEGIN
             SELECT RAISE(ABORT, 'Session identity conflict');
         END;
@@ -327,15 +369,17 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
 
 def assert_session_identity(
     conn: sqlite3.Connection, session_id: str, source: str, native_session_id: str,
+    *, identity_key: str | None = None,
 ) -> None:
     """Reject hash collisions and unmigrated native identities before writing."""
+    key = identity_key or native_session_id
     rows = conn.execute(
-        "SELECT session_id, source, native_session_id FROM sessions "
-        "WHERE session_id = ? OR (source = ? AND native_session_id = ?)",
-        (session_id, source, native_session_id),
+        "SELECT session_id, source, identity_key FROM sessions "
+        "WHERE session_id = ? OR (source = ? AND identity_key = ?)",
+        (session_id, source, key),
     ).fetchall()
     for row in rows:
-        if tuple(row) != (session_id, source, native_session_id):
+        if tuple(row) != (session_id, source, key):
             raise ValueError("Session identity conflict; refusing to overwrite or split a conversation")
 
 
@@ -346,6 +390,7 @@ def upsert_session(
     source: str | None = None,
     native_session_id: str | None = None,
     source_path: str | None = None,
+    identity_key: str | None = None,
     slug: str | None = None,
     project_path: str | None = None,
     project: str | None = None,
@@ -383,7 +428,7 @@ def upsert_session(
     historical preserve-on-NULL behavior.
     """
     existing_identity = conn.execute(
-        "SELECT source, native_session_id FROM sessions WHERE session_id = ?", (session_id,),
+        "SELECT source, native_session_id, identity_key, source_path FROM sessions WHERE session_id = ?", (session_id,),
     ).fetchone()
     source = source or (existing_identity[0] if existing_identity else "claude")
     if not native_session_id:
@@ -395,7 +440,32 @@ def upsert_session(
             if is_canonical_session_id(session_id):
                 raise ValueError("Native session identity is required for a new canonical ID")
             native_session_id = session_id
-    assert_session_identity(conn, session_id, source, native_session_id)
+    if source == "pi":
+        from pi_continuations import exact_path, resolve
+        from session_identity import is_canonical_session_id
+
+        identity_path = source_path or (existing_identity[3] if existing_identity else None)
+        registered_origin = conn.execute(
+            "SELECT 1 FROM pi_continuation_sources WHERE native_session_id=? OR source_path=?",
+            (native_session_id, exact_path(identity_path) if identity_path else None),
+        ).fetchone()
+        if identity_path and (registered_origin or is_canonical_session_id(session_id)
+                              or (identity_key is not None and identity_key != native_session_id)):
+            owner, resolved_key, publishable, registered = resolve(conn, native_session_id, identity_path)
+            # Legacy non-canonical rows remain supported outside the registry.
+            # Canonical and registered callers must publish to the resolved owner.
+            if (registered or is_canonical_session_id(session_id)) and (owner != session_id or not publishable):
+                raise ValueError("Pi continuation ownership changed")
+            if identity_key is not None and identity_key != resolved_key:
+                raise ValueError("Session identity conflict; invalid Pi ownership")
+            identity_key = resolved_key
+        else:
+            # A native-key direct upsert must not recreate a retired ancestor
+            # just because the caller omitted its raw path or continuation key.
+            if registered_origin or (identity_key is not None and identity_key != native_session_id):
+                raise ValueError("Session identity conflict; Pi ownership requires a source path")
+    identity_key = identity_key or (existing_identity[2] if existing_identity and native_session_id == existing_identity[1] else native_session_id)
+    assert_session_identity(conn, session_id, source, native_session_id, identity_key=identity_key)
     # Project membership is historical metadata, not a fresh filesystem guess.
     # Keep resolved identity when a checkout disappears (also for direct upserts).
     existing_project = conn.execute(
@@ -412,6 +482,7 @@ def upsert_session(
         "session_id": session_id,
         "source": source,
         "native_session_id": native_session_id,
+        "identity_key": identity_key,
         "source_path": source_path,
         "slug": slug,
         "project_path": project_path,
@@ -447,7 +518,7 @@ def upsert_session(
     params = normalize_row("sessions", params)
     conn.execute("""
         INSERT INTO sessions (
-            session_id, source, native_session_id, source_path,
+            session_id, source, native_session_id, identity_key, source_path,
             slug, project_path, project, project_id, cwd, worktree_path, branch, model,
             started_at, ended_at, duration_seconds, user_message_count,
             assistant_message_count, assistant_char_count,
@@ -455,7 +526,7 @@ def upsert_session(
             substance_band, substance_reason, transcript_path,
             tool_log_path, subagent_transcripts, parent_session_path, parent_native_session_id, is_subagent
         ) VALUES (
-            :session_id, :source, :native_session_id, :source_path,
+            :session_id, :source, :native_session_id, :identity_key, :source_path,
             :slug, :project_path, :project, :project_id, :cwd, :worktree_path, :branch, :model,
             :started_at, :ended_at, :duration_seconds, :user_message_count,
             :assistant_message_count, :assistant_char_count,
@@ -676,12 +747,10 @@ def get_session(
     conn: sqlite3.Connection,
     identifier: str,
 ) -> dict[str, Any] | None:
-    """Look up a session by full session_id or unambiguous session_id prefix.
+    """Look up an indexed ID, native origin, or unambiguous 8+ character prefix.
 
-    Resolution order:
-      1. Exact session_id match
-      2. session_id prefix match (8+ chars, must be unambiguous)
-    Returns None if not found or if prefix is ambiguous.
+    Exact current identities take precedence over contributing Pi native origins,
+    so an indexed fork resumed from an ancestor remains independently retrievable.
     """
     rows = conn.execute(
         """
@@ -693,6 +762,17 @@ def get_session(
     if rows:
         return dict(rows[0]) if len(rows) == 1 else None
 
+    has_continuations = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='pi_continuation_sources'",
+    ).fetchone() is not None
+    if has_continuations:
+        rows = conn.execute(
+            "SELECT DISTINCT s.* FROM sessions s JOIN pi_continuation_sources p "
+            "ON p.owner_id=s.session_id WHERE p.native_session_id=?", (identifier,),
+        ).fetchall()
+        if rows:
+            return dict(rows[0]) if len(rows) == 1 else None
+
     if len(identifier) >= 8:
         rows = conn.execute(
             """
@@ -701,7 +781,12 @@ def get_session(
             """,
             {"prefix": f"{identifier}%"},
         ).fetchall()
-        # Deduplicate defensively in case session_id and native_session_id both match.
+        if has_continuations:
+            rows += conn.execute(
+                "SELECT s.* FROM sessions s JOIN pi_continuation_sources p "
+                "ON p.owner_id=s.session_id WHERE p.native_session_id LIKE ?", (f"{identifier}%",),
+            ).fetchall()
+        # Multiple native origins of one conversation are still one candidate.
         by_sid = {row["session_id"]: row for row in rows}
         if len(by_sid) == 1:
             return dict(next(iter(by_sid.values())))
