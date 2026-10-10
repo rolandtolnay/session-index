@@ -1,5 +1,7 @@
 # Preserve Side Chats as parent-owned searchable artifacts
 
+Extended for explicit Pi worktree continuation ownership by [ADR 0008](0008-explicit-pi-worktree-continuations.md); ordinary clones still cannot adopt copied archives.
+
 Pi persists completed Side Chat exchanges and their Focused Content in the originating session's Source Transcript as versioned, non-context custom entries. Session Index derives child transcripts and searchable child records from those entries; Side Chats are neither independent sessions nor Subagent Runs. This preserves discussions without importing exploration into the parent's model context or duplicating inherited parent history.
 
 The parent Clean Transcript contains only child routing labels and paths. Each child receives an asynchronously generated headline scoped to its own conversation, with a first-question fallback; it receives no summary, Substance Band, or independent recent-context entry. Topic search returns the parent once and identifies matching children for explicit inspection.

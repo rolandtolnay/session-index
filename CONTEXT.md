@@ -32,8 +32,16 @@ _Avoid_: Chat message, model context, transcript lookup
 An explicit user request from a Current Session Display to run the full indexing pass for the active Current Session before session shutdown.
 _Avoid_: Refresh, backfill, transcript generation
 
+**Indexed Conversation**:
+The searchable conversation that owns generated artifacts and indexed evidence, including any explicitly transferred Pi continuations.
+_Avoid_: Raw session, Current Session, concatenated history
+
+**Worktree Continuation**:
+A successful explicit Pi worktree transfer that continues the same Indexed Conversation in a new native session.
+_Avoid_: Fork, clone, shared Project
+
 **Canonical Session ID**:
-The short, provider-namespaced Session Index identifier for a session, distinct from its provider-native identity.
+The stable, short, provider-namespaced Session Index identifier for an Indexed Conversation, distinct from its provider-native identity.
 _Avoid_: Native ID, raw provider ID
 
 Provider namespaces: Claude uses `cc:`, Pi uses `pi:`, and Codex uses `codex:`.
@@ -141,15 +149,18 @@ _Avoid_: Observed child type, artifact title
 
 ## Relationships
 
-- Sessions in linked worktrees belong to the same **Project** while retaining distinct **Session Locations** and **Canonical Session IDs**.
+- Sessions in linked worktrees belong to the same **Project** while retaining distinct **Session Locations**; Project membership alone does not share a **Canonical Session ID**.
 - Independent clones, nested independent repositories, and unrelated non-repository folders are separate **Projects**, even when their names or remotes match.
 - A session's resolved **Project** membership survives removal of its worktree; shared membership does not make two **Session Locations** interchangeable for exact-checkout operations.
 
-- A **Current Session** has exactly one **Canonical Session ID**.
+- A **Current Session** resolves to one **Indexed Conversation** and its **Canonical Session ID**.
+- A **Worktree Continuation** retains the original **Indexed Conversation**, **Canonical Session ID**, and generated artifact paths while changing the current native origin.
+- An **Indexed Conversation** follows the selected continuing history, not a concatenation of overlapping Source Transcripts; contributing **Side Chats** and **Subagent Runs** remain its children.
+- Continuing a transferred ancestor with new conversation activity creates an independent **Indexed Conversation**; merely reopening it does not. Previously owned children remain with the continuing conversation.
 - A **Current Session** has exactly one **Source Transcript** when the provider exposes a session file.
 - Provider-internal Codex UI-title and approval-evaluator rollouts are not indexed conversations, even though Codex stores them beside Source Transcripts as `rollout-*.jsonl` files.
 - A **Top-Level Session** may contain zero or more **Subagent Runs**; nested Subagent Run conversations are not separate Top-Level Sessions. Codex child ownership comes from provider parent-thread metadata; historical child rows remain directly inspectable with `is_subagent=1`, while new child evidence is saved through its parent. Explicit user-created forks remain Top-Level Sessions.
-- A parented Pi clone becomes a separate indexed **Top-Level Session** only after raw entry identity proves that it contains a new user-and-assistant exchange; inherited history alone does not create another indexed conversation.
+- An ordinary parented Pi clone becomes a separate indexed **Top-Level Session** only after raw entry identity proves that it contains a new user-and-assistant exchange; inherited history alone does not create another indexed conversation. An explicit **Worktree Continuation** does not need another exchange to retain an already qualifying conversation.
 - Recent-session injection and cross-project ranking consider only **Top-Level Sessions**.
 - A session may own zero or more **Side Chats**; they are not independent sessions and do not receive **Session Summaries** or **Substance Bands**.
 - A **Side Chat** has one **Side Chat Transcript** and may have one **Side Chat Headline**; its first question supplies a routing preview until a headline is available.

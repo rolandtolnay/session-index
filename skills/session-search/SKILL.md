@@ -37,7 +37,7 @@ uv run ~/.pi/agent/skills/session-search/scripts/current.py --native # provider-
 uv run ~/.pi/agent/skills/session-search/scripts/current.py --json   # structured current-session metadata
 ```
 
-Use `current` only inside an active runtime exposing exact Session Index or provider-native identity. Codex resolves `CODEX_THREAD_ID` to exactly one active or archived rollout. It does not guess from latest sessions or the database.
+Use `current` only inside an active runtime exposing exact Session Index or provider-native identity. Codex resolves `CODEX_THREAD_ID` to exactly one active or archived rollout. It does not guess from latest sessions or database recency. For explicit Pi worktree transfers, `current` resolves the stable indexed owner and generated paths, while `--native` and `source_path` still identify the actual active raw session.
 
 ### snapshot — fresh Clean Transcript for commit intent
 
@@ -52,7 +52,7 @@ Use `snapshot` when commit intent needs the originating conversation **now**, ra
 
 For filesystem Security Guard integration, first use `--resolve-only`. It returns only `{session_id, native_session_id, source, source_path, leaf_id}` without opening/parsing the source or reading provider metadata. It applies the same identity, argument, positive `--max-chars`, and required Pi leaf validation as capture, but does not validate source existence, content, ancestry or worktree ownership yet. Exact indexed origin lookup remains read-only; Claude and Codex compatibility discovery uses filename globs only. Guard the returned path (and its canonical filesystem path) before invoking full capture with the returned explicit source identity and leaf. Full capture rejects final-file symlinks; the caller is responsible for guarding raw/resolved parent paths.
 
-Identity modes: exact runtime `SESSION_INDEX_*` (or Claude compatibility env / Codex `CODEX_THREAD_ID`); an exact indexed canonical `--session`; or all three explicit flags `--source`, `--source-path`, `--native-session-id` (Claude, Pi and Codex). Partial/mixed explicit identity flags fail. Pi always requires an exact leaf via `--leaf-id` or runtime `SESSION_INDEX_LEAF_ID`; obtain it from the originating runtime's `getLeafId()`, not the last file entry. An indexed Pi session does not store enough information to guess a leaf. Conflicting runtime/argument leaves fail; non-Pi leaves are unsupported.
+Identity modes: exact runtime `SESSION_INDEX_*` (or Claude compatibility env / Codex `CODEX_THREAD_ID`); an exact indexed canonical `--session`; or all three explicit flags `--source`, `--source-path`, `--native-session-id` (Claude, Pi and Codex). Partial/mixed explicit identity flags fail. Pi always requires an exact leaf via `--leaf-id` or runtime `SESSION_INDEX_LEAF_ID`; obtain it from the originating runtime's `getLeafId()`, not the last file entry. An indexed Pi session does not store enough information to guess a leaf. After an explicit transfer, `--session` uses that indexed conversation's current raw continuation; runtime and explicit-source modes use the invoking raw session even when it is an older contributing source. Their native-derived `session_id` is an origin key, not a generated-artifact lookup; use `current` for the stable indexed ID. Conflicting runtime/argument leaves fail; non-Pi leaves are unsupported.
 
 The source's native ID and recorded cwd must agree with the requested identity and `--cwd`'s exact Git worktree root, not a common repository directory or project grouping. Missing sources, ambiguous Claude source discovery (set `CLAUDE_TRANSCRIPT_PATH`), unknown IDs, broken Pi ancestry, malformed/incomplete JSONL (including an unfinished final line), missing user/assistant conversation and oversized context fail visibly. `--max-chars` defaults to 80000 and limits the full rendered transcript; nothing is silently truncated. Sources have a 64 MiB read guard. Linear sources use an initial byte-length cutoff; Pi selects only the supplied leaf's ancestry. Appends after capture are not included.
 
@@ -228,7 +228,7 @@ Press y to confirm deletion; Esc or n cancels. Run the browser in an interactive
 
 Codex Subagent Runs are linked to their parent and excluded from top-level discovery. Historical child rows with `is_subagent=1` remain inspectable by exact reference; exclude them from custom SQL counts of top-level conversations.
 
-Canonical session IDs use `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`; they are not provider-native IDs. Use `current --native` for provider resume/fork commands. Generated text normalizes recognized historical Session Index paths and Inspection References; raw provider logs remain untouched.
+Canonical session IDs use `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`; they are not provider-native IDs. Newly recorded explicit Pi worktree transfers retain one indexed ID and artifact set, including contributing child artifacts. Ordinary clones/forks and unmarked historical transfers remain independent. Continuing a transferred ancestor creates a separate indexed fork; merely reopening it does not. Use `current --native` for provider resume/fork commands. Generated text normalizes recognized historical Session Index paths and Inspection References; raw provider logs remain untouched.
 
 Generated artifacts are the normal evidence path:
 

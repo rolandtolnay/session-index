@@ -86,6 +86,12 @@ Side Chats receive child-only routing headlines asynchronously after closure, wi
 
 Saved children block automatic low-value pruning. Explicit parent deletion removes owned generated child artifacts but retains source JSONL. Manual exports and imports remain separate actions; previously discarded Side Chats cannot be recovered. This requires the matching shared Side Chat producer in the local Pi harness, not just the Session Index extension; reload Pi after updating both.
 
+## Pi worktree continuations
+
+New explicit transfers through the local Pi Branch and Close Branch workflows retain one indexed conversation, its original ID, and its generated paths. The selected continuation supplies the main history once; Side Chats and Subagent Runs from contributing sources remain accessible under that owner. Successful transfers and completed closes queue refresh without another exchange or a Linear update. Reload Pi after updating both repositories.
+
+Ordinary forks/clones and historical unmarked transfers are not consolidated. Reopening a transferred ancestor does not create a record; new conversation activity there creates a separate indexed fork, with previously owned children staying with the original conversation. Raw Pi files and native identities remain unchanged.
+
 ## Backfill existing conversations
 
 Hooks/extensions index new Claude, Pi, and Codex conversations automatically. Backfill remains the historical import and repair path.
@@ -253,7 +259,7 @@ In Codex, use `$current-session`. The dedicated skill runs the focused `--cleane
 
 `current --json` uses Session Index terminology:
 
-- `session_id` — Canonical Session ID: `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`, derived deterministically from the provider and full native ID.
+- `session_id` — Canonical Session ID: `cc:<16-hex>`, `pi:<16-hex>`, or `codex:<16-hex>`. Explicit Pi worktree continuations retain the original indexed identity; independent sessions derive it from the provider and full native ID.
 - `native_session_id` — provider-native session ID without Session Index namespacing.
 - `source` — provider source, currently `claude`, `pi`, or `codex`.
 - `source_path` — raw provider Source Transcript path.
@@ -268,7 +274,7 @@ The Session Index-owned runtime environment contract is:
 
 | Variable | Required | Meaning |
 |----------|----------|---------|
-| `SESSION_INDEX_SESSION_ID` | yes | Canonical Session ID |
+| `SESSION_INDEX_SESSION_ID` | yes | Native-derived identity key; `current` resolves explicit Pi continuation ownership for generated artifacts |
 | `SESSION_INDEX_NATIVE_SESSION_ID` | yes | Provider-native session ID |
 | `SESSION_INDEX_SOURCE` | yes | Provider source (`claude`, `pi`, or `codex`) |
 | `SESSION_INDEX_SOURCE_PATH` | yes | Raw provider Source Transcript path |
@@ -276,9 +282,9 @@ The Session Index-owned runtime environment contract is:
 
 `SESSION_INDEX_*` variables are the public contract and take precedence. Claude-native environment can be used as compatibility input when it identifies one exact Claude source transcript. Codex compatibility uses `CODEX_THREAD_ID` and requires exactly one matching rollout under the active or archived Codex session directories.
 
-`current` does not require a database row. It derives `transcript_path` and `tool_log_path` from the Canonical Session ID using the standard artifact paths under `~/.session-index/transcripts/`, so it can work before full indexing has completed. Because those paths can be deterministic before the artifacts are written, `current --path` prints the path on stdout and warns on stderr when the Clean Transcript file does not exist yet; use `current --json` when callers need machine-readable existence flags.
+`current` does not require an indexed session row. For Pi, it consults recorded explicit transfers to resolve the indexed owner while retaining the active raw native ID and source path. It derives `transcript_path` and `tool_log_path` from the Canonical Session ID using the standard artifact paths under `~/.session-index/transcripts/`, so it can work before full indexing has completed. Because those paths can be deterministic before the artifacts are written, `current --path` prints the path on stdout and warns on stderr when the Clean Transcript file does not exist yet; use `current --json` when callers need machine-readable existence flags.
 
-If runtime identity is missing or inconsistent, `current` exits non-zero with a clear error. v1 intentionally does not guess from the latest session, focused terminal, runtime registry, or database. Subagent transcript paths are out of scope for v1; `current` returns only the main session artifact paths.
+If runtime identity is missing or inconsistent, `current` exits non-zero with a clear error. It does not guess from the latest session, focused terminal, or database recency. Subagent transcript paths are out of scope for v1; `current` returns only the main session artifact paths.
 
 ## Add to global agent instructions
 

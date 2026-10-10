@@ -1,6 +1,6 @@
 # Short canonical identity, preserved native identity
 
-Superseded for hash length by [ADR 0003](0003-sixteen-hex-session-ids.md); native-identity and clean-break boundaries remain unchanged.
+Superseded for hash length by [ADR 0003](0003-sixteen-hex-session-ids.md) and for explicit Pi worktree continuation ownership by [ADR 0008](0008-explicit-pi-worktree-continuations.md); native-identity and clean-break boundaries remain unchanged.
 
 Canonical Session IDs use `cc:`, `pi:`, or `codex:` plus the first 12 lowercase hexadecimal characters of SHA-256 over UTF-8 `source:native_session_id` (`source` remains `claude`, `pi`, or `codex`). Hashing rather than truncating provider UUIDs avoids the timestamp-prefix collisions already present in Pi and Codex UUIDv7 sessions, while retaining deterministic, database-independent artifact paths. Native IDs remain explicit and unchanged; collisions fail closed rather than merging identities.
 

@@ -1,0 +1,9 @@
+# Explicit Pi worktree transfers retain indexed conversation identity
+
+Supersedes the one-native-session-to-one-canonical-ID relationship in [ADR 0002](0002-short-canonical-session-ids.md) and [ADR 0003](0003-sixteen-hex-session-ids.md), and extends the child ownership boundary in [ADR 0004](0004-parent-owned-side-chat-archives.md). Provider prefixes, sixteen-hex IDs, collision rejection, and unchanged raw identities remain in force.
+
+A successful Branch Workflow or Close Branch Workflow transfer advances one Indexed Conversation while preserving its original public ID and generated artifact paths. The current native ID and raw path identify the actual continuation, not the original raw session. Explicit transfer records—not parent ancestry, shared Project membership, or content similarity—establish ownership. Ordinary forks, clones, pruning-created sessions, and historical unmarked chains remain independent.
+
+The selected continuation supplies the main conversation once. Contributing sources retain their child ownership, allowing Side Chats and Subagent Runs to remain accessible without adopting copied archives from unrelated clones. A source checkpoint distinguishes an unchanged transferred ancestor from new conversation activity: reopening the ancestor does nothing; continuing it establishes a separate indexed fork whose new children do not migrate back to the original conversation.
+
+Transfer recording and refresh enqueue are acknowledged before the workflow returns; artifact generation and description models remain asynchronous. Publication rechecks ownership so delayed source work cannot replace the newer continuation. Current Session artifact lookup resolves the indexed owner, while exact-source snapshots retain the invoking native origin and selected leaf. No raw session is rewritten or deleted for consolidation.
