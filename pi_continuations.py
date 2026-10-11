@@ -135,6 +135,17 @@ def _assert_owner(conn, sid: str, key: str, native: str, path: str, *, header: d
                  (sid, key, path, native, started_at))
 
 
+def _matches_persisted_entry(saved: dict, live: dict) -> bool:
+    # Custom-message details are extension-owned metadata, not message content.
+    # Extensions can update them in memory after the initial entry was appended
+    # (for example, a commit progressing from running to success). The live
+    # snapshot must retain those updates without rewriting the source file.
+    if saved.get("type") == live.get("type") == "custom_message":
+        saved = {key: value for key, value in saved.items() if key != "details"}
+        live = {key: value for key, value in live.items() if key != "details"}
+    return saved == live
+
+
 def record_transfer(source_path: str, destination_path: str, *, source_entries: list[dict]) -> str:
     """Register a successful handoff from [getHeader(), *getEntries()].
 
@@ -181,7 +192,7 @@ def record_transfer(source_path: str, destination_path: str, *, source_entries: 
             # Only conflicting captured entries invalidate the source; later
             # activity must not move the handoff checkpoint forward.
             if persisted_source is not None and any(
-                e.get("id") in live and live[e["id"]] != e for e in persisted_source[1:]
+                e.get("id") in live and not _matches_persisted_entry(e, live[e["id"]]) for e in persisted_source[1:]
             ):
                 raise ValueError("Live Pi checkpoint does not belong to the source tree")
             sid, key, publishable, _ = resolve(conn, native, source_path, [source[0], *checkpoint])

@@ -114,13 +114,25 @@ def test_resolve_only_does_not_open_raw_continuation(transferred, monkeypatch):
         assert origin["source_path"] == b and origin["native_session_id"] == "native-b"
 
 
-def test_workflow_acknowledges_durable_job_and_delayed_ancestor_cannot_regress(transfer_pair, tmp_path, monkeypatch, capsys):
+def test_workflow_acknowledges_live_extension_details_and_delayed_ancestor_cannot_regress(transfer_pair, tmp_path, monkeypatch, capsys):
     import io
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
     import pi_index
     import session_refresh
     import _session_refresh_worker as worker
     _, _, a, b, owner = transfer_pair
+    # /commit persists the initial message, then updates extension-owned details
+    # in memory. The handoff copies that live state, not the stale disk metadata.
+    saved = [json.loads(line) for line in Path(a).read_text().splitlines()]
+    saved.append({"type": "custom_message", "id": "commit", "parentId": "selected",
+                  "timestamp": "2026-10-01T10:03:30Z", "customType": "commit-command",
+                  "content": "commit()", "display": True, "details": {"status": "running"}})
+    write(Path(a), saved)
+    captured = json.loads(json.dumps(saved))
+    captured[-1]["details"] = {"status": "success", "result": {"commits": ["abc123"]}}
+    destination_header = json.loads(Path(b).read_text().splitlines()[0])
+    write(Path(b), [destination_header, *captured[1:]])
+    originals = {p: Path(p).read_bytes() for p in (a, b)}
     monkeypatch.setattr(session_refresh, "REFRESH_JOBS_DIR", str(tmp_path / "jobs"))
     monkeypatch.setattr(session_refresh, "_ensure_worker", lambda *_: 0)
     monkeypatch.setattr(pi_index, "log", lambda *_: None)
@@ -130,9 +142,7 @@ def test_workflow_acknowledges_durable_job_and_delayed_ancestor_cannot_regress(t
     monkeypatch.setenv("SESSION_INDEX_NATIVE_SESSION_ID", "stale-process-origin")
     monkeypatch.setattr(sys, "argv", ["pi_index.py", "--mode", "workflow", "--session-file", b,
                                     "--transfer-source-file", a])
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
-        [json.loads(line) for line in Path(a).read_text().splitlines()]
-    )))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(captured)))
     pi_index.main()
     assert json.loads(capsys.readouterr().out) == {"session_id": owner, "queued": True}
     pending = list((tmp_path / "jobs").glob("**/pending/*.json"))
@@ -147,3 +157,4 @@ def test_workflow_acknowledges_durable_job_and_delayed_ancestor_cannot_regress(t
         rows = conn.execute("SELECT session_id, native_session_id, source_path FROM sessions").fetchall()
         assert [tuple(row) for row in rows] == [(owner, "native-b", b)]
     assert not list((tmp_path / "jobs").glob("**/pending/*.json"))
+    assert all(Path(p).read_bytes() == content for p, content in originals.items())

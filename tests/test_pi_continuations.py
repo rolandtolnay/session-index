@@ -448,6 +448,28 @@ def test_full_live_snapshot_still_validates_native_source_and_copied_tree(store)
     assert not rows("pi_transfers")
 
 
+def test_live_extension_details_do_not_relax_content_or_destination_copy_checks(store):
+    tmp, _ = store
+    custom = {"type": "custom_message", "id": "progress", "parentId": "oldr",
+              "customType": "workflow-progress", "content": "Working", "details": {"status": "running"}}
+    source = raw(tmp / "a.jsonl", "A", [*exchange("old"), custom])
+    live = [json.loads(line) for line in source.read_text().splitlines()]
+    live[-1]["details"] = {"status": "success"}
+    # Updating metadata does not permit replacing the actual custom message.
+    live[-1]["content"] = "Different instructions"
+    destination = raw(tmp / "b.jsonl", "B", live[1:], source)
+    with pytest.raises(ValueError, match="source tree"):
+        transfer(source, destination, source_entries=live)
+    live[-1]["content"] = custom["content"]
+    # The destination must retain the latest details, not the stale disk copy.
+    raw(destination, "B", [*exchange("old"), custom], source)
+    with pytest.raises(ValueError, match="preserve"):
+        transfer(source, destination, source_entries=live)
+    assert not rows("pi_transfers")
+    raw(destination, "B", live[1:], source)
+    assert transfer(source, destination, source_entries=live) == canonical_session_id("pi", "A")
+
+
 def test_fork_collision_checks_not_bypassed(store):
     tmp, _ = store
     a = raw(tmp / "a.jsonl", "A", exchange("old"))
