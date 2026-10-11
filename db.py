@@ -89,6 +89,11 @@ CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
     VALUES (new.rowid, new.user_messages, new.summary, new.files_touched, new.project);
 END;
 
+-- Retired canonical IDs whose evidence ordinals still identify the owner rows.
+CREATE TABLE IF NOT EXISTS pi_session_aliases (
+    alias_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS pi_conversation_owners (
     session_id TEXT PRIMARY KEY,
     identity_key TEXT NOT NULL UNIQUE,
@@ -747,10 +752,10 @@ def get_session(
     conn: sqlite3.Connection,
     identifier: str,
 ) -> dict[str, Any] | None:
-    """Look up an indexed ID, native origin, or unambiguous 8+ character prefix.
+    """Look up an indexed ID, historical alias, native origin, or 8+ prefix.
 
-    Exact current identities take precedence over contributing Pi native origins,
-    so an indexed fork resumed from an ancestor remains independently retrievable.
+    Exact current identities take precedence over aliases and contributing Pi
+    native origins, so an indexed fork remains independently retrievable.
     """
     rows = conn.execute(
         """
@@ -761,6 +766,18 @@ def get_session(
     ).fetchall()
     if rows:
         return dict(rows[0]) if len(rows) == 1 else None
+
+    # Read-only callers may reach an older store before schema initialization.
+    has_aliases = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='pi_session_aliases'",
+    ).fetchone() is not None
+    if has_aliases:
+        row = conn.execute(
+            "SELECT s.* FROM sessions s JOIN pi_session_aliases a "
+            "ON a.owner_id=s.session_id WHERE a.alias_id=?", (identifier,),
+        ).fetchone()
+        if row:
+            return dict(row)
 
     has_continuations = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE name='pi_continuation_sources'",
@@ -786,7 +803,12 @@ def get_session(
                 "SELECT s.* FROM sessions s JOIN pi_continuation_sources p "
                 "ON p.owner_id=s.session_id WHERE p.native_session_id LIKE ?", (f"{identifier}%",),
             ).fetchall()
-        # Multiple native origins of one conversation are still one candidate.
+        if has_aliases:
+            rows += conn.execute(
+                "SELECT s.* FROM sessions s JOIN pi_session_aliases a "
+                "ON a.owner_id=s.session_id WHERE a.alias_id LIKE ?", (f"{identifier}%",),
+            ).fetchall()
+        # Multiple origins and aliases of one conversation are one candidate.
         by_sid = {row["session_id"]: row for row in rows}
         if len(by_sid) == 1:
             return dict(next(iter(by_sid.values())))
@@ -1063,6 +1085,8 @@ def delete_sessions(conn: sqlite3.Connection, session_ids: list[str], *, commit:
     )
     for table, key_column in fact_owners:
         conn.execute(f"DELETE FROM {table} WHERE {key_column} IN ({placeholders})", ids)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='pi_session_aliases'").fetchone():
+        conn.execute(f"DELETE FROM pi_session_aliases WHERE owner_id IN ({placeholders})", ids)
     cursor = conn.execute(f"DELETE FROM sessions WHERE session_id IN ({placeholders})", ids)
     if commit:
         conn.commit()

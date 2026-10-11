@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import replace
 from typing import Any
 
 from db import get_session
@@ -309,6 +310,9 @@ def inspect_ref(
     except InspectionRefError as e:
         raise EvidenceInspectError(str(e), code="invalid_ref", ref=raw_ref) from e
 
+    # Resolve only after parsing: aliases preserve event ordinals, not syntax.
+    session = _require_session(conn, ref.session_id, format_ref(ref))
+    ref = replace(ref, session_id=session["session_id"])
     canonical = format_ref(ref)
     if isinstance(ref, SessionRef):
         return _inspect_session(conn, canonical, ref, q, max_snippets)

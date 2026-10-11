@@ -1081,9 +1081,18 @@ def _check_integrity(conn) -> dict:
         if not os.path.exists(row[1]):
             issues["dangling_transcript"].append(row[0])
 
+    # Retired canonical IDs retain immutable compatibility artifacts after a
+    # reviewed Pi consolidation. They are not orphaned while their owner exists.
+    aliases = set()
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE name='pi_session_aliases'").fetchone():
+        aliases = {row[0] for row in conn.execute(
+            "SELECT a.alias_id FROM pi_session_aliases a JOIN sessions s ON s.session_id=a.owner_id"
+        )}
+
     # Orphaned transcript files
     if os.path.isdir(TRANSCRIPT_DIR):
-        db_paths = set()
+        db_paths = {os.path.join(TRANSCRIPT_DIR, sid + suffix)
+                    for sid in aliases for suffix in (".md", ".tools.md")}
         cursor = conn.execute(
             "SELECT transcript_path FROM sessions WHERE transcript_path IS NOT NULL"
         )
@@ -1115,8 +1124,8 @@ def _check_integrity(conn) -> dict:
 
     # Child directories may contain Subagent Runs, Side Chats, or both.
     if os.path.isdir(TRANSCRIPT_DIR):
-        # Retain any directory with an indexed child owner.
-        db_subagent_sids = set()
+        # Retain any directory with an indexed child owner or historical alias.
+        db_subagent_sids = set(aliases)
         cursor = conn.execute(
             "SELECT session_id FROM sessions "
             "WHERE subagent_transcripts IS NOT NULL "

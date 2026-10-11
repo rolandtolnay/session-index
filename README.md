@@ -90,7 +90,7 @@ Saved children block automatic low-value pruning. Explicit parent deletion remov
 
 New explicit transfers through the local Pi Branch and Close Branch workflows retain one indexed conversation, its original ID, and its generated paths. The selected continuation supplies the main history once; Side Chats and Subagent Runs from contributing sources remain accessible under that owner. Successful transfers and completed closes queue refresh without another exchange or a Linear update. Reload Pi after updating both repositories.
 
-Ordinary forks/clones and historical unmarked transfers are not consolidated. Reopening a transferred ancestor does not create a record; new conversation activity there creates a separate indexed fork, with previously owned children staying with the original conversation. Raw Pi files and native identities remain unchanged.
+Ordinary forks/clones and historical unmarked transfers are not automatically consolidated. The optional [one-time Pi consolidation](docs/pi-consolidation.md) rehearses high-confidence historical worktree chains and requires approval before applying them. Reopening a transferred ancestor does not create a record; new conversation activity there creates a separate indexed fork, with previously owned children staying with the original conversation. Raw Pi files and native identities remain unchanged.
 
 ## Backfill existing conversations
 
