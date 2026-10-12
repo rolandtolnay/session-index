@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -23,8 +23,10 @@ function fixture(t: any, mode = "ack") {
 		if (process.argv[3] === 'error') { console.error('enqueue failed'); process.exitCode = 0; }
 	});`);
 	const notifications: string[] = [];
+	const entries: any[] = [];
+	writeFileSync(path.join(root, "destination.jsonl"), "");
 	const ctx = {
-		sessionManager: { getSessionFile: () => path.join(root, "destination.jsonl"), getSessionId: () => "destination-native", getLeafId: () => "selected-leaf" },
+		sessionManager: { getSessionFile: () => path.join(root, "destination.jsonl"), getSessionId: () => "destination-native", getLeafId: () => "selected-leaf", getEntries: () => entries },
 		ui: { notify(message: string) { notifications.push(message); } },
 	};
 	const calls: any[] = [];
@@ -66,6 +68,41 @@ test("in-place completion enqueues without transfer flags or a new exchange", as
 	assert.equal(f.receipt().input, "");
 });
 
+test("a fresh unpersisted session with only setup and custom entries is a quiet no-op", async (t) => {
+	const f = fixture(t);
+	const sessionFile = f.ctx.sessionManager.getSessionFile();
+	rmSync(sessionFile);
+	f.ctx.sessionManager.getEntries().push(
+		{ type: "model_change" },
+		{ type: "custom_message", message: { role: "custom" } },
+	);
+	await f.refresh({ ctx: f.ctx });
+	assert.deepEqual(f.notifications, []);
+	assert.equal(f.calls.length, 0);
+	assert.equal(existsSync(sessionFile), false, "refresh must not materialize an empty raw session");
+});
+
+test("a missing source with conversation warns instead of being treated as empty", async (t) => {
+	const f = fixture(t);
+	const sessionFile = f.ctx.sessionManager.getSessionFile();
+	rmSync(sessionFile);
+	f.ctx.sessionManager.getEntries().push({ type: "message", message: { role: "user", content: "hello" } });
+	await f.refresh({ ctx: f.ctx });
+	assert.equal(f.notifications.length, 1);
+	assert.ok(f.notifications[0].includes(sessionFile));
+	assert.equal(f.calls.length, 0);
+});
+
+test("a missing transfer destination warns even when its conversation is empty", async (t) => {
+	const f = fixture(t);
+	const sessionFile = f.ctx.sessionManager.getSessionFile();
+	rmSync(sessionFile);
+	await f.refresh({ ctx: f.ctx, transfer: { sourceFile: path.join(f.root, "source.jsonl"), entries: [] } });
+	assert.equal(f.notifications.length, 1);
+	assert.ok(f.notifications[0].includes(sessionFile));
+	assert.equal(f.calls.length, 0);
+});
+
 for (const mode of ["error", "false-ack", "hang"]) {
 	test(`an unacknowledged ${mode} subprocess is bounded and non-fatal`, async (t) => {
 		const f = fixture(t, mode);
@@ -76,7 +113,8 @@ for (const mode of ["error", "false-ack", "hang"]) {
 	});
 }
 
-test("spawn and notification errors do not reject the workflow", async () => {
+test("spawn and notification errors do not reject the workflow", async (t) => {
+	const f = fixture(t);
 	const refresh = createWorkflowRefresh({ spawnProcess: (() => { throw new Error("no uv"); }) as typeof spawn });
-	await refresh({ ctx: { sessionManager: { getSessionFile: () => "/fixture.jsonl", getSessionId: () => "native" }, ui: { notify() { throw new Error("UI unavailable"); } } } });
+	await refresh({ ctx: { ...f.ctx, ui: { notify() { throw new Error("UI unavailable"); } } } });
 });

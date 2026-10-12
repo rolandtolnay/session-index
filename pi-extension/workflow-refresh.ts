@@ -1,11 +1,12 @@
+import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { buildSessionIndexEnv, overlaySessionIndexEnv } from "./session-index-env.ts";
 
 export interface WorkflowRefreshInput {
 	ctx: {
-		sessionManager: Parameters<typeof buildSessionIndexEnv>[0];
+		sessionManager: Parameters<typeof buildSessionIndexEnv>[0] & Pick<SessionManager, "getEntries">;
 		ui: { notify(message: string, type: "warning"): void };
 	};
 	transfer?: { sourceFile: string | undefined; entries: unknown[] };
@@ -19,6 +20,14 @@ export function createWorkflowRefresh(deps: { spawnProcess?: typeof spawn; timeo
 		try {
 			const sessionEnv = buildSessionIndexEnv(ctx.sessionManager);
 			if (!sessionEnv) throw new Error("The current Pi session has no persisted native origin.");
+			if (!existsSync(sessionEnv.SESSION_INDEX_SOURCE_PATH)) {
+				// Pi assigns a path before persisting: setup/custom entries alone do
+				// not create a file. Only that fresh in-place case has nothing to refresh.
+				const hasConversation = ctx.sessionManager.getEntries().some((entry) =>
+					entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"));
+				if (!transfer && !hasConversation) return;
+				throw new Error(`Missing Pi session file: ${sessionEnv.SESSION_INDEX_SOURCE_PATH}`);
+			}
 			const repoRoot = path.resolve(realpathSync(deps.extensionDir ?? import.meta.dirname), "..");
 			const args = ["run", path.join(repoRoot, "hooks", "pi_index.py"), "--mode", "workflow", "--session-file", sessionEnv.SESSION_INDEX_SOURCE_PATH];
 			if (transfer?.sourceFile) args.push("--transfer-source-file", transfer.sourceFile);
