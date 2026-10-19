@@ -19,7 +19,6 @@ from pathlib import Path
 
 import db
 from parser import clean_user_messages
-from recent_context import RECENT_DAYS
 
 
 def _classify_snapshot(session: dict) -> tuple[tuple[str, str] | None, tuple[int, int] | None]:
@@ -44,7 +43,7 @@ def _classify_snapshot(session: dict) -> tuple[tuple[str, str] | None, tuple[int
 
 def backfill_recent_substance(*, apply: bool = False, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
-    since = now - timedelta(days=RECENT_DAYS)
+    since = now - timedelta(days=7)
     conn = db.get_connection() if apply else db._get_readonly_connection()
     try:
         if apply:

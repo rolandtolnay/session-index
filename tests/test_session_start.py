@@ -15,7 +15,7 @@ import pi_context
 import recent_context
 import session_start
 from db import init_db, upsert_session
-from recent_context import _format_session, select_weekly_sessions
+from recent_context import _format_session, select_active_day_sessions
 from project_identity import ProjectIdentity
 
 
@@ -80,7 +80,7 @@ def test_format_session_can_omit_redundant_project(tmp_path):
     assert "Added compact session headlines" in result
 
 
-def test_weekly_selection_prefers_substance_then_recency_and_keeps_unknown():
+def test_active_day_selection_prefers_substance_then_recency_and_keeps_unknown():
     def session(sid, band, started, **extra):
         return dict(session_id=sid, substance_band=band, started_at=started, **extra)
 
@@ -92,17 +92,17 @@ def test_weekly_selection_prefers_substance_then_recency_and_keeps_unknown():
         session("substantial-new", "substantial", "2026-09-17T09:00:00Z"),
         session("offset", "substantial", "2026-09-17T10:00:00+02:00"),
     ]
-    selected = select_weekly_sessions(sessions, limit=5)
+    selected = select_active_day_sessions(sessions, limit=5)
     assert [s["session_id"] for s in selected] == [
         "substantial-new", "offset", "substantial-old", "useful-new", "unknown",
     ]
     # Do not pad with low-value material, even when there is spare capacity.
-    assert select_weekly_sessions(sessions, limit=21) == selected
-    assert select_weekly_sessions(sessions, limit=0) == []
+    assert select_active_day_sessions(sessions, limit=21) == selected
+    assert select_active_day_sessions(sessions, limit=0) == []
     # Identical instants have a deterministic tie-break independent of input order.
     a = session("a", "useful", "2026-09-17T09:00:00Z")
     b = session("b", "useful", "2026-09-17T11:00:00+02:00")
-    assert select_weekly_sessions([a, b], limit=1) == [b]
+    assert select_active_day_sessions([a, b], limit=1) == [b]
 
 
 def test_group_coverage_reserves_best_representative_and_only_overflows_for_coverage():
@@ -110,8 +110,8 @@ def test_group_coverage_reserves_best_representative_and_only_overflows_for_cove
                      started_at=f"2026-09-17T10:{i:02d}:00Z") for i in range(20)]
     # Distinct paths sharing the same basename must each be represented.
     sessions += [dict(session_id=f"quiet-{i}", project_path=f"/workspace-{i}/same-name",
-                      substance_band="low_value", started_at="2026-09-11T00:00:00Z") for i in range(2)]
-    selected = select_weekly_sessions(sessions, limit=14, ensure_project_coverage=True)
+                      substance_band="low_value", started_at="2026-09-17T00:00:00Z") for i in range(2)]
+    selected = select_active_day_sessions(sessions, limit=14, ensure_project_coverage=True)
     assert len(selected) == 14
     assert {s["project_path"] for s in selected} == {"/busy", "/workspace-0/same-name", "/workspace-1/same-name"}
     assert "busy-0" not in {s["session_id"] for s in selected}
@@ -119,10 +119,106 @@ def test_group_coverage_reserves_best_representative_and_only_overflows_for_cove
 
     sessions += [dict(session_id=f"extra-{i}", project_path=f"/extra-{i}",
                       substance_band="useful", started_at="2026-09-11T00:00:00Z") for i in range(13)]
-    selected = select_weekly_sessions(sessions, limit=14, ensure_project_coverage=True)
+    selected = select_active_day_sessions(sessions, limit=14, ensure_project_coverage=True)
     assert len(selected) == 16
     assert len({s["project_path"] for s in selected}) == 16
     assert sum(s["project_path"] == "/busy" for s in selected) == 1
+
+
+def test_active_day_selection_uses_utc_dates_and_ignores_low_value_only_days():
+    sessions = [dict(session_id=f"day-{day}", project_path="/busy", substance_band="useful",
+                     started_at=f"2026-01-{day:02d}T12:00:00Z") for day in range(1, 9)]
+    sessions += [
+        dict(session_id="same-utc-day", project_path="/busy", substance_band=None,
+             started_at="2026-01-09T00:30:00+02:00"),
+        dict(session_id="low-only-day", project_path="/quiet", substance_band="low_value",
+             started_at="2026-02-01T12:00:00Z"),
+        dict(session_id="coverage", project_path="/quiet", substance_band="low_value",
+             started_at="2026-01-08T12:00:00Z"),
+    ]
+    selected = select_active_day_sessions(sessions, limit=21, ensure_project_coverage=True)
+    assert {s["session_id"] for s in selected} == {
+        *(f"day-{day}" for day in range(2, 9)), "same-utc-day", "coverage",
+    }
+    assert select_active_day_sessions([sessions[-1]], limit=14, ensure_project_coverage=True) == []
+
+
+def test_recent_context_preserves_inactive_pools_and_advances_only_with_eligible_work(tmp_path, monkeypatch):
+    class Clock(datetime):
+        instant = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.instant
+
+    monkeypatch.setattr(recent_context, "datetime", Clock)
+    monkeypatch.setattr(db, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "sessions.db"))
+    roots = {name: tmp_path / name for name in ("current", "alpha", "beta", "other")}
+    monkeypatch.setattr(recent_context, "resolve_project", lambda cwd: _identity(roots["current"]))
+    config = tmp_path / "groups.json"
+    config.write_text(json.dumps({"version": 1, "groups": [
+        {"name": name, "projects": [str(roots["current"]), str(roots[name])], "files": ["context.md"]}
+        for name in ("alpha", "beta")
+    ]}))
+    monkeypatch.setattr(recent_context, "PROJECT_CONTEXT_CONFIG_PATH", str(config))
+    conn = db.get_connection()
+    init_db(conn)
+
+    def add(sid, pool, started_at, **extra):
+        values = dict(session_id=sid, project=pool, project_path=str(roots[pool]),
+                      started_at=started_at, headline="Useful work", substance_band="useful",
+                      transcript_path=_transcript(tmp_path, sid))
+        values.update(extra)
+        upsert_session(conn, **values)
+
+    def sections():
+        result = {}
+        current = None
+        for line in recent_context.build_recent_context(str(roots["current"])).splitlines():
+            if line.startswith("## "):
+                current = line.split(" (", 1)[0]
+                result[current] = set()
+            elif current and line.startswith("- "):
+                result[current].add(line.split("`", 2)[1].removesuffix(".md"))
+        return result
+
+    try:
+        add("current", "current", "2025-01-01T12:00:00Z")
+        for month, pool in enumerate(("alpha", "beta", "other"), 1):
+            for day in range(1, 9):
+                add(f"{pool}-{day}", pool, f"2026-{month:02d}-{day:02d}T12:00:00Z")
+        baseline = sections()
+        for heading, pool in (("## alpha group", "alpha"), ("## beta group", "beta"), ("## Other projects", "other")):
+            assert baseline[heading] == {f"{pool}-{day}" for day in range(2, 9)}
+        assert baseline["## current"] == {"current"}
+        Clock.instant += timedelta(days=30)
+        assert sections() == baseline
+
+        # None of these dates may displace a real active day in any pool.
+        for pool in ("alpha", "beta", "other"):
+            for day in range(1, 9):
+                started = f"2026-05-{day:02d}T12:00:00Z"
+                add(f"{pool}-low-{day}", pool, started, substance_band="low_value")
+                add(f"{pool}-hidden-{day}", pool, started)
+                db.set_hidden_from_recents(conn, f"{pool}-hidden-{day}", True)
+                add(f"{pool}-missing-{day}", pool, started, transcript_path=str(tmp_path / "absent.md"))
+                add(f"{pool}-child-{day}", pool, started, is_subagent=1)
+                add(f"{pool}-no-headline-{day}", pool, started, headline="")
+        assert sections() == baseline
+
+        add("resumed", "alpha", "2026-06-01T12:00:00Z")
+        resumed = sections()
+        assert resumed["## alpha group"] == {"resumed", *(f"alpha-{day}" for day in range(3, 9))}
+        assert resumed["## beta group"] == baseline["## beta group"]
+        assert resumed["## Other projects"] == baseline["## Other projects"]
+        add("unrelated", "other", "2026-06-02T12:00:00Z")
+        after_other = sections()
+        assert after_other["## alpha group"] == resumed["## alpha group"]
+        assert after_other["## beta group"] == baseline["## beta group"]
+        assert after_other["## Other projects"] == {"unrelated", *(f"other-{day}" for day in range(3, 9))}
+    finally:
+        conn.close()
 
 
 def test_build_recent_context_limits_filters_and_instructs(tmp_path, monkeypatch):
@@ -225,7 +321,7 @@ def test_build_recent_context_limits_filters_and_instructs(tmp_path, monkeypatch
     assert "Clean Transcript:" not in context
     assert "[pi]" not in context
     assert "## current (latest 7)" in context
-    assert "## Other projects (top 21 from the last 7 days)" in context
+    assert "## Other projects (top 21 from the last 7 active days)" in context
     current_section, cross_section = context.split("## Other projects", 1)
     assert "branch-0" in current_section and "branch-6" in current_section
     assert "branch-7" not in context
@@ -358,8 +454,8 @@ def test_build_recent_context_surfaces_matching_project_group_separately(tmp_pat
     assert context is not None
     assert context.count(".md`") == 42
     assert "## synapto-current (latest 7)" in context
-    assert "## synapto-systems group (top 14 from the last 7 days)" in context
-    assert "## Other projects (top 21 from the last 7 days)" in context
+    assert "## synapto-systems group (top 14 from the last 7 active days)" in context
+    assert "## Other projects (top 21 from the last 7 active days)" in context
 
     _current_section, remainder = context.split("## synapto-systems group", 1)
     group_section, other_section = remainder.split("## Other projects", 1)

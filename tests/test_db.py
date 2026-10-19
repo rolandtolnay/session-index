@@ -688,7 +688,7 @@ def test_run_select_allows_literal_semicolons_but_blocks_multi_statements():
         db._run_select(conn, "SELECT 1; SELECT 2")
 
 
-def test_weekly_headline_queries_use_instant_bounds_and_top_level_eligibility():
+def test_headline_candidates_keep_history_but_exclude_future_invalid_and_nested_sessions():
     conn = _make_conn()
     times = {
         "at-start": "2026-09-10T02:00:00+02:00",
@@ -703,9 +703,9 @@ def test_weekly_headline_queries_use_instant_bounds_and_top_level_eligibility():
                        source_path="/parent/run-0/session.jsonl" if sid == "nested" else "/top/session.jsonl",
                        started_at=started_at, headline="A session", transcript_path="/transcripts/session.md",
                        substance_band="substantial", user_messages="Large input should not be loaded")
-    group = db.get_headlined_by_project_paths(conn, ["/other"], since="2026-09-10T00:00:00Z", until="2026-09-17T00:00:00Z")
-    cross = db.get_headlined_cross_project(conn, "2026-09-10T00:00:00Z", "current", until="2026-09-17T00:00:00Z")
+    group = db.get_headlined_by_project_paths(conn, ["/other"], until="2026-09-17T00:00:00Z")
+    cross = db.get_headlined_cross_project(conn, "current", until="2026-09-17T00:00:00Z")
     assert group == cross
-    assert [s["session_id"] for s in group] == ["at-end", "at-start"]
+    assert [s["session_id"] for s in group] == ["at-end", "at-start", "old"]
     assert all("user_messages" not in s for s in group)
     conn.close()

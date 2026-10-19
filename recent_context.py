@@ -5,7 +5,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from project_identity import resolve_project
@@ -13,7 +13,7 @@ from project_identity import resolve_project
 SAME_PROJECT_LIMIT = 7
 PROJECT_GROUP_LIMIT = 14
 CROSS_PROJECT_LIMIT = 21
-RECENT_DAYS = 7
+ACTIVE_DAYS = 7
 PROJECT_CONTEXT_CONFIG_PATH = os.path.expanduser("~/.pi/agent/project-context.json")
 
 
@@ -55,18 +55,27 @@ def _recency_key(session: dict[str, Any]) -> tuple[datetime, str]:
     return started, session.get("session_id") or ""
 
 
-def select_weekly_sessions(
+def select_active_day_sessions(
     sessions: list[dict[str, Any]], *, limit: int, ensure_project_coverage: bool = False,
 ) -> list[dict[str, Any]]:
-    """Select substance bands newest-first; group coverage may exceed the soft limit.
+    """Rank a pool's seven most recent active UTC dates, independent of elapsed time.
 
-    Candidates are already restricted to the week and have clean transcripts.
-    Unknown classifications compete with useful sessions, never with low-value.
-    Low-value sessions only appear as an otherwise unrepresented group's project.
+    Candidates are eligible, non-future sessions with existing clean transcripts.
+    Only substantial, useful, or unclassified sessions establish active dates.
+    Low-value sessions on those dates can represent otherwise absent group projects;
+    coverage may exceed the soft limit. Unknown bands compete with useful ones.
     """
     if limit <= 0:
         return []
     ranked = sorted(sessions, key=_recency_key, reverse=True)
+    active_dates = set(sorted({
+        _recency_key(session)[0].astimezone(timezone.utc).date()
+        for session in ranked if session.get("substance_band") != "low_value"
+    }, reverse=True)[:ACTIVE_DAYS])
+    ranked = [
+        session for session in ranked
+        if _recency_key(session)[0].astimezone(timezone.utc).date() in active_dates
+    ]
     # Stable sort preserves actual instant ordering and deterministic ID ties.
     priorities = {"substantial": 0, "useful": 1, "low_value": 2}
     ranked.sort(key=lambda s: priorities.get(s.get("substance_band"), 1))
@@ -200,11 +209,9 @@ def build_recent_context(cwd: str) -> str | None:
     conn = get_connection()
     try:
         same_candidates = get_headlined_by_project(conn, project, project_root, project_id=identity.project_id)
-        now = datetime.now(timezone.utc)
-        since = (now - timedelta(days=RECENT_DAYS)).isoformat()
-        until = now.isoformat()
+        until = datetime.now(timezone.utc).isoformat()
         cross_candidates = get_headlined_cross_project(
-            conn, since, project, until=until, project_path=project_root, project_id=identity.project_id,
+            conn, project, until=until, project_path=project_root, project_id=identity.project_id,
         )
 
         group_project_paths: dict[str, set[str]] = {}
@@ -224,7 +231,6 @@ def build_recent_context(cwd: str) -> str | None:
                 group_candidates[group["name"]] = get_headlined_by_project_paths(
                     conn,
                     sorted(paths),
-                    since=since,
                     until=until,
                 )
     finally:
@@ -233,7 +239,7 @@ def build_recent_context(cwd: str) -> str | None:
     same_project = [s for s in same_candidates if _session_has_clean_transcript(s)][:SAME_PROJECT_LIMIT]
     group_sections: list[tuple[str, list[dict[str, Any]]]] = []
     for group in matching_groups:
-        sessions = select_weekly_sessions([
+        sessions = select_active_day_sessions([
             session for session in group_candidates[group["name"]]
             if os.path.abspath(session["project_path"]) != project_root
             and _session_has_clean_transcript(session)
@@ -249,7 +255,7 @@ def build_recent_context(cwd: str) -> str | None:
         if session.get("project_path") not in excluded_group_paths
         and _session_has_clean_transcript(session)
     ]
-    cross_project = select_weekly_sessions(cross_existing, limit=CROSS_PROJECT_LIMIT)
+    cross_project = select_active_day_sessions(cross_existing, limit=CROSS_PROJECT_LIMIT)
 
     grouped_sessions = [session for _name, sessions in group_sections for session in sessions]
     if not same_project and not grouped_sessions and not cross_project:
@@ -275,14 +281,14 @@ def build_recent_context(cwd: str) -> str | None:
         lines.extend(f"- {_format_session(session, include_project=False)}" for session in same_project)
 
     for group_name, sessions in group_sections:
-        lines.append(f"\n## {group_name} group (top {len(sessions)} from the last {RECENT_DAYS} days)")
+        lines.append(f"\n## {group_name} group (top {len(sessions)} from the last {ACTIVE_DAYS} active days)")
         lines.extend(
             f"- {_format_session(session, include_branch=False)}"
             for session in sessions
         )
 
     if cross_project:
-        lines.append(f"\n## Other projects (top {len(cross_project)} from the last {RECENT_DAYS} days)")
+        lines.append(f"\n## Other projects (top {len(cross_project)} from the last {ACTIVE_DAYS} active days)")
         lines.extend(
             f"- {_format_session(session, include_branch=False)}"
             for session in cross_project

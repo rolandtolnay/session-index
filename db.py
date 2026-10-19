@@ -936,41 +936,41 @@ def _headline_columns(conn: sqlite3.Connection) -> str:
 
 
 def get_headlined_by_project_paths(
-    conn: sqlite3.Connection, project_paths: list[str], *, since: str, until: str,
+    conn: sqlite3.Connection, project_paths: list[str], *, until: str,
 ) -> list[dict[str, Any]]:
-    """Get time-bounded candidates without starving quiet projects or older substance."""
+    """Get candidates through now; activity windows are selected after transcript checks."""
     if not project_paths:
         return []
     placeholders = ", ".join("?" for _path in project_paths)
     cursor = conn.execute(f"""
         SELECT {_headline_columns(conn)} FROM sessions
         WHERE project_path IN ({placeholders})
-          AND julianday(started_at) BETWEEN julianday(?) AND julianday(?)
+          AND julianday(started_at) <= julianday(?)
           AND {TOP_LEVEL_SESSION_PREDICATE}
           AND {_visible_recent_predicate(conn)}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY julianday(started_at) DESC, session_id DESC
-    """, [*project_paths, since, until])
+    """, [*project_paths, until])
     return [dict(row) for row in cursor.fetchall()]
 
 
 def get_headlined_cross_project(
-    conn: sqlite3.Connection, since: str, exclude_project: str, *, until: str,
+    conn: sqlite3.Connection, exclude_project: str, *, until: str,
     project_path: str | None = None, project_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Exclude an exact project, not every repository sharing its display name."""
     exclusion = f"NOT ({_same_project_clause(conn, project_path, project_id)})"
     cursor = conn.execute(f"""
         SELECT {_headline_columns(conn)} FROM sessions
-        WHERE julianday(started_at) BETWEEN julianday(:since) AND julianday(:until)
+        WHERE julianday(started_at) <= julianday(:until)
           AND {exclusion}
           AND {TOP_LEVEL_SESSION_PREDICATE}
           AND {_visible_recent_predicate(conn)}
           AND headline IS NOT NULL AND trim(headline) != ''
           AND transcript_path IS NOT NULL AND trim(transcript_path) != ''
         ORDER BY julianday(started_at) DESC, session_id DESC
-    """, {"since": since, "until": until, "project": exclude_project, "project_path": project_path, "project_id": project_id})
+    """, {"until": until, "project": exclude_project, "project_path": project_path, "project_id": project_id})
     return [dict(row) for row in cursor.fetchall()]
 
 

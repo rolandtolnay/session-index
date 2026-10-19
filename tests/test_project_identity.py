@@ -74,6 +74,24 @@ def test_common_repository_identity_and_location_boundaries(repository, tmp_path
     assert resolve_project(str(alias)).project_id == main.project_id
 
 
+def test_identity_reader_reuses_repository_identity_without_opening_database(repository, tmp_path):
+    checkout = worktree(repository, tmp_path / "external" / "topic")
+    script = Path(__file__).resolve().parents[1] / "project_identity.py"
+    env = {**os.environ, "HOME": str(tmp_path), "GIT_DIR": str(repository / ".git")}
+    identities = []
+    for location in (repository, checkout):
+        result = subprocess.run(
+            [sys.executable, str(script), "--cwd", str(location)],
+            cwd=tmp_path, env=env, capture_output=True, text=True, check=True,
+        )
+        identities.append(json.loads(result.stdout))
+    main, linked = identities
+    assert main["project_id"] == linked["project_id"] == f"git:{repository / '.git'}"
+    assert main["project_path"] == linked["project_path"] == str(repository)
+    assert linked["cwd"] == linked["worktree_path"] == str(checkout)
+    assert not (tmp_path / ".session-index").exists()
+
+
 def test_separate_git_directory_keeps_linked_checkouts_together(tmp_path):
     repo = tmp_path / "main"
     metadata = tmp_path / "git-storage"
@@ -83,6 +101,20 @@ def test_separate_git_directory_keeps_linked_checkouts_together(tmp_path):
     main, linked = resolve_project(str(repo)), resolve_project(str(other))
     assert main.project_id == linked.project_id == f"git:{metadata}"
     assert main.project_path == linked.project_path == str(metadata)
+
+
+def test_strict_resolution_does_not_treat_failed_git_as_non_git(repository, tmp_path, monkeypatch):
+    checkout = worktree(repository, tmp_path / "outside" / "topic")
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], 5)
+
+    monkeypatch.setattr("project_identity.subprocess.run", timeout)
+    with pytest.raises(ValueError, match="could not be resolved"):
+        resolve_project(str(checkout), strict=True)
+    # Indexing retains its historical fallback; ordinary folders remain supported.
+    assert resolve_project(str(checkout)).project_id == f"dir:{checkout}"
+    assert resolve_project(str(checkout.parent), strict=True).project_id == f"dir:{checkout.parent}"
 
 
 def test_non_git_folders_are_distinct_and_failure_is_bounded(tmp_path, monkeypatch):
