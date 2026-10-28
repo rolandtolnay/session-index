@@ -12,6 +12,7 @@ from typing import Any
 
 from parser import ParsedToolCall
 from subagent_parser import ParsedSubagent
+from claude_design import design_identity
 
 
 @dataclass(frozen=True)
@@ -55,8 +56,8 @@ _REQUEST_TOOLS = {
     "subagent_parallel",
     "subagent_chain",
     "spawn_agent",
+    "claude_design",
 }
-
 
 def _tool_name(name: str) -> str:
     """Normalize namespaced Pi tool names to their concrete tool/function name."""
@@ -125,6 +126,16 @@ def _expand_call(parent_session_id: str, source: str, call: ParsedToolCall) -> l
 
     if name in _MANAGEMENT_TOOLS or name not in _REQUEST_TOOLS:
         return []
+
+    if name == "claude_design":
+        details = call.result_details
+        identity = design_identity(call)
+        fact = _request_fact(
+            parent_session_id=parent_session_id, source=source, call=call,
+            requested_agent_type="claude-design", task_preview=_task_preview(args),
+        )
+        return [replace(fact, agent_id=identity,
+                        run_id=str(details.get("runId", "")), status=str(details.get("state", "")))]
 
     if name in {"Agent", "subagent", "subagent_run", "spawn_agent"}:
         default = "Agent" if name == "Agent" else "subagent"
@@ -267,22 +278,29 @@ def build_subagent_runs(
     facts: list[ParsedSubagentRun] = []
     matched_artifacts: set[int] = set()
 
-    # Explicit IDs are not consistently available yet; preserve today's stable
-    # transcript-linking behavior by matching remaining requests by artifact order.
-    for idx, request in enumerate(requests):
-        if source == "codex":
+    # One artifact per Claude session; its latest request supplies coherent
+    # call identity, task and status even when a resume fails.
+    latest_design_requests = {request.agent_id: request for request in requests
+                              if request.call_tool == "claude_design" and request.agent_id}
+    for request in requests:
+        designer = request.call_tool == "claude_design"
+        if designer and request.agent_id and latest_design_requests[request.agent_id] is not request:
+            continue
+        if designer or source == "codex":
             match = next((i for i, sub in enumerate(artifacts)
-                          if i not in matched_artifacts and request.agent_id and sub.agent_id == request.agent_id), None)
-            if match is None:
-                facts.append(request)
-            else:
-                facts.append(_with_artifact(request, artifacts[match], match, "exact"))
-                matched_artifacts.add(match)
-        elif idx < len(artifacts):
-            facts.append(_with_artifact(request, artifacts[idx], idx, "ordered"))
-            matched_artifacts.add(idx)
+                          if i not in matched_artifacts and request.agent_id
+                          and sub.agent_id == request.agent_id), None)
+            confidence = "exact"
         else:
+            # Preserve legacy ordering only among non-designer artifacts.
+            match = next((i for i, sub in enumerate(artifacts)
+                          if i not in matched_artifacts and sub.agent_type != "claude-design"), None)
+            confidence = "ordered"
+        if match is None:
             facts.append(request)
+        else:
+            facts.append(_with_artifact(request, artifacts[match], match, confidence))
+            matched_artifacts.add(match)
 
     for idx, sub in enumerate(artifacts):
         if idx not in matched_artifacts:

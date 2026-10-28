@@ -54,6 +54,7 @@ def _expand_subagent_markers(
     Mutates ref_index[0] to track which subagent we're up to (order-based matching).
     """
     out_lines: list[str] = []
+    ordered_refs = [ref for ref in subagent_refs if ref.agent_type != "claude-design"]
     for line in content.split("\n"):
         m = _SUBAGENT_MARKER_RE.match(line.strip())
         if m:
@@ -64,8 +65,8 @@ def _expand_subagent_markers(
             out_lines.append(desc)
             # Match to a subagent ref by order
             idx = ref_index[0]
-            if idx < len(subagent_refs):
-                ref = subagent_refs[idx]
+            if idx < len(ordered_refs):
+                ref = ordered_refs[idx]
                 out_lines.append(f"→ see: agent-{ref.agent_id}.md")
                 ref_index[0] = idx + 1
         else:
@@ -179,7 +180,9 @@ def render_transcript(
     return normalize_references("\n".join(lines))
 
 
-def _artifact_navigation(session_id: str, side_chats: list[dict] | None = None) -> str:
+def _artifact_navigation(
+    session_id: str, side_chats: list[dict] | None = None, subagents: list[SubagentRef] | None = None,
+) -> str:
     """Expose generated siblings without loading their contents into the conversation."""
     tool_path = os.path.abspath(os.path.join(TRANSCRIPT_DIR, f"{session_id}.tools.md"))
     child_dir = os.path.abspath(os.path.join(TRANSCRIPT_DIR, session_id))
@@ -191,6 +194,10 @@ def _artifact_navigation(session_id: str, side_chats: list[dict] | None = None) 
     child_status = f"{child_count} available" if child_count else "none generated or available"
     from side_chats import label
     children = [f"- Side Chat: {label(row)} → `{row['transcript_path']}`" for row in side_chats or []]
+    children.extend(
+        f"- Subagent Run: claude-design → `{os.path.join(child_dir, f'agent-{ref.agent_id}.md')}`"
+        for ref in subagents or [] if ref.agent_type == "claude-design"
+    )
     return "\n".join([
         "## Related artifacts",
         "Availability reflects files present when this transcript was generated.",
@@ -220,7 +227,7 @@ def write_transcript(
         branch=branch,
         timestamp=timestamp,
         subagents=subagents,
-        artifact_navigation=_artifact_navigation(session_id, side_chats),
+        artifact_navigation=_artifact_navigation(session_id, side_chats, subagents),
     )
     with open(path, "w") as f:
         f.write(rendered)

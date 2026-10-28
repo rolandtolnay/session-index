@@ -43,6 +43,7 @@ class ParsedToolCall:
     # Files the harness reports this call changed, for tools without a path
     # argument (Claude Code Bash); see `bash_changed_paths`.
     changed_paths: list[str] = field(default_factory=list)
+    result_details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

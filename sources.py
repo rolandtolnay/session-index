@@ -77,8 +77,12 @@ def discover_claude_sessions(session_id: str | None = None) -> list[SourceSessio
     else:
         pattern = os.path.join(projects_dir, "*", "*.jsonl")
 
+    from claude_design import probe_design_child
+
     by_session_id: dict[str, list[str]] = {}
     for path in glob.glob(pattern):
+        if probe_design_child(path):
+            continue
         native_id = os.path.splitext(os.path.basename(path))[0]
         by_session_id.setdefault(native_id, []).append(path)
 

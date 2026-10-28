@@ -434,6 +434,7 @@ def _tool_result_record(message: dict[str, Any]) -> dict[str, Any]:
         "tool_name": tool_name,
         "question_selections": question_selections,
         "question_cancelled": question_cancelled,
+        "details": details,
     }
 
 
@@ -545,7 +546,10 @@ def parse_pi_jsonl(
             is_error=bool(tr.get("is_error", False)),
             question_selections=tr.get("question_selections") or [],
             question_cancelled=bool(tr.get("question_cancelled", False)),
+            result_details=(tr.get("details") or {}) if call.tool_name.rsplit(".", 1)[-1] == "claude_design" else {},
         ))
+    from claude_design import apply_design_completions
+    apply_design_completions(session.tool_calls, branch)
 
     # Second pass: cleaned transcript/search messages.
     pending_tool_calls: list[dict[str, Any]] = []
@@ -644,11 +648,14 @@ def discover_pi_subagents(jsonl_path: str) -> list[SubagentInfo]:
     """Discover pi-subagents nested session files for a parent Pi session."""
     session_stem = os.path.splitext(os.path.basename(jsonl_path))[0]
     root = os.path.join(os.path.dirname(jsonl_path), session_stem)
-    if not os.path.isdir(root):
-        return []
-
+    from claude_design import discover_design_children
+    try:
+        with open(jsonl_path) as handle:
+            native_id = json.loads(next(handle)).get("id", "")
+    except (OSError, ValueError, StopIteration):
+        native_id = ""
+    results = discover_design_children(native_id) if native_id else []
     pattern = os.path.join(root, "*", "run-*", "session.jsonl")
-    results: list[SubagentInfo] = []
     for path in sorted(glob.glob(pattern)):
         rel_parts = os.path.relpath(path, root).split(os.sep)
         run_group = rel_parts[0] if rel_parts else "subagent"

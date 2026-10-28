@@ -151,6 +151,11 @@ def discover_session_subagents(source: str, path: str) -> list[SubagentInfo]:
 
 def parse_session_subagent(source: str, info: SubagentInfo) -> ParsedSubagent:
     source = normalize_source(source)
+    if info.agent_type == "claude-design":
+        parsed = parse_subagent_jsonl(info.jsonl_path)
+        parsed.agent_id = info.agent_id
+        parsed.agent_type = info.agent_type
+        return parsed
     if source == "pi":
         return parse_pi_subagent_jsonl(info.jsonl_path, info.agent_id, info.agent_type)
     if source == "codex":
@@ -405,6 +410,22 @@ def index_source_transcript(
 
     source = normalize_source(source)
     stages = frozenset(options.stages)
+    if source == "claude":
+        from claude_design import probe_design_child, parent_source_paths
+        child = probe_design_child(path)
+        if child:
+            # A child's SessionEnd may precede the parent's refresh. Publish the
+            # same deterministic parent snapshot in either order, never summaries.
+            from db import delete_sessions, get_connection, init_db
+            conn = get_connection()
+            try:
+                init_db(conn)
+                delete_sessions(conn, [canonical_session_id("claude", child.session_id)])
+            finally:
+                conn.close()
+            for parent_path in parent_source_paths(child.parent_native_id):
+                _index_pi_source(parent_path, NO_SUMMARY_INDEX_OPTIONS.stages)
+            return IndexResult(skipped_reason="Claude Design child; evidence owned by Pi parent", stages=stages)
     if source == "pi":
         from sources import is_nested_pi_subagent_session
 
