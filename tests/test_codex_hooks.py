@@ -118,7 +118,7 @@ def test_codex_stop_through_shared_worker_preserves_transcript_and_facts(monkeyp
     }))
     assert json.loads(output) == {}
     assert not Path(db.DB_PATH).exists(), "the hook must only enqueue, not index inline"
-    assert worker.process_pending_jobs("codex", native_id, idle_seconds=0) is True
+    assert worker.process_pending_jobs("codex", native_id, idle_seconds=0) is worker.RefreshOutcome.DRAINED
 
     sid = canonical_session_id("codex", native_id)
     conn = db.get_connection()

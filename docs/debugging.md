@@ -157,9 +157,15 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - Codex: no `codex_stop` lines — restart Codex, open `/hooks`, and review/trust the Session Index hook
 - `refresh_worker | source transcript missing` / `pi_index | missing session file` — Source Transcript path mismatch
 
+**Workflow refresh not acknowledged after a Pi branch transfer or close:**
+- Check `pi_index | error:` in `~/.session-index/logs/session-index.log` at the warning's time. A prior `exit queued` and successful deterministic refresh can preserve the conversation even when transfer registration fails; verify the indexed owner and current source path separately.
+- Live extension state can differ from its originally persisted payload: custom-entry `data`, custom-message `details`, and tool-result `details` may be updated in memory. Transfer validation compares source identity, tree structure, and message content while requiring the destination to retain the complete live payload. Stale on-disk extension state alone must not reject a transfer.
+- Re-indexing an unregistered destination does not repair ownership: without an acknowledged explicit transfer it remains an ordinary clone. Reconcile a confirmed failed transfer only after a database backup, then refresh its existing indexed owner; do not infer transfers from parent lineage alone.
+
 **Summary or Session Headline missing:**
 - Check Pi auth/model availability: default is `openai/gpt-6-luna` with medium thinking via `pi -p --no-session --no-tools`.
 - Headlines use a second isolated Pi process independently of summary success; a failed headline call preserves any previous value.
+- `refresh_worker | summary superseded` means ownership or description inputs changed during generation, not that the model failed. The worker retries once after re-reading the source. `summary changed again after retry; pending work retained` leaves the request for a later event or recovery run. Metadata-only appends do not supersede descriptions.
 - Substance Bands are generated in the summary call. Invalid classifications preserve prior assessments; unknown bands remain eligible alongside useful sessions. Inspect `substance_band` and `substance_reason` through `query`; run `uv run backfill_substance.py --apply` for missing eligible past-week assessments.
 - Set `SESSION_INDEX_SUMMARY_MODEL`, `SESSION_INDEX_SUMMARY_THINKING`, or `SESSION_INDEX_SUMMARY_TIMEOUT` to override the default.
 - Automatic refresh defaults are 180 idle seconds, 10,000 new rendered characters, and a 60-second content-trigger cooldown. Override them with `SESSION_INDEX_SUMMARY_IDLE_SECONDS`, `SESSION_INDEX_SUMMARY_CONTENT_CHARS`, and `SESSION_INDEX_SUMMARY_CONTENT_COOLDOWN_SECONDS`.

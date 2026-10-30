@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Callable
 
 
@@ -28,6 +29,12 @@ DEFAULT_CONTENT_COOLDOWN_SECONDS = 60.0
 POLL_SECONDS = 1.0
 
 Signature = tuple[tuple[str, int, str], ...]
+
+
+class RefreshOutcome(Enum):
+    DRAINED = "drained"
+    DETERMINISTIC_FAILED = "deterministic_failed"
+    SUMMARY_SUPERSEDED = "summary_superseded"
 
 
 @dataclass(frozen=True)
@@ -260,7 +267,10 @@ def _finish_summary_attempt(source: str, session_id: str, attempt: SummaryAttemp
         log(session_id, "refresh_worker", f"summary error ({attempt.trigger}): {attempt.error}")
     succeeded = bool(attempt.result and getattr(attempt.result, "summary_generated", False))
 
-    if succeeded:
+    if getattr(attempt.result, "summary_stale", False):
+        log(session_id, "refresh_worker", f"summary superseded ({attempt.trigger}; pending work retained)")
+        _remove_jobs(attempt.covered, keep_latest=True)
+    elif succeeded:
         log(session_id, "refresh_worker", f"summary generated ({attempt.trigger})")
         if getattr(attempt.result, "headline_generated", False):
             log(session_id, "refresh_worker", f"headline generated ({attempt.trigger})")
@@ -308,12 +318,13 @@ def process_pending_jobs(
     summary_index: Callable[[PendingJob], object] = _run_summary,
     has_summary: Callable[[str], bool] = _has_existing_summary,
     retry_delays: tuple[float, ...] = (1.0, 5.0, 15.0),
-) -> bool:
-    """Process until drained or the bounded deterministic retry budget is exhausted.
+) -> RefreshOutcome:
+    """Process until drained or a bounded retry budget is exhausted.
 
     Summary work runs in a side thread so newer queued turns can refresh
     deterministic artifacts without waiting for the LLM call to finish.
-    Returns False when retained jobs need a future enqueue or startup recovery.
+    Distinguish deterministic failure from exhausted summary retries so queued
+    turns cannot restart the summary budget in the outer worker loop.
     """
     source = source.strip().lower()
     session_id = canonical_session_id(source, session_id)
@@ -327,24 +338,35 @@ def process_pending_jobs(
     deterministic_generation = ""
     deterministic_result: object | None = None
     summary_attempt: SummaryAttempt | None = None
+    stale_retries = 0
+    retry_trigger = ""
     failed_generation = ""
     failures = 0
 
     while True:
         if summary_attempt is not None and summary_attempt.done.is_set():
+            stale = getattr(summary_attempt.result, "summary_stale", False)
             _finish_summary_attempt(source, session_id, summary_attempt)
+            retry_trigger = summary_attempt.trigger if stale else ""
             summary_attempt = None
-            # A summary-only pass parsed its snapshot before the LLM call and may
-            # have upserted older metadata after a newer deterministic pass.
+            # Re-evaluate the newest snapshot before retrying a superseded result
+            # or processing a queued turn. A retired source may now be skippable.
             deterministic_generation = ""
             deterministic_result = None
+            if stale:
+                if stale_retries >= 1:
+                    log(session_id, "refresh_worker", "summary changed again after retry; pending work retained")
+                    return RefreshOutcome.SUMMARY_SUPERSEDED
+                stale_retries += 1
+            else:
+                stale_retries = 0
 
         jobs = _load_pending_jobs(source, session_id)
         if not jobs:
             if summary_attempt is not None:
                 sleep(POLL_SECONDS)
                 continue
-            return True
+            return RefreshOutcome.DRAINED
         latest = jobs[-1]
         if latest.path != failed_generation:
             failures = 0
@@ -375,7 +397,7 @@ def process_pending_jobs(
                 if summary_attempt is not None:
                     _settle_summary_attempt(source, session_id, summary_attempt, sleep)
                 log(session_id, "refresh_worker", "retry budget exhausted; pending work retained for startup recovery")
-                return False
+                return RefreshOutcome.DETERMINISTIC_FAILED
             skipped_reason = getattr(deterministic_result, "skipped_reason", "")
             if skipped_reason:
                 log(session_id, "refresh_worker", f"deterministic skipped ({skipped_reason})")
@@ -390,7 +412,7 @@ def process_pending_jobs(
                     deterministic_generation = ""
                     deterministic_result = None
                     continue
-                return True
+                return RefreshOutcome.DRAINED
             deterministic_generation = latest.path
             log(
                 session_id,
@@ -444,6 +466,8 @@ def process_pending_jobs(
         trigger = ""
         if forced:
             trigger = "force"
+        elif retry_trigger:
+            trigger = retry_trigger
         elif initial:
             trigger = "initial"
         elif content_due:
@@ -457,6 +481,7 @@ def process_pending_jobs(
             continue
 
         covered = list(jobs)
+        retry_trigger = ""
         if trigger == "initial":
             state["first_attempt_signature"] = _signature_json(signature)
         elif trigger == "content":
@@ -509,16 +534,16 @@ def run_worker(source: str, session_id: str) -> None:
         fcntl.flock(worker_lock.fileno(), fcntl.LOCK_EX)
         while True:
             before = {job.path for job in _load_pending_jobs(source, session_id)}
-            drained = process_pending_jobs(source, session_id)
-            if not drained:
-                # Retained deterministic failures await a new event or startup recovery.
+            outcome = process_pending_jobs(source, session_id)
+            if outcome is not RefreshOutcome.DRAINED:
+                # Retained failures/superseded summaries await a new event or startup recovery.
                 # Compare under dispatch.lock so an enqueue cannot land between the
                 # late-work check and PID cleanup.
                 dispatch_path = os.path.join(job_dir, "dispatch.lock")
                 with open(dispatch_path, "a+") as dispatch:
                     fcntl.flock(dispatch.fileno(), fcntl.LOCK_EX)
                     after = {job.path for job in _load_pending_jobs(source, session_id)}
-                    if after - before:
+                    if outcome is RefreshOutcome.DETERMINISTIC_FAILED and after - before:
                         continue
                     pid_path = os.path.join(job_dir, "worker.pid")
                     try:

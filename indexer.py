@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
 
 from codex_parser import internal_codex_session_reason, parse_codex_jsonl, discover_codex_subagents, parse_codex_subagent
 from parser import ParsedSession, ParsedToolCall, clean_user_messages, parse_jsonl as parse_claude_jsonl
@@ -13,9 +12,6 @@ from pi_parser import discover_pi_subagents, new_pi_conversation_counts, parse_p
 from session_identity import canonical_session_id
 from subagent_parser import discover_subagents, parse_subagent_jsonl, ParsedSubagent, SubagentInfo
 from subagent_runs import ParsedSubagentRun, build_subagent_runs
-
-if TYPE_CHECKING:
-    from summarizer import SummaryResult
 
 
 class IndexStage(str, Enum):
@@ -53,6 +49,7 @@ class IndexResult:
     subagent_runs: int = 0
     summary_generated: bool = False
     headline_generated: bool = False
+    summary_stale: bool = False
     transcript_path: str | None = None
     tool_log_path: str | None = None
     rendered_content_chars: int = 0
@@ -76,7 +73,7 @@ class PiSnapshot:
     identity_key: str
     registered: bool
     entries: list[dict]
-    token: tuple[str, str, bytes]
+    ownership: tuple[str, str, str]
 
 
 @dataclass(frozen=True)
@@ -291,7 +288,7 @@ def _enriched_files(session: ParsedSession, parsed_subagents: list[ParsedSubagen
 
 
 def _description_inputs(session: ParsedSession, enriched_files: list[str], parsed_subagents: list[ParsedSubagent]) -> dict:
-    """Shared rich inputs for the summary and headline generation calls."""
+    """All description inputs, including the legacy summary fallback context."""
     from transcript import render_transcript
 
     subagent_refs = _subagent_refs(parsed_subagents)
@@ -311,26 +308,17 @@ def _description_inputs(session: ParsedSession, enriched_files: list[str], parse
         "user_messages": clean_user_messages(session.user_messages),
         "files_touched": enriched_files,
         "transcript_text": transcript_text,
+        "last_assistant_message": (session.assistant_messages[-1]
+                                   if session.user_message_count <= 5 and session.assistant_messages else None),
     }
 
 
-def _summarize_session(session: ParsedSession, inputs: dict) -> SummaryResult | None:
-    from summarizer import summarize
-
-    short_session_threshold = 5
-    last_assistant = None
-    if session.user_message_count <= short_session_threshold and session.assistant_messages:
-        last_assistant = session.assistant_messages[-1]
-
-    return summarize(last_assistant_message=last_assistant, **inputs)
-
-
-def _generate_descriptions(session: ParsedSession, inputs: dict) -> GeneratedDescriptions:
+def _generate_descriptions(inputs: dict) -> GeneratedDescriptions:
     """Summary/classification and headline retain independent failure results."""
-    from summarizer import generate_headline
+    from summarizer import generate_headline, summarize
 
-    summary_result = _summarize_session(session, inputs)
-    headline = generate_headline(**inputs)
+    summary_result = summarize(**inputs)
+    headline = generate_headline(**{key: value for key, value in inputs.items() if key != "last_assistant_message"})
     return GeneratedDescriptions(
         summary=summary_result.summary if summary_result else None,
         headline=headline,
@@ -503,7 +491,6 @@ def index_source_transcript(
 
 def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
     """Resolve and parse inside the publication boundary; generate outside it."""
-    import hashlib
     import os
     from pathlib import Path
     import db
@@ -513,8 +500,8 @@ def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
     path = exact_path(path)
 
     def snapshot() -> PiSnapshot:
-        # Parse the very bytes used for the stale-result token. No caller's
-        # pre-lock ParsedSession may dictate ownership or publish old history.
+        # Capture one source snapshot. No caller's pre-lock ParsedSession may
+        # dictate ownership or publish old history.
         import json
         raw = Path(path).read_bytes()
         entries = []
@@ -562,7 +549,7 @@ def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
             conn.close()
         return PiSnapshot(
             session=session, result=result, identity_key=key, registered=registered,
-            entries=entries, token=(owner, key, hashlib.sha256(raw).digest()),
+            entries=entries, ownership=(owner, key, session.native_session_id),
         )
 
     with ownership_lock():
@@ -578,16 +565,26 @@ def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
                 prepared.parsed_subagents,
             )
 
-    descriptions = _generate_descriptions(initial.session, inputs)
+    descriptions = _generate_descriptions(inputs)
     with ownership_lock():
         current = snapshot()
-        if current.result.skipped_reason or current.token != initial.token:
-            initial.result.skipped_reason = "stale Pi refresh; ownership or source changed"
+        if current.result.skipped_reason or current.ownership != initial.ownership:
+            initial.result.skipped_reason = "stale Pi refresh; ownership changed"
+            initial.result.summary_stale = True
             return initial.result
         with indexing_lock(os.path.dirname(db.DB_PATH), current.session.session_id):
-            # Contributor children can finish while models run even when the
-            # main source token is unchanged. Always prepare fresh evidence.
+            # Compare what the models actually saw, including contributor files.
+            # Unrelated extension entries may change raw bytes without changing
+            # descriptions; child evidence can change inputs without a parent append.
             prepared = _prepare_pi_publication(path, stages, current)
+            current_inputs = _description_inputs(
+                prepared.session, _enriched_files(prepared.session, prepared.parsed_subagents),
+                prepared.parsed_subagents,
+            )
+            if current_inputs != inputs:
+                initial.result.skipped_reason = "stale Pi refresh; description inputs changed"
+                initial.result.summary_stale = True
+                return initial.result
             result = _index_qualified_session("pi", path, stages, prepared, current.result, descriptions=descriptions)
     from side_chats import refresh_headlines
     refresh_headlines(result.session_id, recover_open=True)
@@ -657,7 +654,7 @@ def _index_qualified_session(
         result.files_touched = len(enriched_files)
 
     if descriptions is None:
-        descriptions = (_generate_descriptions(session, _description_inputs(session, enriched_files, parsed_subagents))
+        descriptions = (_generate_descriptions(_description_inputs(session, enriched_files, parsed_subagents))
                         if IndexStage.SUMMARY in stages else GeneratedDescriptions())
     summary = descriptions.summary
     headline = descriptions.headline

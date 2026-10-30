@@ -354,7 +354,7 @@ def test_deterministic_failure_waits_for_inflight_summary_to_finalize(monkeypatc
     release_summary.set()
     coordinator.join(2)
     assert not coordinator.is_alive()
-    assert outcome == [False]
+    assert outcome == [worker.RefreshOutcome.DETERMINISTIC_FAILED]
     assert not first_path.exists()
     assert second_path.exists(), "failed deterministic work remains for the next event"
     assert _state()["summary_content_chars"] == 100
@@ -456,7 +456,7 @@ def test_deterministic_failure_retains_job_for_next_event(monkeypatch, tmp_path)
         "claude", "session-1", idle_seconds=0,
         deterministic_index=lambda _job: (_ for _ in ()).throw(RuntimeError("busy")),
         summary_index=lambda _job: None, has_summary=lambda _sid: False, retry_delays=(),
-    ) is False
+    ) is worker.RefreshOutcome.DETERMINISTIC_FAILED
     assert path.exists()
 
 
@@ -473,7 +473,7 @@ def test_transient_deterministic_failure_retries_without_another_event(monkeypat
         "claude", "session-1", idle_seconds=0, deterministic_index=index,
         summary_index=lambda j: _result(2, (), summary=True), has_summary=lambda s: False,
         retry_delays=(1, 2), sleep=lambda delay: delays.append(delay),
-    )
+    ) is worker.RefreshOutcome.DRAINED
     assert len(attempts) == 3 and 2 in delays
     assert not path.exists()
 
@@ -494,7 +494,7 @@ def test_codex_archive_move_recovers_by_identity_and_summary_uses_new_path(monke
     assert worker.process_pending_jobs(
         "codex", "moving", idle_seconds=0, deterministic_index=index,
         summary_index=index, has_summary=lambda s: False,
-    )
+    ) is worker.RefreshOutcome.DRAINED
     assert read_paths == [str(archive), str(archive)]
     assert not path.exists()
 
