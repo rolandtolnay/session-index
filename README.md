@@ -223,6 +223,8 @@ An asterisk marks the applied value, while the highlight marks the current candi
 
 From the session list, press `?` to open detailed help.
 
+When the selected session has Side Chats, the action bar shows their count. Press Enter to browse them, then Enter again to read the selected conversation. Use ↑/↓ or j/k to select or scroll, PgUp/PgDn or Space to page through a transcript, and Home/End to jump to its beginning or end. Press `c` in either Side Chat view to copy the selected transcript's absolute path to the macOS clipboard. Esc returns one level without losing your session selection, filters, or preview position. Missing transcripts and clipboard failures appear in the view; they do not prevent returning.
+
 Press `s` to change the sort order. Automatic sorts by newest first while browsing and by best match while searching. You can also choose newest, oldest, best match during search, or substance first. Substance sorting orders sessions by substantial, useful, unknown, and low-value. Within each band, it shows the newest sessions first.
 
 Use these controls:
@@ -242,6 +244,10 @@ Press y to confirm deletion; Esc or n cancels. Run the browser in an interactive
 
 - **Hide from recents** preserves all data and search access. It excludes the session from future recent context for the current project, project group, and other projects. The flag survives indexing refreshes. It does not remove context already injected into an open conversation or prevent deliberate retrieval.
 - **Delete** requires confirming with y. It removes the database entry, indexed facts, and owned generated artifacts, regardless of the low-value pruning rules. Raw transcripts, shared artifacts, and files outside generated storage remain. There is no undo or deletion exclusion record. Hooks or backfills can re-index preserved raw transcripts. If owned-artifact removal fails, the database entry remains for retry. Files already removed are not restored.
+
+## Off-site backup
+
+`just backup` uploads an encrypted copy of the database and transcripts to a Cloudflare R2 bucket, and `just restore` brings it back on a new machine. See [docs/backup.md](docs/backup.md) for setup, backup, and restore steps.
 
 ## Current session lookup
 
