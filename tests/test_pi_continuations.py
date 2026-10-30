@@ -470,6 +470,38 @@ def test_live_extension_details_do_not_relax_content_or_destination_copy_checks(
     assert transfer(source, destination, source_entries=live) == canonical_session_id("pi", "A")
 
 
+@pytest.mark.parametrize("kind", ["custom", "toolResult"])
+def test_live_background_metadata_keeps_identity_content_and_full_copy_checks(store, kind):
+    tmp, _ = store
+    entry = {"id": "progress", "parentId": "oldr"}
+    if kind == "custom":
+        entry.update(type="custom", customType="background-run", data={"state": "running"})
+    else:
+        entry.update(type="message", message={"role": "toolResult", "toolName": "worker",
+                     "toolCallId": "run", "content": "Queued", "details": {"state": "running"}})
+    source = raw(tmp / "a.jsonl", "A", [*exchange("old"), entry])
+    live = [json.loads(line) for line in source.read_text().splitlines()]
+    if kind == "custom":
+        live[-1]["data"] = {"state": "completed"}
+    else:
+        live[-1]["message"]["details"] = {"state": "completed"}
+    altered = json.loads(json.dumps(live))
+    if kind == "custom":
+        altered[-1]["customType"] = "different-extension"
+    else:
+        altered[-1]["message"]["content"] = "Different tool output"
+    destination = raw(tmp / "b.jsonl", "B", altered[1:], source)
+    with pytest.raises(ValueError, match="source tree"):
+        transfer(source, destination, source_entries=altered)
+    # Recognizing mutable payloads on the source does not permit a stale copy.
+    raw(destination, "B", [*exchange("old"), entry], source)
+    with pytest.raises(ValueError, match="preserve"):
+        transfer(source, destination, source_entries=live)
+    assert not rows("pi_transfers")
+    raw(destination, "B", live[1:], source)
+    assert transfer(source, destination, source_entries=live) == canonical_session_id("pi", "A")
+
+
 def test_fork_collision_checks_not_bypassed(store):
     tmp, _ = store
     a = raw(tmp / "a.jsonl", "A", exchange("old"))

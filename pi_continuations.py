@@ -136,13 +136,22 @@ def _assert_owner(conn, sid: str, key: str, native: str, path: str, *, header: d
 
 
 def _matches_persisted_entry(saved: dict, live: dict) -> bool:
-    # Custom-message details are extension-owned metadata, not message content.
-    # Extensions can update them in memory after the initial entry was appended
-    # (for example, a commit progressing from running to success). The live
-    # snapshot must retain those updates without rewriting the source file.
-    if saved.get("type") == live.get("type") == "custom_message":
-        saved = {key: value for key, value in saved.items() if key != "details"}
-        live = {key: value for key, value in live.items() if key != "details"}
+    # Extension-owned payloads can change in memory after append (background
+    # run state and shared result details). Compare their persisted envelope,
+    # not stale payloads. Message content and identity remain strict, and the
+    # destination must still preserve the entire live entry, payload included.
+    if saved.get("type") == live.get("type"):
+        kind = saved.get("type")
+        if kind in {"custom", "custom_message"}:
+            payload = "data" if kind == "custom" else "details"
+            saved = {key: value for key, value in saved.items() if key != payload}
+            live = {key: value for key, value in live.items() if key != payload}
+        elif kind == "message":
+            saved_message, live_message = saved.get("message"), live.get("message")
+            if (isinstance(saved_message, dict) and isinstance(live_message, dict)
+                    and saved_message.get("role") == live_message.get("role") == "toolResult"):
+                saved = {**saved, "message": {k: v for k, v in saved_message.items() if k != "details"}}
+                live = {**live, "message": {k: v for k, v in live_message.items() if k != "details"}}
     return saved == live
 
 

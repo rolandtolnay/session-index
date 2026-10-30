@@ -114,22 +114,35 @@ def test_resolve_only_does_not_open_raw_continuation(transferred, monkeypatch):
         assert origin["source_path"] == b and origin["native_session_id"] == "native-b"
 
 
-def test_workflow_acknowledges_live_extension_details_and_delayed_ancestor_cannot_regress(transfer_pair, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("entry_kind", ["custom_message", "custom", "toolResult"])
+def test_workflow_acknowledges_live_extension_details_and_delayed_ancestor_cannot_regress(transfer_pair, tmp_path, monkeypatch, capsys, entry_kind):
     import io
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
     import pi_index
     import session_refresh
     import _session_refresh_worker as worker
     _, _, a, b, owner = transfer_pair
-    # /commit persists the initial message, then updates extension-owned details
-    # in memory. The handoff copies that live state, not the stale disk metadata.
+    # Background extensions update their run state and shared tool-result
+    # details in memory after persistence. The handoff must retain live metadata.
     saved = [json.loads(line) for line in Path(a).read_text().splitlines()]
-    saved.append({"type": "custom_message", "id": "commit", "parentId": "selected",
-                  "timestamp": "2026-10-01T10:03:30Z", "customType": "commit-command",
-                  "content": "commit()", "display": True, "details": {"status": "running"}})
+    entry = {"id": "progress", "parentId": "selected", "timestamp": "2026-10-01T10:03:30Z"}
+    if entry_kind == "custom_message":
+        entry.update(type="custom_message", customType="commit-command", content="commit()",
+                     display=True, details={"status": "running"})
+    elif entry_kind == "custom":
+        entry.update(type="custom", customType="claude-design-run", data={"state": "running"})
+    else:
+        entry.update(type="message", message={"role": "toolResult", "toolName": "claude_design",
+                     "toolCallId": "design", "content": "Run queued", "details": {"state": "running"}})
+    saved.append(entry)
     write(Path(a), saved)
     captured = json.loads(json.dumps(saved))
-    captured[-1]["details"] = {"status": "success", "result": {"commits": ["abc123"]}}
+    if entry_kind == "custom":
+        captured[-1]["data"] = {"state": "completed", "report": "Completed design"}
+    elif entry_kind == "toolResult":
+        captured[-1]["message"]["details"] = {"state": "completed", "report": "Completed design"}
+    else:
+        captured[-1]["details"] = {"status": "success", "result": {"commits": ["abc123"]}}
     destination_header = json.loads(Path(b).read_text().splitlines()[0])
     write(Path(b), [destination_header, *captured[1:]])
     originals = {p: Path(p).read_bytes() for p in (a, b)}
@@ -137,7 +150,7 @@ def test_workflow_acknowledges_live_extension_details_and_delayed_ancestor_canno
     monkeypatch.setattr(session_refresh, "_ensure_worker", lambda *_: 0)
     monkeypatch.setattr(pi_index, "log", lambda *_: None)
     monkeypatch.setattr(worker, "log", lambda *_: None)
-    monkeypatch.setattr("indexer._summarize_session", lambda *_: None)
+    monkeypatch.setattr("summarizer.summarize", lambda **_: None)
     monkeypatch.setattr("summarizer.generate_headline", lambda **_: None)
     monkeypatch.setenv("SESSION_INDEX_NATIVE_SESSION_ID", "stale-process-origin")
     monkeypatch.setattr(sys, "argv", ["pi_index.py", "--mode", "workflow", "--session-file", b,
@@ -150,9 +163,9 @@ def test_workflow_acknowledges_live_extension_details_and_delayed_ancestor_canno
     payload = json.loads(pending[0].read_text())
     assert payload["transcript_path"] == b and payload["force_summary"] is False
     # The host can exit now: a new coordinator consumes the durable request.
-    assert worker.process_pending_jobs("pi", "native-b", idle_seconds=0)
+    assert worker.process_pending_jobs("pi", "native-b", idle_seconds=0) is worker.RefreshOutcome.DRAINED
     session_refresh.enqueue_refresh("pi", "native-a", a)
-    assert worker.process_pending_jobs("pi", "native-a", idle_seconds=0)
+    assert worker.process_pending_jobs("pi", "native-a", idle_seconds=0) is worker.RefreshOutcome.DRAINED
     with db.get_connection() as conn:
         rows = conn.execute("SELECT session_id, native_session_id, source_path FROM sessions").fetchall()
         assert [tuple(row) for row in rows] == [(owner, "native-b", b)]
