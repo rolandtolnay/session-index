@@ -204,6 +204,8 @@ An asterisk marks the applied value, while the highlight marks the current candi
 
 From the session list, press `?` to open detailed help.
 
+When the selected session has Side Chats, the action bar shows their count. Press Enter to browse them, then Enter again to read the selected conversation. Use ↑/↓ or j/k to select or scroll, PgUp/PgDn or Space to page through a transcript, and Home/End to jump to its beginning or end. Press `c` in either Side Chat view to copy the selected transcript's absolute path to the macOS clipboard. Esc returns one level without losing your session selection, filters, or preview position. Missing transcripts and clipboard failures appear in the view; they do not prevent returning.
+
 Press `s` to change the sort order. Automatic sorts by newest first while browsing and by best match while searching. You can also choose newest, oldest, best match during search, or substance first. Substance sorting orders sessions by substantial, useful, unknown, and low-value. Within each band, it shows the newest sessions first.
 
 Use these controls:
