@@ -287,10 +287,10 @@ def capture_snapshot(
     try:
         if provider == "pi":
             from pi_parser import parse_pi_jsonl
-            parsed = parse_pi_jsonl(path, entries=entries, leaf_id=leaf, include_tool_errors=False)
+            parsed = parse_pi_jsonl(path, entries=entries, leaf_id=leaf)
         elif provider == "claude":
             from parser import parse_jsonl
-            parsed = parse_jsonl(path, entries=entries, include_tool_errors=False)
+            parsed = parse_jsonl(path, entries=entries)
         else:
             from codex_parser import parse_codex_jsonl
             parsed = parse_codex_jsonl(path, entries=entries, enrich_metadata=False)

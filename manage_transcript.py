@@ -20,12 +20,12 @@ from typing import NamedTuple
 Span = tuple[str, str]  # (text, role); a role may add modifiers: "heading underline"
 
 # Message headers the transcript renderers write, e.g. "[user] 12:28:37 ────";
-# Subagent Run transcripts use [prompt]/[agent] and HH:MM. Prose that merely
-# starts with "[user]" is content.
-ROLE_DIVIDER = re.compile(r"\[(prompt|user|assistant|agent)\] (?:(\d{2}:\d{2}(?::\d{2})?) )?─+")
+# Subagent Run transcripts use [prompt]/[agent]/[error] and HH:MM. Prose that
+# merely starts with "[user]" is content.
+ROLE_DIVIDER = re.compile(r"\[(prompt|user|assistant|agent|error)\] (?:(\d{2}:\d{2}(?::\d{2})?) )?─+")
 # A Claude assistant message's pointer to a Subagent Run it started.
 SUBAGENT_MARKER = re.compile(r"\[subagent\] (\S+) ─+")
-ROLE_LABELS = {"user": "You", "prompt": "Prompt", "assistant": "Assistant", "agent": "Agent"}
+ROLE_LABELS = {"user": "You", "prompt": "Prompt", "assistant": "Assistant", "agent": "Agent", "error": "Tool error"}
 # What the person (or the parent agent) wrote: a band, kept as typed, never Markdown.
 BANDED = ("user", "prompt")
 BAND_BAR = "▌"
@@ -397,6 +397,8 @@ def render_transcript(text: str, width: int) -> tuple[list[Line], list[int]]:
             last = max((j for j, line in enumerate(body) if line.strip()), default=-1)
             per_line = [[Line(row, "band") for row in wrap([(label, "band_muted")], width, ((BAND_BAR + " ", "band_muted"),))]]
             per_line += [band_rows(line, width) if j <= last else [Line()] for j, line in enumerate(body)]
+        elif role == "error":  # A failed tool's output: verbatim and muted, never Markdown.
+            per_line = [plain_rows(label, width, "muted")] + [plain_rows(line, width, "muted") for line in body]
         else:
             # Consecutive assistant messages (split by tool calls) read as one turn.
             header = [] if previous == role else plain_rows(label, width, "muted")

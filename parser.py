@@ -297,7 +297,7 @@ def _is_only_tool_results(content: Any) -> bool:
 
 
 def parse_jsonl(
-    path: str, *, entries: list[dict] | None = None, include_tool_errors: bool = True,
+    path: str, *, entries: list[dict] | None = None,
 ) -> ParsedSession:
     """Parse a file, or an already captured source without reading it again."""
     session = ParsedSession()
@@ -455,7 +455,6 @@ def parse_jsonl(
     session.files_touched = sorted(files_set)
 
     # Second pass: build messages
-    pending_tool_uses: list[dict] = []  # tool_use blocks from current assistant turn
     tool_calls_by_id = {call.tool_call_id: call for call in raw_tool_calls if call.tool_call_id}
 
     for entry in entries:
@@ -498,18 +497,6 @@ def parse_jsonl(
                         "content": question_text,
                         "timestamp": entry.get("timestamp", ""),
                     })
-                # Append error bash results to last assistant message
-                for tu in pending_tool_uses:
-                    if tu.get("name") == "Bash":
-                        tuid = tu.get("id", "")
-                        tr = tool_results.get(tuid, {})
-                        if include_tool_errors and tr.get("is_error", False):
-                            result_text = _format_bash_result(
-                                tr.get("content", ""), is_error=True
-                            )
-                            if result_text and session.messages and session.messages[-1]["role"] == "assistant":
-                                session.messages[-1]["content"] += f"\n{result_text}"
-                pending_tool_uses = []
                 continue
 
             raw_text = _extract_user_text(content)
@@ -524,7 +511,6 @@ def parse_jsonl(
 
         elif entry_type == "assistant":
             parts = []
-            pending_tool_uses = []
 
             if isinstance(content, list):
                 for item in content:
@@ -537,7 +523,6 @@ def parse_jsonl(
                         if text:
                             parts.append(text)
                     elif item_type == "tool_use":
-                        pending_tool_uses.append(item)
                         # Inject subagent reference marker
                         if item.get("name") == "Agent":
                             inp = item.get("input", {})

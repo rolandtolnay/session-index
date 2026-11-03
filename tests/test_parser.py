@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 
 from parser import bash_changed_paths, parse_jsonl, clean_user_messages, _format_tool_use, _format_bash_result, _extract_user_text, _clean_text, _strip_narration, _extract_command
+from pi_parser import parse_pi_jsonl
 from transcript import render_transcript
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.jsonl")
@@ -548,3 +549,28 @@ def test_agent_tool_use_default_type(tmp_path):
     session = parse_jsonl(str(jsonl))
     all_assistant = " ".join(m["content"] for m in session.messages if m["role"] == "assistant")
     assert "__SUBAGENT:agent:general task__" in all_assistant
+
+
+def test_failed_bash_output_stays_in_the_tool_log_not_the_clean_transcript(tmp_path):
+    claude = tmp_path / "claude.jsonl"
+    entries = _bash_entries("bash-error", [("grep -rn missing .", None, True)])
+    entries[2]["message"]["content"][0]["content"] = "38: grep hit\nTraceback (most recent call last)"
+    entries.append({"type": "assistant", "sessionId": "bash-error", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Nothing matched."}]}})
+    claude.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+    pi = tmp_path / "pi.jsonl"
+    pi.write_text("".join(json.dumps(entry) + "\n" for entry in [
+        {"type": "session", "version": 3, "id": "pi-bash-error", "timestamp": "2026-04-02T10:00:00.000Z", "cwd": "/tmp/project"},
+        {"type": "message", "id": "u", "parentId": None, "message": {"role": "user", "content": "Find it"}},
+        {"type": "message", "id": "a", "parentId": "u", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Searching."},
+            {"type": "toolCall", "id": "bash-0", "name": "bash", "arguments": {"command": "grep -rn missing ."}}]}},
+        {"type": "message", "id": "t", "parentId": "a", "message": {"role": "toolResult", "toolCallId": "bash-0",
+            "toolName": "bash", "isError": True, "content": [{"type": "text", "text": "38: grep hit\nTraceback (most recent call last)"}]}},
+        {"type": "message", "id": "b", "parentId": "t", "message": {"role": "assistant", "content": "Nothing matched."}},
+    ]))
+
+    for session in (parse_jsonl(str(claude)), parse_pi_jsonl(str(pi))):
+        assert not any("grep hit" in message["content"] for message in session.messages)
+        assert session.messages[-1]["content"].endswith("Nothing matched.")
+        assert "grep hit" in session.tool_calls[0].result

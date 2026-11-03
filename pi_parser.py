@@ -440,7 +440,7 @@ def _tool_result_record(message: dict[str, Any]) -> dict[str, Any]:
 
 def parse_pi_jsonl(
     path: str, *, entries: list[dict[str, Any]] | None = None,
-    leaf_id: str | None = None, include_tool_errors: bool = True,
+    leaf_id: str | None = None,
 ) -> ParsedSession:
     """Parse Pi; an explicit leaf selects strict ancestry rather than latest."""
     session = ParsedSession()
@@ -552,7 +552,6 @@ def parse_pi_jsonl(
     apply_design_completions(session.tool_calls, branch)
 
     # Second pass: cleaned transcript/search messages.
-    pending_tool_calls: list[dict[str, Any]] = []
     tool_calls_by_id = {call.tool_call_id: call for call in raw_tool_calls if call.tool_call_id}
 
     for entry in branch:
@@ -584,11 +583,9 @@ def parse_pi_jsonl(
             if cleaned and not _is_noise_command(cleaned):
                 session.user_messages.append(cleaned)
                 session.messages.append({"role": "user", "content": cleaned, "timestamp": ts})
-            pending_tool_calls = []
 
         elif role == "assistant":
             parts: list[str] = []
-            pending_tool_calls = []
 
             if isinstance(content, list):
                 for block in content:
@@ -600,7 +597,6 @@ def parse_pi_jsonl(
                         if text:
                             parts.append(text)
                     elif block_type == "toolCall":
-                        pending_tool_calls.append(block)
                         name = block.get("name", "")
                         if name == "subagent":
                             parts.append(_subagent_marker(_tool_args(block)))
@@ -633,11 +629,6 @@ def parse_pi_jsonl(
                 if answered:
                     session.user_messages.append(answered)
                     session.messages.append({"role": "user", "content": answered, "timestamp": ts})
-            # Keep parity with Claude parser: otherwise only surface failed bash output.
-            if include_tool_errors and result.get("is_error") and result.get("tool_name") == "bash":
-                result_text = _format_bash_result(str(result.get("content", "")), is_error=True)
-                if result_text and session.messages and session.messages[-1]["role"] == "assistant":
-                    session.messages[-1]["content"] += f"\n{result_text}"
 
     session.user_message_count = len(session.user_messages)
     session.assistant_message_count = len(session.assistant_messages)

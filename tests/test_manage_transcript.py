@@ -69,6 +69,14 @@ def test_turns_are_banded_or_rendered_as_markdown():
     assert any(text.startswith("┌") for text in texts) and any(text.startswith("└") for text in texts)
 
 
+def test_subagent_tool_errors_stay_verbatim_and_muted():
+    rows, _ = render_transcript("[agent] 10:01 ──────\n→ bash: grep x\n[error] 10:01 ──────\n"
+                                "# not a heading\n    at **frame**\n\n[agent] 10:02 ──────\nRetried.\n", 80)
+    texts = [row.text for row in rows]
+    assert texts[2:5] == ["Tool error · 10:01", "# not a heading", "    at **frame**"]
+    assert roles(rows, "# not a heading") == {"muted"} and "Agent · 10:02" in texts
+
+
 def test_unclosed_markers_and_narrow_tables_stay_readable():
     assert render_markdown(["a **b and `c"], 40)[0][0].text == "a **b and `c"
     # A space at the row's edge breaks the row instead of vanishing between two words.
