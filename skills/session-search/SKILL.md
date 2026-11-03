@@ -176,57 +176,6 @@ uv run ~/.pi/agent/skills/session-search/scripts/prune.py SESSION_ID [SESSION_ID
 
 `prune` is dry-run by default. It deletes only exact Canonical Session IDs supplied on the command line, only when `--confirm` is present, and only when the audit classifies every requested session as low-value. Low-value means the summary has an explicit low-value signal and there are no durable facts for File Mutations, Skill Invocations, Subagent Runs, Side Chats, or question answers. Uncertain cases default to keep. A `low_value` Substance Band is a ranking assessment, not permission to prune; the pruning audit's independent guards still apply. Source JSONL is never deleted.
 
-## Manage sessions
-
-Run `uv run cli.py manage` from the repository, or `uv run ~/.pi/agent/skills/session-search/scripts/manage.py` from any directory.
-
-The full-screen terminal browser shows a compact session list beside the selected session’s preview. In narrower terminals, it stacks the list and preview. It uses readable local dates, a visible selection, and color accents. `NO_COLOR` disables colors.
-
-Results form one continuous list that scrolls a row at a time. Search and filters cover the full inventory. The header shows the search, active filters, and sort order, each next to its key. The list heading shows the selected position and the result count.
-
-Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines, marking matching Side Chats.
-
-Press `f` to open the filter picker. It opens with Project selected. Type part of a project name or displayed path, then press Enter to apply the filter and return to the session list. Each choice selects one project identity, including all its linked worktrees. Same-name projects have canonical paths in their labels so they remain distinguishable.
-
-Use Tab or Shift+Tab to switch between these categories:
-
-- project
-- local session-start date
-- provider
-- visibility
-- More, which contains Substance Band
-
-The date category includes presets and an inclusive custom range. Unknown substance is separate from Low-value.
-
-Each choice applies immediately, so there is no separate Apply step. Press Esc to cancel the current choice. When you are entering custom dates, press Esc to return to the date choices without applying changes.
-
-An asterisk marks the applied value, while the highlight marks the current candidate. Choose All/Any to clear one category. To clear all filters while keeping the search and sort settings, press Ctrl+R inside the picker.
-
-From the session list, press `?` to open detailed help.
-
-Press Enter to open the selected session's Clean Transcript. The reader shows its headline, project, date, provider, and absolute path above the conversation. Opened from a search, it starts at the first line containing your search words (all of them, else any) and highlights them. Use ↑/↓ or j/k to scroll a line; Shift+↑/↓, PgUp/PgDn, ←/→ or Space to page; and Home/End or g/G to jump to the beginning or end. Press `c` to copy the transcript's absolute path to the macOS clipboard. When the session has Side Chats, the hint row shows their count: press `s` to pick one and read it in the same view, where `c` copies its path. Esc returns one level, from a Side Chat to its session's transcript and then to the list, without losing your session selection, filters, or preview position. Missing transcripts and clipboard failures appear in the reader; they do not prevent returning.
-
-Press `s` to change the sort order. Automatic sorts by newest first while browsing and by best match while searching. You can also choose newest, oldest, best match during search, or substance first. Substance sorting orders sessions by substantial, useful, unknown, and low-value. Within each band, it shows the newest sessions first.
-
-Use these controls:
-
-- ↑/↓ or j/k to select the previous or next session.
-- Shift+↑/↓ (or Option/Ctrl+↑/↓, ←/→, p/n) to jump one screen of sessions.
-- Enter to open the selected session's transcript.
-- / to search; f for filters; s for sorting.
-- c to reset search, filters, and sorting; ? for keyboard help.
-- Tab in the session list to switch between all and hidden sessions, keeping other filters.
-- h to hide or unhide a session.
-- d to open the deletion confirmation.
-- q to quit.
-- PgUp/PgDn to scroll the preview.
-- r to refresh the list.
-
-Press y to confirm deletion; Esc or n cancels. Run the browser in an interactive terminal at least 60 columns by 24 rows.
-
-- **Hide from recents** preserves all data and search access. It excludes the session from future recent context for the current project, project group, and other projects. The flag survives indexing refreshes. It does not remove context already injected into an open conversation or prevent deliberate retrieval.
-- **Delete** requires confirming with y. It removes the database entry, indexed facts, and owned generated artifacts, regardless of the low-value pruning rules. Raw transcripts, shared artifacts, and files outside generated storage remain. There is no undo or deletion exclusion record. Hooks or backfills can re-index preserved raw transcripts. If owned-artifact removal fails, the database entry remains for retry. Files already removed are not restored.
-
 ## Transcript storage
 
 Codex Subagent Runs are linked to their parent and excluded from top-level discovery. Historical child rows with `is_subagent=1` remain inspectable by exact reference; exclude them from custom SQL counts of top-level conversations.
@@ -250,4 +199,4 @@ Raw Source JSONL lives at `~/.claude/projects/`, `~/.pi/agent/sessions/`, and Co
 
 Invoke this skill when the user references past work, asks about prior decisions, wants to audit tool/skill/subagent/question/File Mutation behavior, asks for PR summaries/changelogs from recent work, or needs counts/aggregates across sessions.
 
-Up to seven Top-Level current-project Session Headlines, configured-group sections targeting 14 each, and up to 21 Other projects headlines may already be injected with a shared Clean Transcript root and canonical transcript filenames. Each group’s related-project pool and the remaining Other projects pool independently use their seven most recent active UTC dates, without a calendar-age cutoff. Eligible substantial, useful, or unclassified sessions with existing Clean Transcripts establish active dates; hidden sessions, subagents, missing transcripts, and low-value-only activity do not advance a window. Selection prefers substantial then useful sessions newest first within each band, treating unknown assessments alongside useful ones. Groups guarantee a representative per project on selected dates and may exceed 14 for coverage; low-value sessions on those dates are otherwise omitted. Nested Subagent Run sessions and sessions flagged `hidden_from_recents` do not participate. Use this skill when the desired session is absent, or for specific topic lookups, structured audits, and aggregate questions.
+Headlines for recent sessions in the current project and in other projects are usually injected at session start with their Clean Transcript paths. That list is a window over recent activity ranked by Substance Band, and it leaves out hidden sessions, Subagent Runs, low-value sessions, and sessions without a Clean Transcript, so a session can be indexed yet absent from it. Use this skill when the session you need is not listed, when the question is about a specific topic rather than recent work, or when it needs an audit or an aggregate.

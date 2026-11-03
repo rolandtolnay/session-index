@@ -27,7 +27,7 @@ HH:MM:SS.mmm [sid_6] hook_name          | message
 - `clean_pi_transcript.py` turns a raw Pi JSONL into readable Markdown (`uv run clean_pi_transcript.py <file>`). It is deliberately not exposed through the CLI or any skill.
 
 ## Skill maintenance
-`skills/session-search/` is the agent-facing interface. When a CLI command or option changes, update `skills/session-search/SKILL.md` and the thin wrapper in `skills/session-search/scripts/`. Wrappers resolve the repo root, import the `cli.py` command function, parse only their own arguments, and delegate; CLI logic lives in `cli.py` only. Installed Claude/Codex/Pi skill paths are symlinks into this repo, so changes take effect without reinstalling.
+`skills/session-search/` is the agent-facing interface. When a CLI command or option changes, update `skills/session-search/SKILL.md` and the thin wrapper in `skills/session-search/scripts/`. `SKILL.md` covers only what an agent runs to answer questions; the `manage` browser is for people and is documented in the README alone, since describing it in the skill adds context an agent never acts on. Wrappers resolve the repo root, import the `cli.py` command function, parse only their own arguments, and delegate; CLI logic lives in `cli.py` only. Installed Claude/Codex/Pi skill paths are symlinks into this repo, so changes take effect without reinstalling.
 
 ## Session manager TUI (`manage_tui.py`)
 The `sessions` alias opens `cli.py manage`, a dependency-free curses browser. The user plans to grow it with richer previews and more per-session actions, so new work should extend the structure below rather than add a parallel mechanism.
