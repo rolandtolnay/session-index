@@ -40,6 +40,7 @@ class Screen:
 def transcript(tag: str, opener: str = "[user] 10:00:00 ───") -> str:
     return (f"fixture | main | 2026-01-01\n---\n\n## Related artifacts\n- ARTIFACT_LIST_{tag}\n\n---\n\n"
             f"{opener}\nQuestion {tag}\n\n[assistant] 10:00:05 ───\nFirst paragraph\n\n    example_code()\n\n" +
+            "rewrapped prose " * 40 + "\n" +
             "\n".join(f"{tag}_{j:03}" for j in range(80)) + f"\nOnly Zebra here {tag}\nZebra and Giraffe {tag}" +
             "\n[user] " + "quoted conversation content " * 20 + f"TAIL_{tag}\n")
 
@@ -141,9 +142,12 @@ def test_all_transcript_content_reachable_and_paragraphs_preserved(browser, colu
     paragraph = lines.index("First paragraph")
     assert lines[paragraph + 1] == ""
     assert lines[paragraph + 2] == "    example_code()"
-    # Width changes must rewrap and keep the end of the transcript reachable.
+    # Width changes rewrap, keep the line at the top in place, and keep the end reachable.
+    ui.reader.scroll = lines.index("main_040")
+    ui.draw(screen)
     screen.columns = 60 if columns > 60 else 150
     ui.draw(screen)
+    assert ui.reader.lines[1][ui.reader.scroll][0] == "main_040"
     ui.handle_key(curses.KEY_END)
     ui.draw(screen)
     assert "TAIL_main" in screen.text()

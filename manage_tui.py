@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 import curses
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
@@ -257,12 +258,13 @@ class Reader:
     path: str
     text: str = ""
     error: str = ""
-    lines: tuple = (0, [])  # (width, styled lines) wrapped for that width
+    # (width, styled lines wrapped for it, index of each transcript line's first wrapped line)
+    lines: tuple = (0, [], [])
     scroll: int = 0
     max: int = 0
     height: int = 1
     # Opened from a search: matches are highlighted, and the first draw scrolls
-    # to the raw line holding the first match.
+    # to the transcript line holding the first match.
     terms: re.Pattern | None = None
     match: int | None = None
 
@@ -927,16 +929,21 @@ class SessionManager:
                 self.put(screen, y + 2 + i, 2, line, width=width)
             return
         if reader.lines[0] != width:
-            lines = []
-            for number, raw in enumerate(reader.text.splitlines()):
-                if number == reader.match:  # Two lines of context above the first match, once.
-                    reader.scroll, reader.match = max(0, len(lines) - 2), None
+            if reader.lines[0]:  # A resize keeps the transcript line at the top in place.
+                anchor, context = bisect_right(reader.lines[2], reader.scroll) - 1, 0
+            else:  # The first draw opens at the search match, two lines of context above.
+                anchor, context = reader.match, 2
+            lines, starts = [], []
+            for raw in reader.text.splitlines():
+                starts.append(len(lines))
                 # Role rules ([user] 12:28 ───) are structure: clipped, never wrapped or ellipsized.
                 if ROLE_DIVIDER.fullmatch(raw):
                     lines.append((clipped(raw, width), self.styles["muted"]))
                 else:  # A blank line wraps to nothing; keep it as the paragraph break.
                     lines += [(line, 0) for line in wrapped_block(raw, width) or [""]]
-            reader.lines = (width, lines)
+            reader.lines = (width, lines, starts)
+            if anchor is not None and starts:
+                reader.scroll = max(0, starts[anchor] - context)
         lines = reader.lines[1]
         reader.max = max(0, len(lines) - reader.height)
         reader.scroll = min(reader.scroll, reader.max)
