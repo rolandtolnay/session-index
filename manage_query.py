@@ -25,6 +25,22 @@ class ManageFilters:
     substance: str | None = None
 
 
+# Tool names some providers record in place of the agent the parent asked for.
+_GENERIC_AGENT_TYPES = {"agent", "subagent", "task"}
+
+
+def _subagent_runs(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    """Subagent Runs with a readable transcript, in the order the session started them."""
+    rows = conn.execute(
+        """SELECT requested_agent_type, observed_agent_type, task_preview, started_at, transcript_path
+           FROM subagent_runs WHERE parent_session_id=? AND COALESCE(transcript_path, '') <> ''
+           ORDER BY started_at IS NULL, started_at, child_index, rowid""", (session_id,)).fetchall()
+    return [{"agent": next((name for name in (row[0], row[1]) if name and name.casefold() not in _GENERIC_AGENT_TYPES),
+                           "subagent"),
+             "headline": " ".join((row[2] or "").split()) or "Untitled task",
+             "started_at": row[3], "transcript_path": row[4]} for row in rows]
+
+
 @dataclass
 class ManagePage:
     sessions: list[dict]
@@ -411,5 +427,6 @@ def query_manage_sessions(
              "matched": any(term in (label(child) + '\n' + child['search_text']).casefold() for term in terms)}
             for child in list_side_chats(conn, row["session_id"])
         ]
+        row["subagent_runs"] = _subagent_runs(conn, row["session_id"])
         row.pop("side_chat_content", None)
     return ManagePage(sessions=page, total=total, approximate=approximate)
