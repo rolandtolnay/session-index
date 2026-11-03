@@ -79,20 +79,25 @@ def set_session_project(session: ParsedSession, cwd: str) -> None:
         setattr(session, field, getattr(identity, field) or "")
 
 
-def restore_project_identity(conn: sqlite3.Connection, session: ParsedSession) -> None:
+def restore_project_identity(conn: sqlite3.Connection, session: ParsedSession, *, keep_branch: bool = False) -> None:
     """A resolved session's membership outlives its checkout.
 
     Do this before rendering/summarizing as well as at persistence: otherwise a
     reparse of a removed checkout would leak its folder name into new artifacts.
+    `keep_branch` is for reindexing finished Pi sessions: their source records no
+    branch, so a reparse reads whatever the checkout has now, or nothing once it
+    is gone, instead of the branch recorded while the session ran.
     """
     row = conn.execute(
-        "SELECT project_id, project_path, project, cwd, worktree_path FROM sessions WHERE session_id = ?",
+        "SELECT project_id, project_path, project, cwd, worktree_path, branch FROM sessions WHERE session_id = ?",
         (session.session_id,),
     ).fetchone()
     if row and row[0] and (row[0].startswith("git:") or not session.project_id.startswith("git:")):
         session.project_id, session.project_path, session.project = row[:3]
         session.cwd = session.cwd or row[3] or ""
         session.worktree_path = session.worktree_path or row[4] or ""
+    if row and keep_branch and row[5]:
+        session.branch = row[5]
 
 
 if __name__ == "__main__":

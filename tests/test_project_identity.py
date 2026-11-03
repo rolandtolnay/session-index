@@ -6,12 +6,15 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import cli
 import db
 import indexer
 import recent_context
@@ -131,7 +134,8 @@ def test_non_git_folders_are_distinct_and_failure_is_bounded(tmp_path, monkeypat
 
 @pytest.mark.parametrize("source,fixture", [("claude", "sample.jsonl"), ("pi", "pi_sample.jsonl"), ("codex", "codex_sample.jsonl")])
 def test_indexing_and_reindex_after_worktree_removal(repository, tmp_path, monkeypatch, source, fixture):
-    checkout = worktree(repository, tmp_path / "app-feature")
+    checkout = tmp_path / "app-feature"
+    git(repository, "worktree", "add", "--quiet", "-b", "feature", str(checkout))
     location = checkout / "src"
     location.mkdir()
     data = tmp_path / "data"
@@ -156,9 +160,11 @@ def test_indexing_and_reindex_after_worktree_removal(repository, tmp_path, monke
     git(repository, "worktree", "remove", "--force", str(checkout))
     reparsed = indexer.parse_session_file(source, str(path))
     assert reparsed.project_id.startswith("dir:")
-    indexer.index_fast(source, str(path))
+    # Backfill keeps the branch recorded while the session ran; Pi sources do not store one.
+    indexer.index_source_transcript(source, str(path), replace(indexer.FAST_INDEX_OPTIONS,
+                                                               keep_branch=cli._backfill_options(SimpleNamespace()).keep_branch))
     after = db.get_session(connection, indexed.session_id)
-    for field in ("session_id", "project_id", "project_path", "project", "cwd", "worktree_path", "files_touched", "source_path"):
+    for field in ("session_id", "project_id", "project_path", "project", "cwd", "worktree_path", "branch", "files_touched", "source_path"):
         assert after[field] == before[field], field
     connection.close()
 

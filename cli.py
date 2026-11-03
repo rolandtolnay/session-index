@@ -216,9 +216,11 @@ def cmd_current(args: argparse.Namespace) -> None:
 
 def _backfill_options(args: argparse.Namespace):
     """Pick the indexing pass: deterministic-only by default, summaries opt-in."""
+    from dataclasses import replace
     from indexer import FULL_INDEX_OPTIONS, NO_SUMMARY_INDEX_OPTIONS
 
-    return FULL_INDEX_OPTIONS if getattr(args, "with_summary", False) else NO_SUMMARY_INDEX_OPTIONS
+    options = FULL_INDEX_OPTIONS if getattr(args, "with_summary", False) else NO_SUMMARY_INDEX_OPTIONS
+    return replace(options, keep_branch=True)
 
 
 def _completed_backfill_sessions(conn, options) -> set[str]:

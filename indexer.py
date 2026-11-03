@@ -25,6 +25,9 @@ class IndexStage(str, Enum):
 @dataclass(frozen=True)
 class IndexOptions:
     stages: frozenset[IndexStage]
+    # Reindexing finished sessions keeps each Pi session's recorded branch; see
+    # restore_project_identity. Live refreshes follow the checkout's branch.
+    keep_branch: bool = False
 
 
 FAST_INDEX_OPTIONS = IndexOptions(frozenset({IndexStage.SESSION_METADATA}))
@@ -420,7 +423,7 @@ def index_source_transcript(
         if is_nested_pi_subagent_session(path):
             return IndexResult(skipped_reason="nested Pi subagent session", stages=stages)
     if source == "pi":
-        return _index_pi_source(path, stages)
+        return _index_pi_source(path, stages, keep_branch=options.keep_branch)
     session = parsed_session or parse_session_file(source, path)
     result = IndexResult(
         session_id=session.session_id,
@@ -489,7 +492,7 @@ def index_source_transcript(
     return result
 
 
-def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
+def _index_pi_source(path: str, stages: frozenset[IndexStage], *, keep_branch: bool = False) -> IndexResult:
     """Resolve and parse inside the publication boundary; generate outside it."""
     import os
     from pathlib import Path
@@ -557,7 +560,7 @@ def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
         if initial.result.skipped_reason:
             return initial.result
         with indexing_lock(os.path.dirname(db.DB_PATH), initial.session.session_id):
-            prepared = _prepare_pi_publication(path, stages, initial)
+            prepared = _prepare_pi_publication(path, stages, initial, keep_branch=keep_branch)
             if IndexStage.SUMMARY not in stages:
                 return _index_qualified_session("pi", path, stages, prepared, initial.result)
             inputs = _description_inputs(
@@ -576,7 +579,7 @@ def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
             # Compare what the models actually saw, including contributor files.
             # Unrelated extension entries may change raw bytes without changing
             # descriptions; child evidence can change inputs without a parent append.
-            prepared = _prepare_pi_publication(path, stages, current)
+            prepared = _prepare_pi_publication(path, stages, current, keep_branch=keep_branch)
             current_inputs = _description_inputs(
                 prepared.session, _enriched_files(prepared.session, prepared.parsed_subagents),
                 prepared.parsed_subagents,
@@ -591,7 +594,9 @@ def _index_pi_source(path: str, stages: frozenset[IndexStage]) -> IndexResult:
     return result
 
 
-def _prepare_pi_publication(path: str, stages: frozenset[IndexStage], snapshot: PiSnapshot) -> PreparedIndexInputs:
+def _prepare_pi_publication(
+    path: str, stages: frozenset[IndexStage], snapshot: PiSnapshot, *, keep_branch: bool = False,
+) -> PreparedIndexInputs:
     """Prepare children only while ownership and per-conversation locks are held."""
     from db import get_connection, init_db
     from pi_continuations import publication_children
@@ -605,7 +610,7 @@ def _prepare_pi_publication(path: str, stages: frozenset[IndexStage], snapshot: 
     conn = get_connection()
     try:
         init_db(conn)
-        restore_project_identity(conn, session)
+        restore_project_identity(conn, session, keep_branch=keep_branch)
         needs_children = bool(stages & {
             IndexStage.SUMMARY, IndexStage.CLEAN_TRANSCRIPT,
             IndexStage.SUBAGENT_TRANSCRIPTS, IndexStage.TOOL_LOG,

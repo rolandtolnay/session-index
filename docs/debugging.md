@@ -184,6 +184,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 - Confirm the deterministic facts exist: `uv run cli.py query "SELECT skill_name, COUNT(*) AS n FROM skill_invocations GROUP BY skill_name ORDER BY n DESC LIMIT 20" --json`.
 - Regenerate one known session first: `uv run cli.py backfill --source all --session SESSION_ID --force`.
 - If scoped repair works, run the full deterministic repair: `uv run cli.py backfill --source all --force`.
+- A full `--force` backfill indexes every Source Transcript still on disk, including sessions deleted with `manage` or `prune`, which keep their source JSONL. When the index has had deletions, repair the affected IDs one `--session` at a time instead.
 - Historical repair is a deterministic reindex/backfill, not a transcript-only migration, because Skill Invocations depend on parser metadata, combined Tool Call sequences, and subagent transcript locality.
 
 **Evidence Inspect fails:**
