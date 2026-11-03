@@ -32,24 +32,27 @@ HH:MM:SS.mmm [sid_6] hook_name          | message
 ## Session manager TUI (`manage_tui.py`)
 The `sessions` alias opens `cli.py manage`, a dependency-free curses browser. The user plans to grow it with richer previews and more per-session actions, so new work should extend the structure below rather than add a parallel mechanism.
 
-**Layout.** The header is the view controls: `/` search, `f` filters, `s` sort, each key followed by its current value, plus `c reset` only when something is set. The body is the session list and the preview, side by side at 112+ columns and stacked below that. The footer is a status line and an action bar. Panels (search, filters, sort, help) and the delete confirmation replace the whole screen so nothing competes with them.
+**Layout.** The header is the view controls: `/` search, `f` filters, `s` sort, each key followed by its current value, plus `c reset` only when something is set. The body is the session list and the preview, side by side at 112+ columns and stacked below that. The footer is a status line and an action bar. Panels (search, filters, sort, help, the Side Chat picker), the delete confirmation, and the transcript reader replace the whole screen so nothing competes with them.
 
-**Show each fact once.** Header values are the only place view state appears. The list heading shows the position (`12 of 2,861`), so rows carry no numbers. The preview has a fixed identity block (headline, project, date · provider · ID, state) and a scrollable body (match excerpts, summary, Side Chats); in stacked mode it drops what the list row already shows, and `PREVIEWED_MATCH_FIELDS` keeps excerpts from repeating the headline or summary. The status line reports only outcomes the screen cannot show otherwise (hide/unhide, delete, errors, near-match fallback) and clears on the next key.
+**Show each fact once.** Header values are the only place view state appears. The list heading shows the position (`12 of 2,861`), so rows carry no numbers. The preview has a fixed identity block (headline, project, date · provider · ID, state) and a scrollable body (match excerpts, summary, Side Chats); in stacked mode it drops what the list row already shows, and `PREVIEWED_MATCH_FIELDS` keeps excerpts from repeating the headline or summary. The status line reports only outcomes the screen cannot show otherwise (hide/unhide, delete, copy, errors, near-match fallback) and clears on the next key.
+
+**Reading transcripts.** Enter opens the selected session's Clean Transcript in one reader (`Reader`, `self.readers`) used for every transcript: an identity block (headline, project · date · provider, absolute path that `c` copies) over the scrolling conversation, with the transcript's own header and Related artifacts stripped. Side Chats are secondary to their session: `s` opens a picker from the reader, the chosen Side Chat opens in the same reader above its session's transcript, and Esc pops one level back toward the list.
 
 **Color roles.** Colors come from the user's Pi theme (`~/.pi/agent/themes/claude-code-dark.json`), mapped to the nearest xterm-256 colors in `PALETTE`, so the browser looks like the rest of their harness. Draw code names a role from `self.styles` rather than a curses color, so a palette change is one edit and `NO_COLOR` (bold/dim/reverse only) keeps the same hierarchy. State is also spelled out in text (`hidden`), so color never carries meaning alone.
 
 | Role | Use for | Not for |
 |------|---------|---------|
-| `strong` | The one primary item in a region: preview headline, panel title, user-set header values | List titles (default weight), metadata |
+| `strong` | The one primary item in a region: preview headline, panel title | List titles (default weight), metadata |
 | default (`0`) | Body text: list titles, summaries, status messages | — |
-| `muted` | Metadata, captions, placeholders, default-valued controls, key-hint labels | Anything the user must act on |
-| `accent` | Keys in hints, text inputs, the active picker tab | Content, IDs, decoration |
+| `muted` | Metadata, captions, placeholders, default-valued controls, hint actions | Anything the user must act on |
+| `dim` | Keys in hints and header controls (Pi's `dim`) | Text the user reads |
+| `accent` | State: user-set header values, text inputs, the active picker tab; the one next action in a hint row | Content, IDs, decoration, ordinary hint keys |
 | `border` | Rules, the pane divider, panel frames | Text |
 | `selected` | The focused row in the list or a picker: white on the dark selection background; inside it, `selected_accent` for the `›` marker and `selected_muted` for metadata | — |
 | `state` | Non-default session state (currently `hidden`) | Errors |
 | `danger` | Destructive actions and errors | Warnings about state |
 
-**Conventions.** Key hints go through `draw_keys` (accent key, muted label) so every hint reads the same, and any key shown in a hint also has a `HELP_LINES` row. Clipping ends in an ellipsis (`put`, `ellipsized`) so a truncated project name cannot pass for a whole one. Indexed text is user data, never terminal markup: session fields go through `plain()` and `put` replaces any remaining control characters. The list is one continuous scroll over absolute positions (`index`, `top`); query chunks (`CHUNK_SIZE`) are a fetch detail the user never sees. ↑/↓ move one session, Shift+↑/↓ (and Option/Ctrl, ←/→) jump one screen of rows.
+**Conventions.** Key hints go through `draw_keys`, which renders Pi's hint format (lowercase `dim` key, `muted` action, ` · ` between hints; an optional style makes the row's next action `accent` or a destructive key `danger`) so every hint reads the same, and any key shown in a hint also has a `HELP_LINES` row. Clipping ends in an ellipsis (`put`, `ellipsized`) so a truncated project name cannot pass for a whole one. Indexed text is user data, never terminal markup: session fields go through `plain()` and `put` replaces any remaining control characters. The list is one continuous scroll over absolute positions (`index`, `top`); query chunks (`CHUNK_SIZE`) are a fetch detail the user never sees. ↑/↓ move one session, Shift+↑/↓ (and Option/Ctrl, ←/→) jump one screen of rows.
 
 **Adding a session action.** Add it to `session_actions()` (the label can depend on session state), handle its key in `handle_key`, and add a `HELP_LINES` row; the action bar builds itself from `session_actions()`. An action that destroys data gets its own confirmation screen like delete, where only `y` proceeds and other keys do nothing.
 

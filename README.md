@@ -203,7 +203,7 @@ The full-screen terminal browser shows a compact session list beside the selecte
 
 Results form one continuous list that scrolls a row at a time. Search and filters cover the full inventory. The header shows the search, active filters, and sort order, each next to its key. The list heading shows the selected position and the result count.
 
-Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines/paths, marking matching Side Chats.
+Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines, marking matching Side Chats.
 
 Press `f` to open the filter picker. It opens with Project selected. Type part of a project name or displayed path, then press Enter to apply the filter and return to the session list. Each choice selects one project identity, including all its linked worktrees. Same-name projects have canonical paths in their labels so they remain distinguishable.
 
@@ -223,7 +223,7 @@ An asterisk marks the applied value, while the highlight marks the current candi
 
 From the session list, press `?` to open detailed help.
 
-When the selected session has Side Chats, the action bar shows their count. Press Enter to browse them, then Enter again to read the selected conversation. Use ↑/↓ or j/k to select or scroll, PgUp/PgDn or Space to page through a transcript, and Home/End to jump to its beginning or end. Press `c` in either Side Chat view to copy the selected transcript's absolute path to the macOS clipboard. Esc returns one level without losing your session selection, filters, or preview position. Missing transcripts and clipboard failures appear in the view; they do not prevent returning.
+Press Enter to open the selected session's Clean Transcript. The reader shows its headline, project, date, provider, and absolute path above the conversation. Opened from a search, it starts at the first line containing your search words (all of them, else any) and highlights them. Use ↑/↓ or j/k to scroll a line; Shift+↑/↓, PgUp/PgDn, ←/→ or Space to page; and Home/End or g/G to jump to the beginning or end. Press `c` to copy the transcript's absolute path to the macOS clipboard. When the session has Side Chats, the hint row shows their count: press `s` to pick one and read it in the same view, where `c` copies its path. Esc returns one level, from a Side Chat to its session's transcript and then to the list, without losing your session selection, filters, or preview position. Missing transcripts and clipboard failures appear in the reader; they do not prevent returning.
 
 Press `s` to change the sort order. Automatic sorts by newest first while browsing and by best match while searching. You can also choose newest, oldest, best match during search, or substance first. Substance sorting orders sessions by substantial, useful, unknown, and low-value. Within each band, it shows the newest sessions first.
 
@@ -231,6 +231,7 @@ Use these controls:
 
 - ↑/↓ or j/k to select the previous or next session.
 - Shift+↑/↓ (or Option/Ctrl+↑/↓, ←/→, p/n) to jump one screen of sessions.
+- Enter to open the selected session's transcript.
 - / to search; f for filters; s for sorting.
 - c to reset search, filters, and sorting; ? for keyboard help.
 - Tab in the session list to switch between all and hidden sessions, keeping other filters.
