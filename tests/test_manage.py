@@ -326,6 +326,95 @@ def test_preview_paging_makes_every_word_reachable_on_short_terminals(store, col
     assert words <= seen
 
 
+def preview_rows(ui, width=60, height=100):
+    """Capture the public preview drawing, including row positions and styles."""
+    class Screen:
+        def __init__(self):
+            self.rows = []
+
+        def getmaxyx(self):
+            return height, width
+
+        def addstr(self, y, x, text, style):
+            self.rows.append((y, text, style))
+
+    ui.styles = dict.fromkeys(manage_tui.STYLE_ROLES, 0)
+    ui.styles["muted"] = 1
+    screen = Screen()
+    ui.draw_preview(screen, 0, 0, height, width)
+    return screen.rows
+
+
+@pytest.mark.parametrize("count", [0, 1, 4, 5, 8])
+def test_preview_samples_user_messages_without_duplicates(store, count):
+    conn, _ = store
+    messages = [f"request{i:02}" for i in range(count)]
+    seed(store, summary=None, user_messages="\n---\n".join(messages))
+    ui = SessionManager(conn, cli._delete_managed_session)
+    rows = preview_rows(ui)
+    text = "\n".join(text for _, text, _ in rows)
+    expected = messages if count <= 4 else messages[:2] + messages[-2:]
+    assert re.findall(r"request\d{2}", text) == expected
+    omitted = [(text, style) for _, text, style in rows if "omitted" in text]
+    if count > 4:
+        assert len(omitted) == 1
+        assert re.search(rf"\b{count - 4}\b", omitted[0][0])
+        assert omitted[0][1] == ui.styles["muted"]
+        assert text.index(messages[1]) < text.index("omitted") < text.index(messages[-2])
+    else:
+        assert not omitted
+
+
+@pytest.mark.parametrize("width", [24, 60])
+def test_preview_truncates_each_message_to_three_cell_safe_lines(store, width):
+    conn, _ = store
+    seed(store, user_messages="\n---\n".join([
+        "begin " + "界語 " * 100 + "unreachable_tail",
+        "short_request",
+    ]))
+    ui = SessionManager(conn, cli._delete_managed_session)
+    rows = preview_rows(ui, width=width)
+    message_rows = [(y, text) for y, text, _ in rows if "begin" in text or "界" in text]
+    assert len(message_rows) == 3
+    assert message_rows[-1][1].endswith("…")
+    assert all(manage_tui.cells(text) <= width for _, text in message_rows)
+    text = "\n".join(text for _, text, _ in rows)
+    assert "unreachable_tail" not in text
+    assert text.count("short_request") == 1
+    assert "Unique searchable experiment" in " ".join(text.split())
+
+
+@pytest.mark.parametrize("query", ["openingneedle", "middleneedle", "tailneedle"])
+def test_preview_keeps_search_evidence_outside_the_visible_sample(store, query):
+    conn, _ = store
+    messages = ["openingneedle"] if query == "openingneedle" else [
+        "opening request", "second request", "middleneedle",
+        "penultimate request", "padding " * 100 + "tailneedle",
+    ]
+    seed(store, user_messages="\n---\n".join(messages))
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, f"/{query}\n")
+    assert ui.total == 1
+    text = " ".join(text for _, text, _ in preview_rows(ui))
+    # Visible matches are not duplicated; omitted/truncated matches retain an excerpt.
+    assert text.count(query) == 1
+
+
+def test_preview_message_sample_remains_reachable_by_paging(store):
+    conn, _ = store
+    seed(store, summary="A long summary. " * 100,
+         user_messages="\n---\n".join(f"request{i:02}" for i in range(8)))
+    ui = SessionManager(conn, cli._delete_managed_session)
+    seen = set()
+    for _ in range(100):
+        rows = preview_rows(ui, width=40, height=20)
+        seen.update(re.findall(r"request\d{2}", " ".join(text for _, text, _ in rows)))
+        if ui.preview_scroll == ui.preview_max:
+            break
+        ui.handle_key(curses.KEY_NPAGE)
+    assert seen == {"request00", "request01", "request06", "request07"}
+
+
 def keys(ui, text):
     for key in text:
         ui.handle_key(key)

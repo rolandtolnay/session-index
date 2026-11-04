@@ -866,14 +866,37 @@ class SessionManager:
         if compact:
             self.put_right(screen, y, x, width, substance_label(session), cells(fixed[0][0]))
 
+        # The first and last two indexed user messages, each capped at three lines.
+        prompts = [text for part in (session.get("user_messages") or "").split("\n---\n")
+                   if (text := plain(part))]
+        shown = prompts if len(prompts) <= 4 else prompts[:2] + [None] + prompts[-2:]
+        messages, visible = [], []
+        for text in shown:
+            if text is None:
+                omitted = len(prompts) - 4
+                messages.append((f"  {omitted:,} user message{'s' * (omitted != 1)} omitted", self.styles["muted"]))
+                continue
+            lines = clamped(text, width - 2, 3)
+            messages += [(("· " if i == 0 else "  ") + line, 0) for i, line in enumerate(lines)]
+            visible.append(" ".join(lines))
+
+        def on_screen(part):
+            """A user-message excerpt adds nothing when its text is already shown."""
+            if not part.startswith("User messages:"):
+                return False
+            pieces = re.split(r"(?:^| )---(?: |$)", part.removeprefix("User messages:").strip(" …"))
+            return all(any(piece in text for text in visible) for piece in pieces if piece)
+
         body = []
         matches = [part for part in plain(session.get("match_excerpt")).split(" | ")
-                   if part and not part.startswith(PREVIEWED_MATCH_FIELDS)]
+                   if part and not part.startswith(PREVIEWED_MATCH_FIELDS) and not on_screen(part)]
         if matches:
             body += [("MATCHED IN", self.styles["muted"])]
             body += [(line, 0) for part in matches for line in wrapped(part, width)] + [("", 0)]
-        summary = plain(session.get("summary") or session.get("user_messages") or "No preview available yet.")
-        body += [(line, 0) for line in wrapped(summary, width)]
+        if summary := plain(session.get("summary")) or ("" if messages else "No preview available yet."):
+            body += [(line, 0) for line in wrapped(summary, width)]
+        if messages:
+            body += ([("", 0)] if summary else []) + [("USER MESSAGES", self.styles["muted"])] + messages
         if session.get("side_chats"):
             body += [("", 0), ("SIDE CHATS", self.styles["muted"])]
             for child in session["side_chats"]:
