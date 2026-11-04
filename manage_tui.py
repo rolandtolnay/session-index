@@ -16,7 +16,7 @@ import textwrap
 from db import project_options, set_hidden_from_recents
 from manage_artifacts import copy_transcript_path, read_transcript
 from manage_query import ManageFilters, query_manage_sessions
-from manage_transcript import ROLE_DIVIDER, cells, clipped, render_transcript
+from manage_transcript import BAND_BAR, ROLE_DIVIDER, cells, clipped, render_transcript
 
 
 SORT_LABELS = {
@@ -866,18 +866,27 @@ class SessionManager:
         if compact:
             self.put_right(screen, y, x, width, substance_label(session), cells(fixed[0][0]))
 
-        # The first and last two indexed user messages, each capped at three lines.
+        # The first and last two indexed user messages, each capped at three lines
+        # and drawn as the transcript draws user turns: a band with its bar, numbered.
         prompts = [text for part in (session.get("user_messages") or "").split("\n---\n")
                    if (text := plain(part))]
-        shown = prompts if len(prompts) <= 4 else prompts[:2] + [None] + prompts[-2:]
+        numbered = list(enumerate(prompts, 1))
+        shown = numbered if len(prompts) <= 4 else numbered[:2] + [None] + numbered[-2:]
+        digits = len(str(len(prompts)))
+        indent = 2 + digits + 2  # Bar, space, ordinal, two spaces.
         messages, visible = [], []
-        for text in shown:
-            if text is None:
+        for item in shown:
+            if messages:
+                messages.append(([], 0))
+            if item is None:
                 omitted = len(prompts) - 4
-                messages.append((f"  {omitted:,} user message{'s' * (omitted != 1)} omitted", self.styles["muted"]))
+                messages.append(([(" " * indent + f"{omitted:,} message{'s' * (omitted != 1)} omitted", self.styles["muted"])], 0))
                 continue
-            lines = clamped(text, width - 2, 3)
-            messages += [(("· " if i == 0 else "  ") + line, 0) for i, line in enumerate(lines)]
+            number, text = item
+            lines = clamped(text, width - indent, 3)
+            for i, line in enumerate(lines):
+                label = f"{number:>{digits}}" if i == 0 else " " * digits
+                messages.append(([(f"{BAND_BAR} {label}  ", self.styles["band_muted"]), (line, self.styles["band"])], self.styles["band"]))
             visible.append(" ".join(lines))
 
         def on_screen(part):
@@ -887,34 +896,41 @@ class SessionManager:
             pieces = re.split(r"(?:^| )---(?: |$)", part.removeprefix("User messages:").strip(" …"))
             return all(any(piece in text for text in visible) for piece in pieces if piece)
 
+        def row(line, style=0):
+            return ([(line, style)], 0)
+
+        # Rows are (spans, fill); a band row paints its fill across the pane first.
         body = []
         matches = [part for part in plain(session.get("match_excerpt")).split(" | ")
                    if part and not part.startswith(PREVIEWED_MATCH_FIELDS) and not on_screen(part)]
         if matches:
-            body += [("MATCHED IN", self.styles["muted"])]
-            body += [(line, 0) for part in matches for line in wrapped(part, width)] + [("", 0)]
+            body += [row("MATCHED IN", self.styles["muted"])]
+            body += [row(line) for part in matches for line in wrapped(part, width)] + [row("")]
         if summary := plain(session.get("summary")) or ("" if messages else "No preview available yet."):
-            body += [(line, 0) for line in wrapped(summary, width)]
+            body += [row(line) for line in wrapped(summary, width)]
         if messages:
-            body += ([("", 0)] if summary else []) + [("USER MESSAGES", self.styles["muted"])] + messages
+            body += ([row("")] if summary else []) + [row("USER MESSAGES", self.styles["muted"])] + messages
         if session.get("side_chats"):
-            body += [("", 0), ("SIDE CHATS", self.styles["muted"])]
+            body += [row(""), row("SIDE CHATS", self.styles["muted"])]
             for child in session["side_chats"]:
                 marker = "matched · " if child.get("matched") else ""
                 lines = wrapped(plain(marker + child["headline"]), width - 2)
-                body += [(("· " if i == 0 else "  ") + line, 0) for i, line in enumerate(lines)]
+                body += [row(("· " if i == 0 else "  ") + line) for i, line in enumerate(lines)]
         if runs := session.get("subagent_runs"):
             agents = Counter(run["agent"] for run in runs)
-            body += [("", 0), ("SUBAGENT RUNS", self.styles["muted"])]
-            body += [(line, 0) for line in wrapped(" · ".join(
+            body += [row(""), row("SUBAGENT RUNS", self.styles["muted"])]
+            body += [row(line) for line in wrapped(" · ".join(
                 f"{agent} ×{count}" if count > 1 else agent for agent, count in agents.most_common()), width)]
         top = y + 1 + len(fixed)
         count = max(1, y + height - top - 1)  # The last row is kept for the scroll hint.
         self.preview_height = count
         self.preview_max = max(0, len(body) - count)
         self.preview_scroll = min(self.preview_scroll, self.preview_max)
-        for i, (line, style) in enumerate(body[self.preview_scroll:self.preview_scroll + count]):
-            self.put(screen, top + i, x, line, style, width)
+        span = min(width, screen.getmaxyx()[1] - x - 1)  # Fill without put's clipping ellipsis.
+        for i, (spans, fill) in enumerate(body[self.preview_scroll:self.preview_scroll + count]):
+            if fill:
+                self.put(screen, top + i, x, " " * span, fill, width)
+            self.put_spans(screen, top + i, x, spans, width)
         if self.preview_max:
             end = self.draw_keys(screen, y + height - 1, x, [("pgup/pgdn", "scroll")], width)
             self.put_right(screen, y + height - 1, x, width, f"{self.preview_scroll * 100 // self.preview_max}%", end - x)

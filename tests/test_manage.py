@@ -345,7 +345,7 @@ def preview_rows(ui, width=60, height=100):
     return screen.rows
 
 
-@pytest.mark.parametrize("count", [0, 1, 4, 5, 8])
+@pytest.mark.parametrize("count", [0, 1, 4, 5, 12])
 def test_preview_samples_user_messages_without_duplicates(store, count):
     conn, _ = store
     messages = [f"request{i:02}" for i in range(count)]
@@ -355,6 +355,8 @@ def test_preview_samples_user_messages_without_duplicates(store, count):
     text = "\n".join(text for _, text, _ in rows)
     expected = messages if count <= 4 else messages[:2] + messages[-2:]
     assert re.findall(r"request\d{2}", text) == expected
+    numbers = [int(number) for number in re.findall(rf"{manage_tui.BAND_BAR} +(\d+)", text)]
+    assert numbers == [messages.index(message) + 1 for message in expected]
     omitted = [(text, style) for _, text, style in rows if "omitted" in text]
     if count > 4:
         assert len(omitted) == 1
