@@ -203,7 +203,7 @@ The full-screen terminal browser shows a compact session list beside the selecte
 
 Below the summary, the preview shows the first two and last two user messages, with a count of omitted messages between them. Sessions with four or fewer messages show each once. Each message is limited to three wrapped lines, with an ellipsis when truncated; open the transcript for the full text.
 
-Results form one continuous list that scrolls a row at a time. Search and filters cover the full inventory. The header shows the search, active filters, and sort order, each next to its key. The list heading shows the selected position and the result count.
+Results form one continuous list that scrolls a row at a time. Search and filters cover the full inventory. The header shows the search, active filters, and sort order, each next to its key. The list heading shows the selected position and the result count. Each row's subtitle includes user and assistant message counts after the provider, for example `Pi · 3 user / 8 asst`; `?` means the count is unknown.
 
 Press `/` to enter search terms. Press Enter to apply them or Esc to cancel. Every search term must match somewhere in the indexed headlines, summaries, user messages, project names, file paths, or canonical/native session IDs. Partial words match. If the current filters return no exact matches, the search shows deterministic, typo-tolerant near matches. It also searches Side Chat headlines, Focused Content, questions and answers, but not raw transcripts or main-session assistant messages. The parent preview shows matching excerpts and child headlines, marking matching Side Chats, and the agent types of its Subagent Runs.
 

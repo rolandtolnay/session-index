@@ -176,6 +176,11 @@ def ellipsized(text: str, width: int) -> str:
     return clipped(text, width - 1) + "…" if width > 0 else ""
 
 
+def message_count(value: int | None) -> str:
+    """Unknown counts read as unknown, never as an empty session."""
+    return "?" if value is None else f"{value:,}"
+
+
 def wrapped(text: str, width: int) -> list[str]:
     lines = []
     for line in textwrap.wrap(text, max(1, width)):
@@ -829,11 +834,21 @@ class SessionManager:
             title = plain(session.get("headline") or session.get("summary") or session.get("user_messages") or "Untitled session")
             marker = ("›", self.styles["selected_accent"]) if active else (" ", 0)
             self.put_spans(screen, line, x, [marker, (" " + title, row)], width)
-            project = ellipsized(plain(self.project_label(session)), max(8, min(28, width // 3)))
             short_date = display_date(session.get("started_at")).split(" · ")[0]
             provider = PROVIDER_LABELS.get(session.get("source"), "?")
+            users = message_count(session.get("user_message_count"))
+            replies = message_count(session.get("assistant_message_count"))
+            budget = width - 2 - (9 if session["hidden_from_recents"] else 0)
+            details = f" · {short_date} · {provider} · {users} user / {replies} asst"
+            if cells(details) - 3 > budget:
+                # Drop the year (the preview keeps it); Today, Yesterday and Unknown date have none.
+                details = details.replace(short_date, short_date.split(", ")[0], 1)
+            # The project yields width first so date, provider, counts and state stay visible.
+            spare = budget - cells(details)
+            # Too little room for a readable fragment drops the project and its separator.
+            project = ellipsized(plain(self.project_label(session)), min(28, spare)) if spare >= 4 else ""
             meta = self.styles["selected_muted"] if active else self.styles["muted"]
-            spans = [(f"{project} · {short_date} · {provider}", meta)]
+            spans = [(project + details if project else details[3:], meta)]
             if session["hidden_from_recents"]:
                 spans += [(" · ", meta), ("hidden", row if active else self.styles["state"])]
             self.put_spans(screen, line + 1, x + 2, spans, width - 2)

@@ -326,6 +326,42 @@ def test_preview_paging_makes_every_word_reachable_on_short_terminals(store, col
     assert words <= seen
 
 
+@pytest.mark.parametrize("width", [52, 56, 70])
+@pytest.mark.parametrize("user_count,assistant_count,hidden", [(12, 1234, False), (12, 1234, True), (None, 0, False)])
+def test_list_keeps_message_counts_visible_on_narrow_rows(store, width, user_count, assistant_count, hidden):
+    class Screen:
+        def __init__(self):
+            self.rows = {}
+
+        def getmaxyx(self):
+            return 40, width + 4
+
+        def addstr(self, y, x, text, style):
+            self.rows.setdefault(y, []).append(text)
+
+        def hline(self, *args):
+            pass
+
+    conn, _ = store
+    seed(store, project="A-project-name-long-enough-to-need-truncation", source="claude",
+         started_at="2025-01-01T12:00:00Z",
+         user_message_count=user_count, assistant_message_count=assistant_count)
+    if hidden:
+        db.set_hidden_from_recents(conn, "one", True)
+    ui = SessionManager(conn, cli._delete_managed_session)
+    ui.styles = dict.fromkeys(manage_tui.STYLE_ROLES, 0)
+    screen = Screen()
+    ui.draw_list(screen, 0, 0, 30, width)
+    subtitle = "".join(screen.rows[3])
+    suffix = subtitle.split("Claude", 1)[1]
+    assert re.findall(r"\?|\d[\d,]*", suffix) == [
+        "?" if count is None else f"{count:,}" for count in (user_count, assistant_count)
+    ]
+    assert manage_tui.cells(subtitle) <= width - 2
+    if hidden:
+        assert subtitle.endswith("hidden")
+
+
 def preview_rows(ui, width=60, height=100):
     """Capture the public preview drawing, including row positions and styles."""
     class Screen:
