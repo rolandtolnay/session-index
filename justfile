@@ -2,9 +2,9 @@
 backup-setup:
     uv run backup.py setup
 
-# Upload an encrypted backup of the index to Cloudflare R2
-backup:
-    uv run backup.py run
+# Upload an encrypted backup of the index to Cloudflare R2 (--full rechecks every transcript)
+backup *flags:
+    uv run backup.py run {{flags}}
 
 # Restore the latest backup into an empty data directory
 restore dir=(env_var("HOME") / ".session-index"):

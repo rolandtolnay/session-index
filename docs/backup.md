@@ -46,14 +46,25 @@ Snapshots and `removed/` folders older than 90 days are deleted at the end of ea
 just backup
 ```
 
-Run it as often as you like; once or twice a week is plenty for most use. The first run uploads everything. Later runs upload a new database snapshot and only the transcripts that changed. The command reads credentials without prompting, so you can also run it from a scheduler or an agent.
+Run it as often as you like; once or twice a week is plenty for most use. The first run uploads everything. Later runs upload a new database snapshot and only the transcripts modified since their last upload. The command reads credentials without prompting, so you can also run it from a scheduler or an agent.
 
-A run prints the snapshot name and size, then confirms the file sync:
+A run shows one line per step. In a terminal, the running step updates in place with upload progress or how many transcripts it has checked, and an estimate of the time left. When it finishes, the line shows the outcome:
 
 ```
-Database: db/sessions-20260101-090000.db.gz (31.9 MB compressed)
-Files: transcripts/ and reference-ids.json synced
+✓ Database  db/sessions-20260101-090000.db.gz · 31.9 MB compressed · 9s
+✓ Transcripts  10,316 checked · 13 uploaded · 10s
+✓ Cleanup  nothing older than 90 days · 1s
 ```
+
+Run outside a terminal, the command prints only the outcome lines.
+
+A run decides what changed by comparing each transcript's modification time with when it was last uploaded, which comes with the bucket listing. That misses a transcript whose content changed without a newer timestamp, such as one copied back from elsewhere with its original timestamp kept. Run a full backup now and then, and after copying files into `~/.session-index/` by hand:
+
+```bash
+just backup --full
+```
+
+A full backup compares each transcript's recorded modification time, one request per file, so it takes several times longer.
 
 Transcripts of conversations that are still running keep changing after a backup. The next run picks them up.
 
