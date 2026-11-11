@@ -13,7 +13,7 @@ Claude settings.json hooks config
     ├─ Stop ──────────────► stop.py ───────────► queue turn refresh
     └─ SessionEnd ────────► session_end.py ────► queue forced final refresh
 
-Pi extension
+Pi extension (.pi-owned TypeScript adapter)
     │
     ├─ before_agent_start ─► pi_context.py ──► inject recent context into system prompt
     ├─ agent_end ──────────► pi_index.py --mode turn
@@ -63,8 +63,7 @@ Current-session lookup:
 | `hooks/pi_index.py` | Pi extension entry point for automatic turn/exit and manual full indexing |
 | `hooks/pi_context.py` | Pi extension entry point for recent-context system prompt injection |
 | `hooks/codex_stop.py` | Codex lifecycle adapter: queue refresh/finalization or inject context and launch recovery |
-| `pi-extension/index.ts` | Pi extension wiring for lifecycle events |
-| `pi-extension/session-index-env.ts` | Pi runtime environment helper for current-session lookup |
+| `.pi: agent/extensions/session-index/` | Separately owned Pi TypeScript adapter: lifecycle wiring, environment helpers, workflow refresh, and displays |
 | `current_session.py` | Exact current-session resolver using Session Index runtime env |
 | `indexer.py` | Shared parse/summarize/transcript/upsert pipeline |
 | `sources.py` | Claude/Pi/Codex Source Transcript discovery for backfill and hook fallback |
@@ -85,6 +84,12 @@ Current-session lookup:
 | `skills/session-search/scripts/*.py` | Thin wrappers for current, find, inspect, and query |
 
 ---
+
+## Pi adapter boundary
+
+The `.pi` harness owns and installs the Pi extension and its TypeScript tests. Session Index's installer manages only the Pi `session-search` skill; it never repairs or removes the extension, including when a legacy installer manifest lists it. Diagnose extension loading and UI behavior in `.pi`, not by reinstalling Session Index's Pi target.
+
+The adapter invokes the existing Session Index backend from its checkout: `uv run cli.py current --json` reads current-session metadata, `uv run hooks/pi_index.py --mode <mode> --session-file <path>` indexes or queues refresh, and `uv run hooks/pi_context.py --cwd <path> --session-id <id>` prints recent context. The `SESSION_INDEX_*` environment contract supplies exact runtime identity. Pi parsing, continuation ownership, refresh coordination, generated artifacts, and database writes remain Python responsibilities in Session Index.
 
 ## Data Locations
 
@@ -153,7 +158,7 @@ The `[sid]` tag links all activity for a session: hook events, worker progress, 
 **Session not indexed:**
 - `refresh_worker | deterministic skipped (N user, M assistant msgs)` — needs at least 1 user + 1 assistant message
 - Claude: no `stop | queued` line — the Stop hook did not fire
-- Pi: no `pi_index | turn queued` line — run `/reload` or restart Pi after installing the extension
+- Pi: no `pi_index | turn queued` line — check the separately managed `.pi` extension, then run `/reload` or restart Pi; `node install.js --target pi` installs only the search skill
 - Codex: no `codex_stop` lines — restart Codex, open `/hooks`, and review/trust the Session Index hook
 - `refresh_worker | source transcript missing` / `pi_index | missing session file` — Source Transcript path mismatch
 

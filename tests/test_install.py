@@ -1,4 +1,4 @@
-"""Installer coverage for the user-level Codex integration."""
+"""Installer coverage using temporary homes, never live runtime configuration."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,111 @@ def _run_installer(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
         timeout=15,
         check=False,
     )
+
+
+def test_pi_install_manages_only_search_skill(tmp_path):
+    pi_dir = tmp_path / ".pi" / "agent"
+    skill = pi_dir / "skills" / "session-search"
+    manifest_path = pi_dir / "session-index" / ".manifest.json"
+
+    for _ in range(2):
+        installed = _run_installer(tmp_path, "--target", "pi")
+        assert installed.returncode == 0, installed.stderr or installed.stdout
+        assert skill.is_symlink()
+        assert skill.resolve() == REPO_ROOT / "skills" / "session-search"
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["target"] == "pi"
+        assert manifest["skill"] == "session-search"
+        assert "extension" not in manifest
+        assert not (pi_dir / "extensions").exists()
+        assert not (tmp_path / ".claude").exists()
+        assert not (tmp_path / ".codex").exists()
+
+    removed = _run_installer(tmp_path, "--uninstall", "--target", "pi")
+    assert removed.returncode == 0, removed.stderr or removed.stdout
+    assert not skill.is_symlink()
+    assert not manifest_path.exists()
+
+
+@pytest.mark.parametrize("extension_kind", ["directory", "symlink", "legacy-symlink", "broken-symlink"])
+@pytest.mark.parametrize("reinstall", [False, True], ids=["legacy-uninstall", "install-reinstall-uninstall"])
+def test_pi_preserves_extension_even_with_legacy_manifest(tmp_path, extension_kind, reinstall):
+    pi_dir = tmp_path / ".pi" / "agent"
+    extension = pi_dir / "extensions" / "session-index"
+    extension.parent.mkdir(parents=True)
+    legacy_root = tmp_path / "previous-session-index"
+    if extension_kind == "directory":
+        extension.mkdir()
+        target = extension
+    else:
+        target = legacy_root / "pi-extension" if extension_kind == "legacy-symlink" else tmp_path / "pi-owned-extension"
+        if extension_kind != "broken-symlink":
+            target.mkdir(parents=True)
+        extension.symlink_to(target, target_is_directory=True)
+    if extension_kind != "broken-symlink":
+        (target / "index.ts").write_text("// independently owned Pi adapter\n")
+
+    skill = pi_dir / "skills" / "session-search"
+    skill.parent.mkdir(parents=True)
+    legacy_skill = legacy_root / "skills" / "session-search"
+    legacy_skill.mkdir(parents=True)
+    skill.symlink_to(legacy_skill, target_is_directory=True)
+    manifest_path = pi_dir / "session-index" / ".manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(json.dumps({
+        "version": "1.0.0", "target": "pi", "repoRoot": str(legacy_root),
+        "skill": "session-search", "extension": "session-index",
+    }))
+
+    # A normal reinstall owns the current skill, not an unrelated old skill link.
+    if reinstall:
+        skill.unlink()
+
+    actions = [[], [], ["--uninstall"]] if reinstall else [["--uninstall"]]
+    for args in actions:
+        result = _run_installer(tmp_path, "--target", "pi", *args)
+        assert result.returncode == 0, result.stderr or result.stdout
+        if extension_kind == "directory":
+            assert extension.is_dir() and not extension.is_symlink()
+        else:
+            assert extension.is_symlink()
+            assert extension.readlink() == target
+        if extension_kind == "broken-symlink":
+            assert not target.exists()
+        else:
+            assert (target / "index.ts").read_text() == "// independently owned Pi adapter\n"
+
+    assert not skill.is_symlink()
+    assert not manifest_path.exists()
+
+
+def test_claude_install_is_idempotent_and_uninstall_preserves_unrelated_hooks(tmp_path):
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    settings_path = claude_dir / "settings.json"
+    original = {
+        "custom": {"keep": True},
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/other/stop"}]}]},
+    }
+    settings_path.write_text(json.dumps(original))
+
+    for _ in range(2):
+        installed = _run_installer(tmp_path, "--target", "claude")
+        assert installed.returncode == 0, installed.stderr or installed.stdout
+    settings = json.loads(settings_path.read_text())
+    for event in ("SessionStart", "Stop", "SessionEnd"):
+        ours = [entry for entry in settings["hooks"][event]
+                if any(str(REPO_ROOT / "hooks") in h.get("command", "") for h in entry["hooks"])]
+        assert len(ours) == 1
+    skill = claude_dir / "skills" / "session-search"
+    assert skill.is_symlink()
+    assert skill.resolve() == REPO_ROOT / "skills" / "session-search"
+
+    removed = _run_installer(tmp_path, "--uninstall", "--target", "claude")
+    assert removed.returncode == 0, removed.stderr or removed.stdout
+    assert not skill.is_symlink()
+    assert not (claude_dir / "session-index" / ".manifest.json").exists()
+    assert json.loads(settings_path.read_text()) == original
 
 
 def test_codex_install_is_idempotent_and_uninstall_preserves_unrelated_hooks(tmp_path):

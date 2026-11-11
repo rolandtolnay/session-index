@@ -5,7 +5,7 @@ Automatic indexing, summarization, and search for Claude Code, Pi, and Codex con
 ## What it does
 
 - **Claude Code hooks** — refresh active-session artifacts after turns, force a final refresh on SessionEnd, and inject recent context on SessionStart
-- **Pi extension** — refreshes active-session artifacts after turns/shutdown and injects recent context before the first prompt in a session
+- **Pi integration** — the `.pi`-owned extension refreshes active-session artifacts after turns/shutdown and injects recent context before the first prompt in a session
 - **Codex hooks** — refresh artifacts on Stop, Interrupt, and SubagentStop; finalize on SessionEnd; inject recent context and recover pending work on SessionStart
 - **Hybrid summary refresh** — summarize the first qualifying turn immediately, then after 180 idle seconds or 10,000 new conversation characters
 - **Unified DB** — stores all supported sources in `~/.session-index/sessions.db`
@@ -33,10 +33,10 @@ node install.js
 pi          # then run /login and choose OpenAI (the openai provider)
 ```
 
-By default the installer sets up all three integrations:
+By default the installer sets up resources for all three runtimes:
 
 - Claude Code: skill symlink in `~/.claude/skills/` and hooks in `~/.claude/settings.json`
-- Pi: skill symlink in `~/.pi/agent/skills/` and extension symlink in `~/.pi/agent/extensions/`
+- Pi: `session-search` skill symlink in `~/.pi/agent/skills/` only
 - Codex: `session-search` and `current-session` skill symlinks in `~/.codex/skills/`, plus lifecycle hooks in `~/.codex/hooks.json`
 
 Install one target only:
@@ -55,7 +55,10 @@ node install.js --uninstall --target pi
 node install.js --uninstall --target codex
 ```
 
-After installing the Pi integration, run `/reload` in Pi or restart Pi.
+After installing the Pi skill, run `/reload` in Pi or restart Pi. The `.pi` harness owns and installs all Pi TypeScript adapter code under `agent/extensions/session-index/`, including lifecycle wiring, environment helpers, workflow refresh, and displays. This installer never creates, updates, or removes the Pi extension, even when uninstalling with an older manifest that lists it. Automatic Pi indexing, recent-context injection, and `/current-session` require that separately managed extension.
+
+Session Index remains the Python backend: Pi parsing, indexing, identity resolution, storage, and generated artifacts stay here. The `.pi` adapter calls `uv run cli.py current --json` for metadata, `uv run hooks/pi_index.py` for indexing/refresh, and `uv run hooks/pi_context.py` for recent context, using this repository as its working directory. The `SESSION_INDEX_*` runtime environment contract is documented under [Current session lookup](#current-session-lookup).
+
 After installing the Codex integration, restart Codex and use `/hooks` to review and trust the Session Index lifecycle hooks. Codex skips new or changed non-managed hooks until they are trusted.
 In Codex, invoke `$current-session` to display the canonical Clean Transcript and Tool Log paths for the active conversation.
 
@@ -264,7 +267,7 @@ uv run cli.py current --native # provider-native session ID
 uv run cli.py current --json   # full current-session metadata
 ```
 
-In Pi TUI, use `/current-session` to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `c` copies the exact Clean Transcript path to the clipboard without closing the display, even if the artifact is still missing. `Ctrl+R` explicitly runs a full indexing pass for the current snapshot, then refreshes artifact statuses if the display remains open. Automatic Pi shutdown queues equivalent final stages through the detached coordinator. The CLI remains the terminal/API-oriented interface.
+In Pi TUI, use the `.pi`-owned `/current-session` command to display the active Current Session metadata in a transient, user-only focused display. It is not sent to the model and does not append chat/session history. While the display is focused, `c` copies the exact Clean Transcript path to the clipboard without closing the display, even if the artifact is still missing. Opening the display automatically runs a full indexing pass for the current snapshot, with an animated Pi spinner until it finishes; artifact statuses update if the display remains open. `Ctrl+R` runs another pass when no refresh is in progress. Automatic Pi shutdown queues equivalent final stages through the detached coordinator. The CLI remains the terminal/API-oriented interface.
 
 In Codex, use `$current-session`. The dedicated skill runs the focused `--cleaned-paths` output and returns only the absolute Clean Transcript and Tool Log paths with `[exists]` or `[missing]` status.
 

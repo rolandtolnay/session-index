@@ -26,6 +26,9 @@ HH:MM:SS.mmm [sid_6] hook_name          | message
 - `SUMMARIZATION.md` for the production summarization configuration and its constraints; `docs/benchmarking.md` to evaluate a prompt or model change.
 - `clean_pi_transcript.py` turns a raw Pi JSONL into readable Markdown (`uv run clean_pi_transcript.py <file>`). It is deliberately not exposed through the CLI or any skill.
 
+## Pi adapter ownership
+The `.pi` repository owns all Pi TypeScript adapter code in `agent/extensions/session-index/` and its tests: lifecycle wiring, environment helpers, workflow refresh, and displays. Session Index owns the Python backend, including Pi parsing, `hooks/pi_index.py`, `hooks/pi_context.py`, and the core indexing/storage pipeline. The adapter invokes those Python entry points and `cli.py current --json` from the Session Index checkout using the public `SESSION_INDEX_*` identity contract; keep this process boundary rather than adding a parallel shim. `node install.js --target pi` manages only the `session-search` skill, and install/uninstall must leave independently owned Pi extensions untouched, including with legacy manifests.
+
 ## Skill maintenance
 `skills/session-search/` is the agent-facing interface. When a CLI command or option changes, update `skills/session-search/SKILL.md` and the thin wrapper in `skills/session-search/scripts/`. `SKILL.md` covers only what an agent runs to answer questions; the `manage` browser is for people and is documented in the README alone, since describing it in the skill adds context an agent never acts on. Wrappers resolve the repo root, import the `cli.py` command function, parse only their own arguments, and delegate; CLI logic lives in `cli.py` only. Installed Claude/Codex/Pi skill paths are symlinks into this repo, so changes take effect without reinstalling.
 

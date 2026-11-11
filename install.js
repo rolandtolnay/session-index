@@ -2,7 +2,7 @@
 /**
  * session-index installer
  *
- * Installs Claude Code hooks/skill, Pi extension/skill, and/or Codex hooks/skill.
+ * Installs Claude Code hooks/skill, the Pi skill, and/or Codex hooks/skill.
  *
  * Usage:
  *   node install.js                         # Install Claude + Pi + Codex integrations
@@ -44,10 +44,6 @@ const CODEX_SKILL_DST = path.join(CODEX_DIR, "skills", SKILL_NAME);
 const CODEX_CURRENT_SKILL_NAME = "current-session";
 const CODEX_CURRENT_SKILL_SRC = path.join(REPO_ROOT, "skills", CODEX_CURRENT_SKILL_NAME);
 const CODEX_CURRENT_SKILL_DST = path.join(CODEX_DIR, "skills", CODEX_CURRENT_SKILL_NAME);
-
-const PI_EXTENSION_NAME = "session-index";
-const PI_EXTENSION_SRC = path.join(REPO_ROOT, "pi-extension");
-const PI_EXTENSION_DST = path.join(PI_AGENT_DIR, "extensions", PI_EXTENSION_NAME);
 
 const CLAUDE_HOOKS = [
   {
@@ -236,7 +232,6 @@ function uninstallClaude() {
 function installPi() {
   console.log("\nPi integration");
   linkResource(SKILL_SRC, PI_SKILL_DST, `Pi skill: ${SKILL_NAME}`);
-  linkResource(PI_EXTENSION_SRC, PI_EXTENSION_DST, `Pi extension: ${PI_EXTENSION_NAME}`);
 
   writeJson(PI_MANIFEST_PATH, {
     version: "1.0.0",
@@ -244,7 +239,6 @@ function installPi() {
     target: "pi",
     repoRoot: REPO_ROOT,
     skill: SKILL_NAME,
-    extension: PI_EXTENSION_NAME,
   });
   console.log(`  [ok]   Manifest: ${PI_MANIFEST_PATH}`);
 }
@@ -257,8 +251,8 @@ function uninstallPi() {
     try { repoRoot = readJson(PI_MANIFEST_PATH).repoRoot || REPO_ROOT; } catch {}
   }
 
+  // Pi owns its extension; legacy manifests grant ownership of the skill only.
   unlinkResource(PI_SKILL_DST, path.join(repoRoot, "skills", SKILL_NAME), `Pi skill: ${SKILL_NAME}`);
-  unlinkResource(PI_EXTENSION_DST, path.join(repoRoot, "pi-extension"), `Pi extension: ${PI_EXTENSION_NAME}`);
 
   fs.rmSync(PI_MANIFEST_PATH, { force: true });
   try { fs.rmdirSync(PI_MANIFEST_DIR); } catch {}
@@ -404,7 +398,7 @@ if (uninstall) {
   let nextStep = 1;
   console.log(`  ${nextStep++}. Optional historical import/repair: cd ${REPO_ROOT} && uv run cli.py backfill --source all`);
   if (includesTarget(target, "pi")) {
-    console.log(`  ${nextStep++}. In Pi, run /reload or restart Pi so the extension and skill load.`);
+    console.log(`  ${nextStep++}. In Pi, run /reload or restart Pi so the skill loads. The Pi harness manages its Session Index extension separately.`);
   }
   if (includesTarget(target, "codex")) {
     console.log(`  ${nextStep++}. Restart Codex, open /hooks, and review/trust the Session Index lifecycle hooks.`);
