@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import fnmatch
-import json
 import os
 from datetime import datetime, timezone
 from typing import Any
 
+from project_groups import PROJECT_CONTEXT_CONFIG_PATH, load_project_groups, selector_matches_path
 from project_identity import resolve_project
 
 SAME_PROJECT_LIMIT = 7
 PROJECT_GROUP_LIMIT = 14
 CROSS_PROJECT_LIMIT = 21
 ACTIVE_DAYS = 7
-PROJECT_CONTEXT_CONFIG_PATH = os.path.expanduser("~/.pi/agent/project-context.json")
 
 
 def _format_session(
@@ -95,96 +93,6 @@ def select_active_day_sessions(
     return [session for session in ranked if session["session_id"] in selected]
 
 
-def _glob_parts_match(pattern: tuple[str, ...], path: tuple[str, ...]) -> bool:
-    memo: dict[tuple[int, int], bool] = {}
-
-    def match(pattern_index: int, path_index: int) -> bool:
-        key = (pattern_index, path_index)
-        if key in memo:
-            return memo[key]
-        if pattern_index == len(pattern):
-            result = path_index == len(path)
-        elif pattern[pattern_index] == "**":
-            result = match(pattern_index + 1, path_index) or (
-                path_index < len(path) and match(pattern_index, path_index + 1)
-            )
-        else:
-            result = path_index < len(path) and fnmatch.fnmatchcase(
-                path[path_index], pattern[pattern_index]
-            ) and match(pattern_index + 1, path_index + 1)
-        memo[key] = result
-        return result
-
-    return match(0, 0)
-
-
-def _selector_uses_unsupported_glob(selector: str) -> bool:
-    """Reject Node-only glob forms that fnmatch would silently misinterpret."""
-    return "{" in selector or "}" in selector or any(
-        token in selector for token in ("@(", "+(", "?(", "*(", "!(")
-    )
-
-
-def _selector_matches_path(selector: str, path: str) -> bool:
-    """Match a configured root selector against path or any ancestor."""
-    pattern = tuple(os.path.normpath(os.path.expanduser(selector)).split(os.sep))
-    candidate = os.path.abspath(path)
-    while True:
-        if _glob_parts_match(pattern, tuple(candidate.split(os.sep))):
-            return True
-        parent = os.path.dirname(candidate)
-        if parent == candidate:
-            return False
-        candidate = parent
-
-
-def _matching_project_groups(project_root: str) -> list[dict[str, Any]]:
-    """Group membership follows the canonical project, never a checkout's parent."""
-    try:
-        with open(PROJECT_CONTEXT_CONFIG_PATH, encoding="utf-8") as config_file:
-            raw = json.load(config_file)
-    except (OSError, ValueError):
-        return []
-
-    if not isinstance(raw, dict) or raw.get("version") != 1 or not isinstance(raw.get("groups"), list):
-        return []
-
-    parsed: list[dict[str, Any]] = []
-    names: set[str] = set()
-    for candidate in raw["groups"]:
-        if not isinstance(candidate, dict):
-            return []
-        name = candidate.get("name")
-        projects = candidate.get("projects")
-        files = candidate.get("files")
-        if not isinstance(name, str) or not name.strip() or name.strip() in names:
-            return []
-        if not isinstance(projects, list) or not projects or not all(
-            isinstance(selector, str) and selector.strip() for selector in projects
-        ):
-            return []
-        if not isinstance(files, list) or not files or not all(
-            isinstance(path, str) and path.strip() for path in files
-        ):
-            return []
-
-        selectors = [selector.strip() for selector in projects]
-        if any(
-            selector != "~" and not selector.startswith("~/") and not os.path.isabs(selector)
-            for selector in selectors
-        ) or any(_selector_uses_unsupported_glob(selector) for selector in selectors):
-            return []
-
-        normalized_name = name.strip()
-        names.add(normalized_name)
-        parsed.append({"name": normalized_name, "selectors": selectors})
-
-    return [
-        group for group in parsed
-        if any(_selector_matches_path(selector, project_root) for selector in group["selectors"])
-    ]
-
-
 def build_recent_context(cwd: str) -> str | None:
     """Build a compact transcript-routing index for a cwd, or None if empty."""
     if not cwd:
@@ -205,7 +113,10 @@ def build_recent_context(cwd: str) -> str | None:
     identity = resolve_project(cwd)
     project_root = identity.project_path
     project = identity.project
-    matching_groups = _matching_project_groups(project_root)
+    matching_groups = [
+        group for group in load_project_groups(PROJECT_CONTEXT_CONFIG_PATH)
+        if any(selector_matches_path(selector, project_root) for selector in group["selectors"])
+    ]
     conn = get_connection()
     try:
         same_candidates = get_headlined_by_project(conn, project, project_root, project_id=identity.project_id)
@@ -223,7 +134,7 @@ def build_recent_context(cwd: str) -> str | None:
                     path for path in known_paths
                     if os.path.abspath(path) != project_root
                     and any(
-                        _selector_matches_path(selector, path)
+                        selector_matches_path(selector, path)
                         for selector in group["selectors"]
                     )
                 }

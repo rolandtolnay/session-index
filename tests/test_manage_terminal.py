@@ -37,6 +37,8 @@ def test_confirmation_borders_with_repeat_capable_terminal(tmp_path, columns, ro
         sys.path.insert(0, {repo!r})
         from db import init_db, upsert_session
         from manage_tui import SessionManager
+        import project_groups
+        project_groups.PROJECT_CONTEXT_CONFIG_PATH = {str(tmp_path / "groups.json")!r}
         locale.setlocale(locale.LC_ALL, '')
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
@@ -112,6 +114,8 @@ def test_search_filter_sort_and_resize_in_terminal(tmp_path, columns, rows, no_c
         sys.path.insert(0, {repo!r})
         from db import init_db, upsert_session
         from manage_tui import SessionManager
+        import project_groups
+        project_groups.PROJECT_CONTEXT_CONFIG_PATH = {str(tmp_path / "groups.json")!r}
         locale.setlocale(locale.LC_ALL, '')
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row
@@ -226,6 +230,8 @@ def test_project_identity_labels_in_terminal(tmp_path, columns, rows, no_color):
         sys.path.insert(0, {repo!r})
         from db import init_db, upsert_session
         from manage_tui import SessionManager
+        import project_groups
+        project_groups.PROJECT_CONTEXT_CONFIG_PATH = {str(tmp_path / "groups.json")!r}
         locale.setlocale(locale.LC_ALL, '')
         conn = sqlite3.connect(':memory:')
         conn.row_factory = sqlite3.Row

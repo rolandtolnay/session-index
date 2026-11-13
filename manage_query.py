@@ -12,6 +12,7 @@ from typing import Any
 from rapidfuzz import fuzz, process
 
 from db import project_filter_clause, project_identity_sql, top_level_session_predicate
+from project_groups import load_project_groups, selector_matches_path
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class ManageFilters:
     since: str = ""
     until: str = ""
     substance: str | None = None
+    project_group: str | None = None
 
 
 # Tool names some providers record in place of the agent the parent asked for.
@@ -114,6 +116,8 @@ def _timestamp(value: Any) -> float | None:
 
 
 def _validate(filters: ManageFilters, sort: str, offset: int, limit: int) -> tuple[date | None, date | None]:
+    if filters.project is not None and filters.project_group is not None:
+        raise ValueError("choose a project or a project group, not both")
     if filters.visibility not in _VALID_VISIBILITIES:
         raise ValueError("visibility must be one of: all, visible, hidden")
     if filters.substance is not None and filters.substance not in _VALID_SUBSTANCES:
@@ -168,8 +172,22 @@ def _load_scope(conn: sqlite3.Connection, filters: ManageFilters) -> list[dict[s
     columns = [description[0] for description in cursor.description or ()]
     rows = cursor.fetchall()
     if rows and isinstance(rows[0], sqlite3.Row):
-        return [dict(row) for row in rows]
-    return [dict(zip(columns, row)) for row in rows]
+        sessions = [dict(row) for row in rows]
+    else:
+        sessions = [dict(zip(columns, row)) for row in rows]
+
+    if filters.project_group is not None:
+        group = next((group for group in load_project_groups()
+                      if group["name"] == filters.project_group), None)
+        # A removed or invalid group must not silently widen the scope.
+        if group is None:
+            return []
+        matching_paths = {
+            path for path in {row.get("project_path") for row in sessions} if path
+            and any(selector_matches_path(selector, path) for selector in group["selectors"])
+        }
+        sessions = [row for row in sessions if row.get("project_path") in matching_paths]
+    return sessions
 
 
 def _query_terms(query: str) -> list[str]:

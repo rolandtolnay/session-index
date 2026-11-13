@@ -8,6 +8,7 @@ import pytest
 
 import cli
 import db
+import project_groups
 from evidence_find import find_candidates
 from manage_query import ManageFilters, query_manage_sessions
 from manage_tui import SessionManager
@@ -15,7 +16,8 @@ from parser import ParsedSession
 
 
 @pytest.fixture
-def inventory(tmp_path):
+def inventory(tmp_path, monkeypatch):
+    monkeypatch.setattr(project_groups, "PROJECT_CONTEXT_CONFIG_PATH", str(tmp_path / "groups.json"))
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     db.init_db(conn)

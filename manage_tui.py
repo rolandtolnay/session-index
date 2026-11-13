@@ -17,6 +17,7 @@ from db import project_options, set_hidden_from_recents
 from manage_artifacts import copy_transcript_path, read_transcript
 from manage_query import ManageFilters, query_manage_sessions
 from manage_transcript import BAND_BAR, ROLE_DIVIDER, cells, clipped, render_transcript
+from project_groups import load_project_groups
 
 
 SORT_LABELS = {
@@ -35,6 +36,10 @@ PREVIEWED_MATCH_FIELDS = ("Headline:", "Summary:", "Project:", "Session ID:")
 # artifacts), which the reader's identity block and child pickers replace.
 FIRST_DIVIDER = re.compile(rf"^{ROLE_DIVIDER.pattern}$", re.MULTILINE)
 PROVIDER_LABELS = {"claude": "Claude", "pi": "Pi", "codex": "Codex"}
+# Project picker values: None is All, a string is one project identity, and
+# (GROUP, name) is a configured project group, so a group can share a project's name.
+GROUP = "group"
+GROUP_PREFIX = "Group: "
 # A session's children, read from its transcript: picker panel (also the
 # session's key for them) -> (reader key, picker title, singular noun).
 CHILD_PANELS = {"side_chats": ("s", "Side chats", "side chat"),
@@ -59,7 +64,7 @@ HELP_LINES = [
     ("pgup pgdn", "Scroll the preview"),
     ("enter", "Open the selected session's transcript"),
     ("/", "Search; enter applies, esc cancels"),
-    ("f", "Filter; type a project, enter applies"),
+    ("f", "Filter; type a project or group, enter applies"),
     ("s", "Sort order"),
     ("c", "Reset search, filters, and sort"),
     ("tab", "Toggle all / hidden-only sessions"),
@@ -89,6 +94,7 @@ HELP_LINES = [
     "", "FILTERS & SORTING",
     "Each filter choice applies immediately on Enter.",
     "Choose All / Any to clear just that category.",
+    "Project also lists your Pi project groups.",
     "Custom dates are inclusive local start dates.",
     "More contains Substance Band: reference value,",
     "not length. Unknown means not yet assessed.",
@@ -278,6 +284,7 @@ class SessionManager:
         self.cursor = 0
         self.panel_error = ""
         self.projects = []
+        self.project_groups = []
         self.date_inputs = ["", ""]
         self.date_field = 0
         # Positions are absolute in the result set; `sessions` is the fetched
@@ -338,12 +345,16 @@ class SessionManager:
         self.sessions, self.total, self.approximate = page.sessions, page.total, page.approximate
 
     def reload(self):
-        self.projects = project_options(self.conn)
-        self.project_labels = {value: label for value, label, _count in self.projects}
+        self.load_projects()
         self.fetch()
         self.index = min(self.index, max(0, self.total - 1))
         self.scroll_into_view()
         self.preview_scroll = 0
+
+    def load_projects(self):
+        self.projects = project_options(self.conn)
+        self.project_labels = {value: label for value, label, _count in self.projects}
+        self.project_groups = load_project_groups()
 
     def reset_position(self):
         self.index, self.top = 0, 0
@@ -374,8 +385,7 @@ class SessionManager:
             self.cursor = len(self.input)
         elif panel == "filters":
             self.input, self.cursor = "", 0
-            self.projects = project_options(self.conn)
-            self.project_labels = {value: label for value, label, _count in self.projects}
+            self.load_projects()
             self.select_category("project")
         elif panel == "range":
             self.date_inputs = [self.filters.since, self.filters.until]
@@ -410,6 +420,8 @@ class SessionManager:
         if self.panel == "dates":
             bounds = (self.filters.since, self.filters.until)
             return next((key for key, value in self.date_presets().items() if value == bounds), "custom")
+        if self.panel == "project" and self.filters.project_group is not None:
+            return (GROUP, self.filters.project_group)
         return getattr(self.filters, self.panel)
 
     def select_current_option(self):
@@ -440,9 +452,14 @@ class SessionManager:
 
     def panel_options_for(self, panel):
         if panel == "project":
-            options = [(value, label) for value, label, _count in self.projects
-                       if self.input.casefold() in label.casefold() or self.input.casefold() in value.casefold()]
-            return options if self.input else [(None, "All projects")] + options
+            needle = self.input.casefold()
+            # Groups lead, so the few named scopes are not buried among projects.
+            groups = [((GROUP, group["name"]), GROUP_PREFIX + group["name"]) for group in self.project_groups
+                      if needle in (GROUP_PREFIX + group["name"]).casefold()
+                      or any(needle in selector.casefold() for selector in group["selectors"])]
+            projects = [(value, label) for value, label, _count in self.projects
+                        if needle in label.casefold() or needle in value.casefold()]
+            return groups + projects if self.input else [(None, "All projects")] + groups + projects
         if panel == "dates":
             return [("any", "Any date"), ("today", "Today"), ("7", "Past 7 days"),
                     ("30", "Past 30 days"), ("90", "Past 90 days"), ("custom", "Custom range…")]
@@ -543,6 +560,10 @@ class SessionManager:
                 else:
                     since, until = self.date_presets()[value]
                     self.apply_filter(since=since, until=until)
+            elif self.panel == "project":
+                # One scope at a time: a group replaces a project and vice versa.
+                group = value[1] if isinstance(value, tuple) else None
+                self.apply_filter(project=None if group is not None else value, project_group=group)
             else:
                 self.apply_filter(**{self.panel: value})
         elif self.panel == "project":
@@ -1159,7 +1180,7 @@ class SessionManager:
                 self.put(screen, top + 5, left, "NARROW PROJECTS", self.styles["muted"], content_width)
                 self.draw_input(screen, top + 6, left, self.input, self.cursor, content_width)
                 if not self.input:
-                    self.put(screen, top + 6, left + 2, "Type a project name or path…", self.styles["muted"], content_width - 2)
+                    self.put(screen, top + 6, left + 2, "Type a project, group, or path…", self.styles["muted"], content_width - 2)
                 self.rule(screen, top + 7, left, content_width, self.styles["border"])
                 caption = "PROJECTS"
             else:
@@ -1183,10 +1204,13 @@ class SessionManager:
                 if active:
                     self.fill(screen, y, left, content_width, style)
                 marker = ("› ", self.styles["selected_accent"]) if active else ("  ", 0)
-                label = ("* " if value == current else "  ") + plain(label)
-                self.put_spans(screen, y, left, [marker, (label, style)], content_width)
+                spans = [marker, ("* " if value == current else "  ", style)]
+                if isinstance(value, tuple) and value[0] == GROUP:  # The kind reads as metadata.
+                    spans.append((GROUP_PREFIX, self.styles["selected_muted"] if active else self.styles["muted"]))
+                    label = label[len(GROUP_PREFIX):]
+                self.put_spans(screen, y, left, spans + [(plain(label), style)], content_width)
             if not options:
-                self.put(screen, start_y, left, "No matching projects.", width=content_width)
+                self.put(screen, start_y, left, "No matching projects or groups.", width=content_width)
                 self.draw_keys(screen, start_y + 2, left, [("ctrl+u", "clear the name"), ("esc", "cancel")], content_width)
             elif len(options) > capacity:
                 self.put(screen, bottom - 1, left, f"{self.panel_selected + 1}/{len(options)} · ↑↓ scroll", self.styles["muted"], content_width)
@@ -1205,6 +1229,8 @@ class SessionManager:
         labels = []
         if filters.project is not None:
             labels.append(self.project_labels.get(filters.project, filters.project or "Unknown project"))
+        if filters.project_group is not None:
+            labels.append(GROUP_PREFIX + plain(filters.project_group))
         if filters.since or filters.until:
             labels.append(self.date_label(filters))
         if filters.source is not None:

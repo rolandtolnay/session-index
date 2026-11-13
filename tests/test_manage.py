@@ -18,6 +18,7 @@ import cli
 import db
 import indexer
 import recent_context
+import project_groups
 import tool_log
 import transcript
 from evidence_find import find_candidates
@@ -27,6 +28,7 @@ from manage_tui import SessionManager, clipped, plain, wrapped
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(project_groups, "PROJECT_CONTEXT_CONFIG_PATH", str(tmp_path / "groups.json"))
     data = tmp_path / "data"
     artifacts = data / "transcripts"
     artifacts.mkdir(parents=True)
@@ -514,6 +516,54 @@ def test_filters_apply_directly_and_survive_refresh_and_hide(store):
     assert ui.total == 0
     keys(ui, "\t")
     assert ui.total == 1 and ui.filters.source == "pi"
+
+
+def test_group_and_project_scopes_are_alternatives_with_independent_search_and_sort(store, tmp_path):
+    conn, _ = store
+    (tmp_path / "groups.json").write_text(json.dumps({"version": 1, "groups": [
+        {"name": "alpha", "projects": ["/work/alpha", "/work/beta"], "files": ["context.md"]},
+        {"name": "empty", "projects": ["/unindexed"], "files": ["context.md"]},
+    ]}))
+    seed(store, "one", project="alpha", project_path="/work/alpha")
+    seed(store, "two", project="beta", project_path="/work/beta")
+    seed(store, "three", project="gamma", project_path="/work/gamma")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    keys(ui, "/experiment\ns")
+    choose(ui, "oldest")
+    keys(ui, "falp")
+    options = ui.panel_options()
+    assert len(options) == 2  # A same-named group and project stay distinct.
+    group_value = next(value for value, _ in options if value != "/work/alpha")
+    assert ui.total == 3  # Merely focusing a candidate never applies it.
+    choose(ui, group_value)
+    assert ui.filters.project_group == "alpha" and ui.filters.project is None
+    assert {s["session_id"] for s in ui.sessions} == {"one", "two"}
+    keys(ui, "rf")
+    assert ui.current_option() == group_value
+    assert ui.panel_options()[ui.panel_selected][0] == group_value
+    ui.handle_key(curses.KEY_DOWN)
+    ui.handle_key(curses.KEY_RESIZE)
+    keys(ui, "\x1b")
+    assert ui.filters.project_group == "alpha"
+    keys(ui, "f")
+    choose(ui, "/work/alpha")
+    assert ui.filters.project_group is None and ui.filters.project == "/work/alpha"
+    assert ui.total == 1
+    keys(ui, "f")
+    choose(ui, group_value)
+    keys(ui, "f")
+    choose(ui, None)
+    assert ui.total == 3 and ui.filters.project_group is None and ui.filters.project is None
+    assert ui.filters.query == "experiment" and ui.sort == "oldest"
+    keys(ui, "fempty\n")
+    assert ui.total == 0 and ui.filters.project_group == "empty"
+    keys(ui, "f\x12")
+    assert ui.total == 3 and ui.filters.project_group is None
+    assert ui.filters.query == "experiment" and ui.sort == "oldest"
+    keys(ui, "f")
+    choose(ui, group_value)
+    keys(ui, "c")
+    assert ui.total == 3 and not ui.customized
 
 
 def test_project_selection_survives_resize_and_cursor_only_events(store):

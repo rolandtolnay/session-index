@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from dataclasses import replace
+
+import project_groups
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -302,6 +306,76 @@ def test_missing_project_source_and_substance_filters(conn):
 
     assert ids(page) == ["unknown"]
     assert page.sessions[0]["started_at"] is None
+
+
+@pytest.fixture
+def groups(tmp_path, monkeypatch):
+    config = tmp_path / "project-context.json"
+    config.write_text(json.dumps({"version": 1, "groups": [{
+        "name": "synapto", "projects": ["/work/synapto-*", "/work/dashboard-web"],
+        "files": ["context.md"],
+    }]}))
+    monkeypatch.setattr(project_groups, "PROJECT_CONTEXT_CONFIG_PATH", str(config))
+    return config
+
+
+def test_group_scope_uses_canonical_paths_not_checkout_or_display_names(conn, groups):
+    for sid, name, root, checkout in [
+        ("main", "backend", "/work/synapto-backend", "/work/synapto-backend"),
+        ("linked", "backend", "/work/synapto-backend", "/worktrees/feature"),
+        ("dashboard", "dashboard-web", "/work/dashboard-web", "/work/dashboard-web"),
+        ("child-folder", "nested", "/work/synapto-tools/nested", "/work/synapto-tools/nested"),
+        ("outside", "synapto-backend", "/elsewhere/backend", "/work/synapto-checkout"),
+        ("prefix", "dashboard-web-extra", "/work/dashboard-web-extra", "/work/dashboard-web-extra"),
+    ]:
+        seed(conn, sid, project=name, project_id=f"git:{root}/.git",
+             project_path=root, worktree_path=checkout, cwd=checkout)
+    seed(conn, "unknown-path", project="synapto-backend")
+    seed(conn, "nested-agent", project_path="/work/synapto-backend",
+         source_path="/tmp/agent/run-7/session.jsonl")
+
+    first = query_manage_sessions(conn, ManageFilters(project_group="synapto"), limit=2)
+    second = query_manage_sessions(conn, ManageFilters(project_group="synapto"), offset=2, limit=2)
+    assert ids(first) + ids(second) == ["child-folder", "dashboard", "linked", "main"]
+    assert first.total == second.total == 4
+    assert ids(query_manage_sessions(conn, ManageFilters(project="git:/work/synapto-backend/.git"))) == [
+        "linked", "main",
+    ]
+
+
+def test_group_scope_combines_filters_before_search_and_sort(conn, groups):
+    fields = dict(project_path="/work/synapto-backend", source="pi", headline="Retrievel controls",
+                  substance_band="useful", hidden_from_recents=1)
+    seed(conn, "older", **fields, started_at="2026-09-09T12:00:00Z")
+    seed(conn, "newer", **fields, started_at="2026-09-10T12:00:00Z")
+    for sid, overrides in [
+        ("outside", {"project_path": "/outside", "headline": "Retrieval controls"}),
+        ("provider", {"source": "claude"}),
+        ("visible", {"hidden_from_recents": 0}),
+        ("band", {"substance_band": "low_value"}),
+        ("date", {"started_at": "2025-01-01T12:00:00Z"}),
+    ]:
+        seed(conn, sid, **(fields | overrides))
+    filters = ManageFilters(project_group="synapto", query="retrieval", source="pi", visibility="hidden",
+                            substance="useful", since="2026-09-09", until="2026-09-10")
+    page = query_manage_sessions(conn, filters, sort="oldest")
+    assert ids(page) == ["older", "newer"]
+    assert page.approximate
+    assert ids(query_manage_sessions(conn, filters, sort="newest")) == ["newer", "older"]
+    with pytest.raises(ValueError, match="project or a project group"):
+        query_manage_sessions(conn, replace(filters, project="backend"))
+
+
+@pytest.mark.parametrize("config_state", ["missing", "invalid", "removed-group"])
+def test_unavailable_group_never_widens_scope_and_project_filter_still_works(conn, groups, config_state):
+    seed(conn, "one", project="backend", project_path="/work/synapto-backend")
+    if config_state == "missing":
+        groups.unlink()
+    else:
+        groups.write_text("not JSON" if config_state == "invalid" else '{"version":1,"groups":[]}')
+    assert query_manage_sessions(conn, ManageFilters(project_group="synapto")).total == 0
+    assert ids(query_manage_sessions(conn, ManageFilters(project="backend"))) == ["one"]
+    assert ids(query_manage_sessions(conn, ManageFilters())) == ["one"]
 
 
 def test_invalid_enums_and_pagination_raise_value_error(conn):
