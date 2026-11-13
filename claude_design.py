@@ -1,4 +1,4 @@
-"""Recognise Claude Design children without consulting their Pi parent."""
+"""Recognise headless Claude children delegated by a Pi session, without consulting the parent."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,17 +11,20 @@ from uuid import UUID
 from parser import ParsedToolCall
 from subagent_parser import SubagentInfo
 
-# Keep in sync with claude-design/prompts.ts: DELEGATION_HEADER_PATTERN.
-DELEGATION_HEADER_PATTERN = re.compile(r"^\[claude-design v(\d+)\] run (\S+) · parent pi session (\S+)$")
+# The Pi launcher writes this as the first line of the child's first user message; the
+# bracketed name is the agent type. Keep in sync with claude-design/prompts.ts:
+# DELEGATION_HEADER_PATTERN.
+DELEGATION_HEADER_PATTERN = re.compile(r"^\[([a-z][a-z0-9-]*) v(\d+)\] run (\S+) · parent pi session (\S+)$")
 
 
 @dataclass(frozen=True)
-class DesignChild:
+class DelegatedChild:
     parent_native_id: str
     session_id: str
+    agent_type: str
 
 
-def probe_design_child(path: str) -> DesignChild | None:
+def probe_delegated_child(path: str) -> DelegatedChild | None:
     """Inspect only through the first user message, including text-block encoding."""
     try:
         with open(path) as handle:
@@ -52,28 +55,28 @@ def probe_design_child(path: str) -> DesignChild | None:
                         UUID(session_id)
                     except ValueError:
                         return None
-                    return DesignChild(match[3], session_id)
+                    return DelegatedChild(match[4], session_id, match[1])
                 return None
     except OSError:
         pass
     return None
 
 
-def discover_design_children(parent_native_id: str) -> list[SubagentInfo]:
-    """Claude sources remain in place, even when the designer used another cwd."""
+def discover_delegated_children(parent_native_id: str) -> list[SubagentInfo]:
+    """Claude sources remain in place, even when the child used another cwd."""
     from sources import _claude_source_score
 
-    by_identity: dict[str, list[tuple[str, DesignChild]]] = {}
+    by_identity: dict[str, list[tuple[str, DelegatedChild]]] = {}
     pattern = os.path.expanduser("~/.claude/projects/*/*.jsonl")
     for path in sorted(glob.glob(pattern)):
-        child = probe_design_child(path)
+        child = probe_delegated_child(path)
         if child and child.parent_native_id == parent_native_id:
             by_identity.setdefault(child.session_id, []).append((path, child))
     infos = []
     for candidates in by_identity.values():
         path, child = (candidates[0] if len(candidates) == 1
                        else max(candidates, key=lambda candidate: _claude_source_score(candidate[0])))
-        infos.append(SubagentInfo(path, None, child.session_id, "claude-design"))
+        infos.append(SubagentInfo(path, None, child.session_id, child.agent_type, foreign_source="claude"))
     return infos
 
 

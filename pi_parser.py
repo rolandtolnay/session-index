@@ -639,13 +639,13 @@ def discover_pi_subagents(jsonl_path: str) -> list[SubagentInfo]:
     """Discover pi-subagents nested session files for a parent Pi session."""
     session_stem = os.path.splitext(os.path.basename(jsonl_path))[0]
     root = os.path.join(os.path.dirname(jsonl_path), session_stem)
-    from claude_design import discover_design_children
+    from claude_design import discover_delegated_children
     try:
         with open(jsonl_path) as handle:
             native_id = json.loads(next(handle)).get("id", "")
     except (OSError, ValueError, StopIteration):
         native_id = ""
-    results = discover_design_children(native_id) if native_id else []
+    results = discover_delegated_children(native_id) if native_id else []
     pattern = os.path.join(root, "*", "run-*", "session.jsonl")
     for path in sorted(glob.glob(pattern)):
         rel_parts = os.path.relpath(path, root).split(os.sep)

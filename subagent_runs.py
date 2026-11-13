@@ -292,9 +292,9 @@ def build_subagent_runs(
                           and sub.agent_id == request.agent_id), None)
             confidence = "exact"
         else:
-            # Preserve legacy ordering only among non-designer artifacts.
+            # Preserve legacy ordering only among the parent harness's own artifacts.
             match = next((i for i, sub in enumerate(artifacts)
-                          if i not in matched_artifacts and sub.agent_type != "claude-design"), None)
+                          if i not in matched_artifacts and not sub.foreign_source), None)
             confidence = "ordered"
         if match is None:
             facts.append(request)

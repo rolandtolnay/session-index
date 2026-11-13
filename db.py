@@ -15,8 +15,9 @@ def top_level_session_predicate(alias: str = "") -> str:
     """Exclude provider-classified children and legacy Pi child paths."""
     prefix = f"{alias}." if alias else ""
     return (
-        f"COALESCE({prefix}is_subagent, 0) = 0 AND NOT ({prefix}source = 'pi' AND "
-        f"COALESCE({prefix}source_path, '') GLOB '*/run-*/session.jsonl')"
+        f"COALESCE({prefix}is_subagent, 0) = 0 AND NOT ({prefix}source = 'pi' AND ("
+        f"COALESCE({prefix}source_path, '') GLOB '*/run-*/session.jsonl' OR "
+        f"COALESCE({prefix}source_path, '') GLOB '*/pi-subagents/*/session.jsonl'))"
     )
 
 

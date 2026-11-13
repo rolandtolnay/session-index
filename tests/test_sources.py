@@ -46,6 +46,7 @@ def test_nested_pi_subagent_session_path_detection(tmp_path):
     child = tmp_path / "parent-session" / "review-run" / "run-0" / "session.jsonl"
     top_level = tmp_path / "2026-07-28_parent.jsonl"
     assert is_nested_pi_subagent_session(str(child)) is True
+    assert is_nested_pi_subagent_session(str(tmp_path / "claude-session" / "pi-subagents" / "scout-0a1b2c3d" / "session.jsonl")) is True
     assert is_nested_pi_subagent_session(str(top_level)) is False
     assert is_nested_pi_subagent_session(str(tmp_path / "session.jsonl")) is False
 

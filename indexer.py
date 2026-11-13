@@ -150,17 +150,18 @@ def discover_session_subagents(source: str, path: str) -> list[SubagentInfo]:
 
 
 def parse_session_subagent(source: str, info: SubagentInfo) -> ParsedSubagent:
-    source = normalize_source(source)
-    if info.agent_type == "claude-design":
-        parsed = parse_subagent_jsonl(info.jsonl_path)
+    source = info.foreign_source or normalize_source(source)
+    if source == "pi":
+        parsed = parse_pi_subagent_jsonl(info.jsonl_path, info.agent_id, info.agent_type)
+    elif source == "codex":
+        parsed = parse_codex_subagent(info)
+    else:
+        parsed = parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+    if info.foreign_source:
         parsed.agent_id = info.agent_id
         parsed.agent_type = info.agent_type
-        return parsed
-    if source == "pi":
-        return parse_pi_subagent_jsonl(info.jsonl_path, info.agent_id, info.agent_type)
-    if source == "codex":
-        return parse_codex_subagent(info)
-    return parse_subagent_jsonl(info.jsonl_path, info.meta_path)
+        parsed.foreign_source = info.foreign_source
+    return parsed
 
 
 def _stage_overwrite_fields(stages: frozenset[IndexStage]) -> set[str]:
@@ -278,7 +279,7 @@ def _subagent_refs(parsed_subagents: list[ParsedSubagent]):
     from transcript import SubagentRef
 
     return [
-        SubagentRef(agent_type=sub.agent_type, agent_id=sub.agent_id)
+        SubagentRef(agent_type=sub.agent_type, agent_id=sub.agent_id, foreign=bool(sub.foreign_source))
         for sub in parsed_subagents
     ]
 
@@ -402,8 +403,8 @@ def index_source_transcript(
     source = normalize_source(source)
     stages = frozenset(options.stages)
     if source == "claude":
-        from claude_design import probe_design_child, parent_source_paths
-        child = probe_design_child(path)
+        from claude_design import probe_delegated_child, parent_source_paths
+        child = probe_delegated_child(path)
         if child:
             # A child's SessionEnd may precede the parent's refresh. Publish the
             # same deterministic parent snapshot in either order, never summaries.
@@ -416,7 +417,7 @@ def index_source_transcript(
                 conn.close()
             for parent_path in parent_source_paths(child.parent_native_id):
                 _index_pi_source(parent_path, NO_SUMMARY_INDEX_OPTIONS.stages)
-            return IndexResult(skipped_reason="Claude Design child; evidence owned by Pi parent", stages=stages)
+            return IndexResult(skipped_reason="delegated Claude child; evidence owned by Pi parent", stages=stages)
     if source == "pi":
         from sources import is_nested_pi_subagent_session
 

@@ -8,6 +8,7 @@ and keeps tool call signatures as compact `→ Tool: arg` lines.
 import glob
 import json
 import os
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -31,6 +32,7 @@ class ParsedSubagent:
     source_path: str = ""
     transcript_path: str = ""
     artifact_path: str = ""
+    foreign_source: str = ""
 
 
 @dataclass
@@ -39,23 +41,28 @@ class SubagentInfo:
     meta_path: str | None
     agent_id: str
     agent_type: str
+    # The harness that wrote the child's Source Transcript when it is not the
+    # parent's. Such children are owned by location or header, never by request order.
+    foreign_source: str = ""
 
 
 # Agent ID prefixes for system agents that have no indexing value
 _SKIP_PREFIXES = ("acompact-", "aprompt_suggestion-")
 
+# Headless Pi children are stored under run directories named {agent}-{8 hex}.
+_PI_RUN_SUFFIX = re.compile(r"-[0-9a-f]{8}$")
+
 
 def discover_subagents(jsonl_path: str) -> list[SubagentInfo]:
     """Find subagent JSONL files associated with a parent session.
 
-    Looks in {dirname}/{session_id}/subagents/agent-*.jsonl.
+    Looks in {dirname}/{session_id}/subagents/agent-*.jsonl, then for headless
+    Pi children in {dirname}/{session_id}/pi-subagents/{agent}-{id}/session.jsonl.
     Skips system agents (acompact-*, aprompt_suggestion-*).
     """
     session_id = os.path.splitext(os.path.basename(jsonl_path))[0]
-    subagents_dir = os.path.join(os.path.dirname(jsonl_path), session_id, "subagents")
-
-    if not os.path.isdir(subagents_dir):
-        return []
+    session_dir = os.path.join(os.path.dirname(jsonl_path), session_id)
+    subagents_dir = os.path.join(session_dir, "subagents")
 
     pattern = os.path.join(subagents_dir, "agent-*.jsonl")
     results = []
@@ -88,6 +95,16 @@ def discover_subagents(jsonl_path: str) -> list[SubagentInfo]:
             meta_path=meta_path,
             agent_id=agent_id,
             agent_type=agent_type,
+        ))
+
+    for path in sorted(glob.glob(os.path.join(session_dir, "pi-subagents", "*", "session.jsonl"))):
+        run_name = os.path.basename(os.path.dirname(path))
+        results.append(SubagentInfo(
+            jsonl_path=path,
+            meta_path=None,
+            agent_id=run_name,
+            agent_type=_PI_RUN_SUFFIX.sub("", run_name) or run_name,
+            foreign_source="pi",
         ))
 
     return results

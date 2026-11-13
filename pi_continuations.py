@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from subagent_parser import SubagentInfo
 
@@ -340,7 +340,6 @@ def children(
                 source_native = registered[0] if registered else native
                 if not owner or owner[0] != source_native:
                     agent_id = hashlib.sha256(child.encode()).hexdigest()[:16] + "-" + agent_id
-                info = SubagentInfo(jsonl_path=info.jsonl_path, meta_path=info.meta_path,
-                                    agent_id=agent_id, agent_type=info.agent_type)
+                info = replace(info, agent_id=agent_id)
                 subs.append(info)
     return sides, subs

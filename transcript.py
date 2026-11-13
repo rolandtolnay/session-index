@@ -23,6 +23,8 @@ class SubagentRef:
     """Lightweight reference for enriching parent transcripts with subagent links."""
     agent_type: str
     agent_id: str
+    # Written by another harness: listed under Related artifacts, never matched to a marker.
+    foreign: bool = False
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,7 @@ def _expand_subagent_markers(
     Mutates ref_index[0] to track which subagent we're up to (order-based matching).
     """
     out_lines: list[str] = []
-    ordered_refs = [ref for ref in subagent_refs if ref.agent_type != "claude-design"]
+    ordered_refs = [ref for ref in subagent_refs if not ref.foreign]
     for line in content.split("\n"):
         m = _SUBAGENT_MARKER_RE.match(line.strip())
         if m:
@@ -195,8 +197,8 @@ def _artifact_navigation(
     from side_chats import label
     children = [f"- Side Chat: {label(row)} → `{row['transcript_path']}`" for row in side_chats or []]
     children.extend(
-        f"- Subagent Run: claude-design → `{os.path.join(child_dir, f'agent-{ref.agent_id}.md')}`"
-        for ref in subagents or [] if ref.agent_type == "claude-design"
+        f"- Subagent Run: {ref.agent_type} → `{os.path.join(child_dir, f'agent-{ref.agent_id}.md')}`"
+        for ref in subagents or [] if ref.foreign
     )
     return "\n".join([
         "## Related artifacts",

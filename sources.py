@@ -77,11 +77,11 @@ def discover_claude_sessions(session_id: str | None = None) -> list[SourceSessio
     else:
         pattern = os.path.join(projects_dir, "*", "*.jsonl")
 
-    from claude_design import probe_design_child
+    from claude_design import probe_delegated_child
 
     by_session_id: dict[str, list[str]] = {}
     for path in glob.glob(pattern):
-        if probe_design_child(path):
+        if probe_delegated_child(path):
             continue
         native_id = os.path.splitext(os.path.basename(path))[0]
         by_session_id.setdefault(native_id, []).append(path)
@@ -94,10 +94,11 @@ def discover_claude_sessions(session_id: str | None = None) -> list[SourceSessio
 
 
 def is_nested_pi_subagent_session(path: str) -> bool:
-    """Return whether path is a pi-subagents child conversation artifact."""
-    return (
-        os.path.basename(path) == "session.jsonl"
-        and os.path.basename(os.path.dirname(path)).startswith("run-")
+    """Return whether path is a Pi child conversation owned by a Pi or Claude parent."""
+    run_dir = os.path.dirname(path)
+    return os.path.basename(path) == "session.jsonl" and (
+        os.path.basename(run_dir).startswith("run-")
+        or os.path.basename(os.path.dirname(run_dir)) == "pi-subagents"
     )
 
 

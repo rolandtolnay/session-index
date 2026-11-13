@@ -38,8 +38,8 @@ def write_rows(path, rows, *, append=False):
     return path
 
 
-def claude_rows(native=CHILD, *, header=True, entrypoint="sdk-cli", blocks=False):
-    prompt = f"[claude-design v1] run design-run · parent pi session {PARENT}\n\nDesign the calendar" if header else "Repair the roadmap"
+def claude_rows(native=CHILD, *, header=True, entrypoint="sdk-cli", blocks=False, agent="claude-design"):
+    prompt = f"[{agent} v1] run design-run · parent pi session {PARENT}\n\nDesign the calendar" if header else "Repair the roadmap"
     return [
         {"type": role, "entrypoint": entrypoint, "sessionId": native,
          "timestamp": f"2026-10-27T12:00:0{i}Z", "cwd": "/tmp/project",
@@ -136,6 +136,26 @@ def test_identity_mismatch_does_not_fall_back_to_order_or_consume_ordinary_reque
         ("worker", "request_only"), ("claude-design", "request_only"), ("claude-design", "artifact_only")]
     parent_text = Path(rows("sessions")[0]["transcript_path"]).read_text()
     assert f"→ see: {Path(facts[-1]['transcript_path']).name}" not in parent_text
+
+
+def test_header_names_a_child_launched_without_a_request_tool(store):
+    root, artifacts = store
+    parent = parent_file(root, call=False)
+    data = [json.loads(line) for line in parent.read_text().splitlines()]
+    data[2]["message"]["content"].append({"type": "toolCall", "id": "worker", "name": "subagent", "arguments": {"agent": "worker"}})
+    write_rows(parent, data)
+    child_file(root, agent="consultant")
+    index("pi", parent)
+    owner = canonical_session_id("pi", PARENT)
+    assert [row["session_id"] for row in rows("sessions")] == [owner]
+    facts = rows("subagent_runs")
+    # The header alone owns the child; an ordinary request never claims it by order.
+    assert [(row["requested_agent_type"], row["match_confidence"]) for row in facts] == [
+        ("worker", "request_only"), ("consultant", "artifact_only")]
+    child_path = Path(facts[-1]["transcript_path"])
+    assert child_path.parent == artifacts / owner
+    assert f"- Subagent Run: consultant → `{child_path}`" in (artifacts / f"{owner}.md").read_text()
+    assert discover_claude_sessions() == []
 
 
 def test_resume_updates_one_artifact_and_one_row(store):
