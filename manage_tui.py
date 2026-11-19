@@ -10,11 +10,12 @@ from datetime import date, datetime, timedelta
 import locale
 import os
 import re
+import shlex
 import sqlite3
 import textwrap
 
 from db import project_options, set_hidden_from_recents
-from manage_artifacts import copy_transcript_path, read_transcript
+from manage_artifacts import copy_text, copy_transcript_path, read_transcript
 from manage_query import ManageFilters, query_manage_sessions
 from manage_transcript import BAND_BAR, ROLE_DIVIDER, cells, clipped, render_transcript
 from project_groups import load_project_groups
@@ -36,6 +37,8 @@ PREVIEWED_MATCH_FIELDS = ("Headline:", "Summary:", "Project:", "Session ID:")
 # artifacts), which the reader's identity block and child pickers replace.
 FIRST_DIVIDER = re.compile(rf"^{ROLE_DIVIDER.pattern}$", re.MULTILINE)
 PROVIDER_LABELS = {"claude": "Claude", "pi": "Pi", "codex": "Codex"}
+# Each harness's own command for reopening one conversation by its native ID.
+RESUME_COMMANDS = {"claude": "claude --resume", "pi": "pi --session", "codex": "codex resume"}
 # Project picker values: None is All, a string is one project identity, and
 # (GROUP, name) is a configured project group, so a group can share a project's name.
 GROUP = "group"
@@ -63,6 +66,7 @@ HELP_LINES = [
     ("← → p n", "Same; option/ctrl+↑↓ work too"),
     ("pgup pgdn", "Scroll the preview"),
     ("enter", "Open the selected session's transcript"),
+    ("y", "Copy the command that resumes the session"),
     ("/", "Search; enter applies, esc cancels"),
     ("f", "Filter; type a project or group, enter applies"),
     ("s", "Sort order"),
@@ -187,9 +191,9 @@ def message_count(value: int | None) -> str:
     return "?" if value is None else f"{value:,}"
 
 
-def wrapped(text: str, width: int) -> list[str]:
+def wrapped(text: str, width: int, *, hyphens: bool = True) -> list[str]:
     lines = []
-    for line in textwrap.wrap(text, max(1, width)):
+    for line in textwrap.wrap(text, max(1, width), break_on_hyphens=hyphens):
         while line:
             part = clipped(line, width)
             if not part:
@@ -209,9 +213,9 @@ def chunked(text: str, width: int) -> list[str]:
     return lines
 
 
-def clamped(text: str, width: int, count: int) -> list[str]:
+def clamped(text: str, width: int, count: int, *, hyphens: bool = True) -> list[str]:
     """At most count wrapped lines, the last ellipsized when text runs over."""
-    lines = wrapped(text, width)
+    lines = wrapped(text, width, hyphens=hyphens)
     if len(lines) > count:
         lines = lines[:count - 1] + [ellipsized(" ".join(lines[count - 1:]), width)]
     return lines
@@ -236,6 +240,24 @@ def substance_label(session: dict) -> str:
     """The session's Substance Band; an unassessed session shows nothing, not "Unknown"."""
     band = session.get("substance_band")
     return BAND_LABELS[band] if band in ("substantial", "useful", "low_value") else ""
+
+
+def resume_command(session: dict) -> str | None:
+    """The shell line that reopens a session in its harness, from the directory it ran in.
+
+    Each harness resumes into the working directory (Claude only finds sessions
+    saved for it), so the line starts with a cd when the directory is recorded.
+    None when the harness's raw log is gone, since it has nothing left to reopen.
+    """
+    command, native = RESUME_COMMANDS.get(session.get("source")), session.get("native_session_id")
+    if not command or not native or not os.path.isfile(session.get("source_path") or ""):
+        return None
+    command += " " + shlex.quote(native)
+    if not (cwd := session.get("cwd")):
+        return command
+    home = os.path.expanduser("~")
+    relative = os.path.relpath(cwd, home) if cwd.startswith(home.rstrip("/") + "/") else None
+    return f"cd {'~/' + shlex.quote(relative) if relative else shlex.quote(cwd)} && {command}"
 
 
 def display_date(value: str | None) -> str:
@@ -334,7 +356,8 @@ class SessionManager:
         """Keys acting on the selected session; add new per-session actions here."""
         if self.session is None:
             return []
-        return [("enter", "open", self.styles["accent"]),
+        return [("enter", "open", self.styles["accent"])] + (
+            [("y", "copy resume")] if resume_command(self.session) else []) + [
                 ("h", "unhide" if self.session["hidden_from_recents"] else "hide"), ("d", "delete")]
 
     def fetch(self):
@@ -634,6 +657,12 @@ class SessionManager:
                 self.message(str(error), error=True)
         elif self.session and key == "d":
             self.delete_target = self.session
+        elif self.session and key == "y" and (command := resume_command(self.session)):
+            try:
+                copy_text(command)
+                self.message("Copied resume command.")
+            except OSError as error:
+                self.message(str(error) or "Could not copy the resume command.", error=True)
         elif self.session and key in ("\n", "\r", curses.KEY_ENTER):
             self.open_transcript(self.session)
         return True
@@ -897,6 +926,14 @@ class SessionManager:
         fixed.append((f"{display_date(session.get('started_at'))} · {provider} · {session['session_id']}", self.styles["muted"]))
         if session["hidden_from_recents"]:
             fixed.append(("Hidden from recents · still searchable", self.styles["state"]))
+        # Shown whole when the pane allows, since y copies it whole; a short pane ellipsizes it
+        # to keep body rows. IDs and paths break only when wider than the pane.
+        command = resume_command(session)
+        if not command and session.get("source") in RESUME_COMMANDS:
+            command = f"Can't resume: {provider} no longer has this session. Press enter to read the transcript."
+        if command:
+            room = max(1, height - len(fixed) - 5)  # Gap, hint row, three body rows.
+            fixed += [(line, self.styles["muted"]) for line in clamped(command, width, room, hyphens=False)]
         for i, (line, style) in enumerate(fixed):
             self.put(screen, y + i, x, line, style, width)
         if compact:
@@ -1292,7 +1329,13 @@ class SessionManager:
             self.draw_preview(screen, body_top + list_height, 2, body_height - list_height, width - 4, compact=True)
         self.rule(screen, height - 4, 2, width - 4, self.styles["border"])
         self.put(screen, height - 3, 2, self.status, self.styles["danger"] if self.status_error else 0, width - 4)
-        self.draw_keys(screen, height - 2, 2, self.session_actions() + [("?", "help"), ("q", "quit")], width - 4)
+        keys = self.session_actions() + [("?", "help"), ("q", "quit")]
+        # Narrow terminals shorten the copy hint, then leave it to the help screen.
+        if hints_width(keys) > width - 4:
+            keys = [("y", "copy") if key[0] == "y" else key for key in keys]
+        if hints_width(keys) > width - 4:
+            keys = [key for key in keys if key[0] != "y"]
+        self.draw_keys(screen, height - 2, 2, keys, width - 4)
 
     def run(self, screen):
         try:

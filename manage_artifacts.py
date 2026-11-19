@@ -1,4 +1,4 @@
-"""Read-only artifact access and the Session Manager's macOS clipboard action."""
+"""Read-only artifact access and the Session Manager's macOS clipboard actions."""
 
 from pathlib import Path
 import subprocess
@@ -24,11 +24,16 @@ def read_transcript(path: str) -> str:
 def copy_transcript_path(path: str) -> None:
     """Copy the recorded absolute path verbatim; never invoke a shell."""
     _absolute_path(path)
+    copy_text(path)
+
+
+def copy_text(text: str) -> None:
+    """Hand text to the macOS clipboard as data; never invoke a shell."""
     if sys.platform != "darwin":
         raise OSError("Clipboard copying is supported on macOS only.")
     try:
         result = subprocess.run(
-            ["pbcopy"], input=path.encode("utf-8"), capture_output=True, timeout=3,
+            ["pbcopy"], input=text.encode("utf-8"), capture_output=True, timeout=3,
         )
     except FileNotFoundError as error:
         raise OSError("Clipboard unavailable: pbcopy was not found.") from error

@@ -204,6 +204,8 @@ Run `uv run cli.py manage` from the repository, or `uv run ~/.pi/agent/skills/se
 
 The full-screen terminal browser shows a compact session list beside the selected session’s preview. In narrower terminals, it stacks the list and preview. It uses readable local dates, a visible selection, and color accents. `NO_COLOR` disables colors.
 
+Under the session's date, provider, and ID, the preview shows the command that resumes it in its own harness: `claude --resume <id>`, `pi --session <id>`, or `codex resume <id>`, preceded by `cd <directory> &&` when the directory the session ran in is recorded. Press `y` to copy it to the macOS clipboard. Resuming needs the harness's raw session log, which Claude Code deletes after `cleanupPeriodDays`; when the log is gone, the preview says the session can't be resumed and points to its transcript instead.
+
 Below the summary, the preview shows the first two and last two user messages, with a count of omitted messages between them. Sessions with four or fewer messages show each once. Each message is limited to three wrapped lines, with an ellipsis when truncated; open the transcript for the full text.
 
 Results form one continuous list that scrolls a row at a time. Search and filters cover the full inventory. The header shows the search, active filters, and sort order, each next to its key. The list heading shows the selected position and the result count. Each row's subtitle includes user and assistant message counts after the provider, for example `Pi · 3 user / 8 asst`; `?` means the count is unknown.
@@ -237,6 +239,7 @@ Use these controls:
 - ↑/↓ or j/k to select the previous or next session.
 - Shift+↑/↓ (or Option/Ctrl+↑/↓, ←/→, p/n) to jump one screen of sessions.
 - Enter to open the selected session's transcript.
+- y to copy the command that resumes the session in Claude Code, Pi, or Codex.
 - / to search; f for filters; s for sorting.
 - c to reset search, filters, and sorting; ? for keyboard help.
 - Tab in the session list to switch between all and hidden sessions, keeping other filters.

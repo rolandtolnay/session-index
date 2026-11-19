@@ -232,6 +232,62 @@ def test_keyboard_hide_unhide_cancel_and_confirm_delete(store):
     assert ui.handle_key("q") is False
 
 
+@pytest.mark.parametrize("session,command", [
+    (dict(source="claude", native_session_id="625004fb-bb0d", cwd="/Users/me/dev/app-feature-x"),
+     "cd ~/dev/app-feature-x && claude --resume 625004fb-bb0d"),
+    (dict(source="pi", native_session_id="01a1ee80", cwd="/Users/meow/app"), "cd /Users/meow/app && pi --session 01a1ee80"),
+    (dict(source="codex", native_session_id="01a1", cwd="/Users/me/a b;rm -rf x"), "cd ~/'a b;rm -rf x' && codex resume 01a1"),
+    (dict(source="pi", native_session_id="01a1", cwd=None), "pi --session 01a1"),
+    (dict(source="claude", native_session_id=None, cwd="/Users/me/app"), None),
+    (dict(source=None, native_session_id="01a1", cwd="/Users/me/app"), None),
+    (dict(source="claude", native_session_id="01a1", cwd="/Users/me/app", source_path=None), None),  # Log gone.
+])
+def test_resume_command_reopens_each_harness_from_its_recorded_directory(monkeypatch, tmp_path, session, command):
+    monkeypatch.setenv("HOME", "/Users/me")
+    log = tmp_path / "raw.jsonl"
+    log.write_text("{}")
+    assert manage_tui.resume_command({"source_path": str(log), **session}) == command
+
+
+def test_preview_shows_the_whole_resume_command_and_y_copies_it(store, monkeypatch, tmp_path):
+    conn, _ = store
+    monkeypatch.setenv("HOME", "/Users/me")
+    log = tmp_path / "raw.jsonl"
+    log.write_text("{}")
+    cwd = "/Users/me/Documents/Development/dashboard-web-feature-syn-975-staff-console-sidebar-shell"
+    seed(store, source="claude", native_session_id="625004fb-bb0d-48fd-9b46-2666f75d09c8", cwd=cwd,
+         source_path=str(log))
+    seed(store, "legacy", source="pi", source_path=str(log), started_at="2020-01-01T00:00:00+00:00")
+    seed(store, "gone", source="claude", source_path=str(tmp_path / "deleted.jsonl"),
+         started_at="2019-01-01T00:00:00+00:00")
+    copied = []
+    monkeypatch.setattr(manage_tui, "copy_text", copied.append)
+    ui = SessionManager(conn, cli._delete_managed_session)
+    ui.styles = dict.fromkeys(manage_tui.STYLE_ROLES, 0)
+
+    def preview():
+        screen = type("Screen", (), {"rows": [], "getmaxyx": lambda self: (40, 60),
+                                     "addstr": lambda self, y, x, text, style: self.rows.append(text)})()
+        ui.draw_preview(screen, 0, 0, 40, 40)  # A pane narrower than the path wraps it, never clips it.
+        return "".join(screen.rows).replace(" ", "")
+
+    command = manage_tui.resume_command(ui.session)
+    assert command.startswith("cd ~/Documents/") and command.replace(" ", "") in preview()
+    assert ("y", "copy resume") in ui.session_actions()
+    ui.handle_key("y")
+    assert copied == [command] and ui.status == "Copied resume command."
+
+    ui.handle_key("j")  # Older sessions without a recorded directory resume from wherever it is run.
+    ui.handle_key("y")
+    assert copied == [command, "pi --session legacy"]
+
+    ui.handle_key("j")  # With the raw log gone, the preview points to the transcript instead.
+    assert "Can'tresume:Claudenolongerhasthissession.Pressentertoreadthetranscript." in preview()
+    assert "y" not in dict(action[:2] for action in ui.session_actions())
+    ui.handle_key("y")
+    assert len(copied) == 2
+
+
 def test_navigation_and_confirmation_cannot_change_target(store):
     conn, _ = store
     for i in range(23):
