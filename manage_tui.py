@@ -81,6 +81,7 @@ HELP_LINES = [
     ("⇧↑↓ space", "Scroll a screen; pgup pgdn, ← → too"),
     ("home end", "Jump to the start / end; g G too"),
     ("c", "Copy the transcript's absolute path"),
+    ("y", "Copy the command that resumes the session"),
     ("s", "Pick one of the session's Side Chats"),
     ("a", "Pick one of the session's Subagent Runs"),
     ("esc q", "Back: Side Chat or run, transcript, list"),
@@ -258,6 +259,12 @@ def resume_command(session: dict) -> str | None:
     home = os.path.expanduser("~")
     relative = os.path.relpath(cwd, home) if cwd.startswith(home.rstrip("/") + "/") else None
     return f"cd {'~/' + shlex.quote(relative) if relative else shlex.quote(cwd)} && {command}"
+
+
+def feature_branch(session: dict) -> str:
+    """The session's branch when it says more than the project does; default branches say nothing."""
+    branch = plain(session.get("branch"))
+    return "" if branch in ("", "main", "master", "HEAD") else branch
 
 
 def display_date(value: str | None) -> str:
@@ -657,15 +664,19 @@ class SessionManager:
                 self.message(str(error), error=True)
         elif self.session and key == "d":
             self.delete_target = self.session
-        elif self.session and key == "y" and (command := resume_command(self.session)):
+        elif self.session and key == "y":
+            self.copy_resume_command(self.session)
+        elif self.session and key in ("\n", "\r", curses.KEY_ENTER):
+            self.open_transcript(self.session)
+        return True
+
+    def copy_resume_command(self, session):
+        if command := resume_command(session):
             try:
                 copy_text(command)
                 self.message("Copied resume command.")
             except OSError as error:
                 self.message(str(error) or "Could not copy the resume command.", error=True)
-        elif self.session and key in ("\n", "\r", curses.KEY_ENTER):
-            self.open_transcript(self.session)
-        return True
 
     def open_transcript(self, session, child=None, kind=None):
         """Read a transcript over the browser, whose state stays untouched underneath.
@@ -711,6 +722,8 @@ class SessionManager:
                 self.message("Copied transcript path.")
             except (OSError, ValueError) as error:
                 self.message(str(error) or "Could not copy the transcript path.", error=True)
+        elif key == "y" and not reader.child:  # Side Chats and Subagent Runs resume with their session.
+            self.copy_resume_command(reader.session)
         elif kind := next((name for name, (child_key, *_) in CHILD_PANELS.items()
                            if key == child_key and self.children(name)), None):
             self.open_panel(kind)
@@ -921,9 +934,11 @@ class SessionManager:
         # Without a headline the summary leads, as it does in the list row.
         fixed = [] if compact else [(line, self.styles["strong"]) for line in wrapped(
             plain(session.get("headline")), width)[:3]]
+        branch = f" · {feature_branch(session)}" if feature_branch(session) else ""
         if not compact:
-            fixed.append((plain(self.project_label(session)), self.styles["muted"]))
-        fixed.append((f"{display_date(session.get('started_at'))} · {provider} · {session['session_id']}", self.styles["muted"]))
+            fixed.append((plain(self.project_label(session)) + branch, self.styles["muted"]))
+        fixed.append((f"{display_date(session.get('started_at'))} · {provider} · {session['session_id']}"
+                      + (branch if compact else ""), self.styles["muted"]))
         if session["hidden_from_recents"]:
             fixed.append(("Hidden from recents · still searchable", self.styles["state"]))
         # Shown whole when the pane allows, since y copies it whole; a short pane ellipsizes it
@@ -1057,16 +1072,20 @@ class SessionManager:
         self.put_right(screen, height - 3, 2, width, position)
         keys = [("↑↓/⇧↑↓", "scroll")] if reader.max else []
         keys.append(("c", "copy path"))
+        if not child and resume_command(session):
+            keys.append(("y", "copy resume"))
         children = [(key, f"{count} {noun}{'s' if count > 1 else ''}")
                     for kind, (key, _, noun) in CHILD_PANELS.items() if (count := len(self.children(kind)))]
         if children:  # The first kind of child is the next action.
             children[0] += (self.styles["accent"],)
         keys += children + [("esc", "back")]
-        # Narrow terminals drop the self-evident scroll hint, then shorten copy.
+        # Narrow terminals drop the self-evident scroll hint, shorten copy, then leave resume to help.
         while hints_width(keys) > width and keys[0][0] != "c":
             keys.pop(0)
         if hints_width(keys) > width:
             keys[0] = ("c", "copy")
+        if hints_width(keys) > width:
+            keys = [key for key in keys if key[0] != "y"]
         self.draw_keys(screen, height - 2, 2, keys, width)
 
     def draw_transcript(self, screen, y, height, width):

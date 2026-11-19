@@ -276,16 +276,57 @@ def test_preview_shows_the_whole_resume_command_and_y_copies_it(store, monkeypat
     assert ("y", "copy resume") in ui.session_actions()
     ui.handle_key("y")
     assert copied == [command] and ui.status == "Copied resume command."
+    ui.handle_key("\n")  # The reader resumes too, so a session can be confirmed before resuming it.
+    assert ("y", "copy resume") in [key[:2] for key in reader_hints(ui)]
+    ui.handle_key("y")
+    ui.handle_key("\x1b")
+    assert copied == [command, command]
 
     ui.handle_key("j")  # Older sessions without a recorded directory resume from wherever it is run.
     ui.handle_key("y")
-    assert copied == [command, "pi --session legacy"]
+    assert copied == [command, command, "pi --session legacy"]
 
     ui.handle_key("j")  # With the raw log gone, the preview points to the transcript instead.
     assert "Can'tresume:Claudenolongerhasthissession.Pressentertoreadthetranscript." in preview()
     assert "y" not in dict(action[:2] for action in ui.session_actions())
     ui.handle_key("y")
-    assert len(copied) == 2
+    ui.handle_key("\n")
+    assert "y" not in dict(key[:2] for key in reader_hints(ui))
+    ui.handle_key("y")
+    assert len(copied) == 3
+
+
+def reader_hints(ui):
+    """The reader's hint row, as handed to draw_keys."""
+    drawn = []
+    ui.draw_keys = lambda screen, y, x, keys, width: drawn.append(keys)
+    ui.draw_transcript = lambda *args: None
+    screen = type("Screen", (), {"getmaxyx": lambda self: (40, 150), "erase": lambda self: None,
+                                 "addstr": lambda self, *args: None, "hline": lambda self, *args: None})()
+    ui.draw_reader(screen)
+    del ui.draw_keys, ui.draw_transcript
+    return drawn[-1]
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_preview_names_feature_branches_but_not_default_ones(store, compact):
+    conn, _ = store
+    seed(store, branch="feature/syn-975-sidebar")
+    seed(store, "older", branch="main", started_at="2020-01-01T00:00:00+00:00")
+    ui = SessionManager(conn, cli._delete_managed_session)
+    ui.styles = dict.fromkeys(manage_tui.STYLE_ROLES, 0)
+
+    def preview():
+        rows = []
+        screen = type("Screen", (), {"getmaxyx": lambda self: (40, 150),
+                                     "addstr": lambda self, y, x, text, style: rows.append(text)})()
+        ui.draw_preview(screen, 0, 0, 40, 120, compact=compact)
+        return rows
+
+    line = next(row for row in preview() if "feature/syn-975-sidebar" in row)
+    assert line.startswith("Today") if compact else line == "project · feature/syn-975-sidebar"
+    ui.handle_key("j")
+    assert not any("main" in row for row in preview())
 
 
 def test_navigation_and_confirmation_cannot_change_target(store):
